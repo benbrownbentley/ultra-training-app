@@ -1,4 +1,5 @@
-import { plan, TODAY, type Workout } from "@/lib/plan";
+import { TODAY, type Workout } from "@/lib/plan";
+import { getPlan } from "@/lib/supabase";
 
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -32,7 +33,8 @@ function workoutIcon(kind: Workout["kind"]) {
   return "🧘";
 }
 
-export default function Home() {
+export default async function Home() {
+  const plan = await getPlan();
   const today = plan.days.find((d) => d.date === TODAY);
   const daysToRace = daysBetween(TODAY, plan.race.date);
 
@@ -131,7 +133,7 @@ export default function Home() {
       </section>
 
       <footer className="mt-auto pt-6 text-center text-[11px] text-zinc-400 dark:text-zinc-600">
-        v1 · static plan · {plan.days.length} days hardcoded
+        v1 · {plan.days.length} days loaded from Supabase
       </footer>
     </div>
   );

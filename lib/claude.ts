@@ -1,21 +1,13 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
-import type { WorkoutKind, WorkoutStatus } from "./plan";
+import type {
+  AthleteProfile,
+  Race,
+  WorkoutKind,
+  WorkoutStatus,
+} from "./plan";
 
 const client = new Anthropic();
-
-export interface RaceInput {
-  name: string;
-  distance: string;
-  date: string;
-}
-
-export interface BaselineInput {
-  weeklyVolume: string;
-  longestRunKm: number;
-  easyPace: string;
-  injuryNotes: string;
-}
 
 export interface LoggedWorkout {
   date: string;
@@ -26,8 +18,8 @@ export interface LoggedWorkout {
 }
 
 export interface GeneratePlanArgs {
-  race: RaceInput;
-  baseline: BaselineInput;
+  race: Race;
+  profile: AthleteProfile;
   startDate: string;
   history: LoggedWorkout[];
 }
@@ -124,19 +116,56 @@ function formatHistory(history: LoggedWorkout[]): string {
 ${lines.join("\n")}`;
 }
 
+function formatRace(race: Race, unit: "metric" | "imperial"): string {
+  const distanceUnit = unit === "metric" ? "m" : "ft";
+  const lines = [
+    `- Name: ${race.name}`,
+    `- Distance: ${race.distance}`,
+    `- Date: ${race.date}`,
+  ];
+  if (race.elevation_gain != null)
+    lines.push(`- Elevation gain: ${race.elevation_gain} ${distanceUnit}`);
+  if (race.terrain) lines.push(`- Terrain: ${race.terrain}`);
+  if (race.target_time) lines.push(`- Target finish time: ${race.target_time}`);
+  if (race.intent) lines.push(`- Race intent: ${race.intent}`);
+  return lines.join("\n");
+}
+
+function formatProfile(p: AthleteProfile): string {
+  const distUnit = p.unit_system === "metric" ? "km" : "mi";
+  const paceUnit = p.unit_system === "metric" ? "min/km" : "min/mi";
+  const lines = [
+    `- Preferred units: ${p.unit_system}`,
+    `- Current weekly running volume: ${p.weekly_volume}`,
+    `- Longest run in past 4 weeks: ${p.longest_run_distance} ${distUnit}`,
+    `- Comfortable easy pace: ${p.easy_pace} (${paceUnit})`,
+    `- Injuries / things to manage carefully: ${p.injury_notes ?? "none reported"}`,
+  ];
+  if (p.experience) lines.push(`- Endurance experience: ${p.experience}`);
+  if (p.gym_access) lines.push(`- Gym access: ${p.gym_access}`);
+  if (p.equipment) lines.push(`- Equipment available: ${p.equipment}`);
+  if (p.weekly_hours != null)
+    lines.push(`- Weekly training time available: ${p.weekly_hours} hours`);
+  if (p.cross_training)
+    lines.push(`- Cross-training preferences: ${p.cross_training}`);
+  if (p.other_commitments)
+    lines.push(`- Other commitments / disruptions: ${p.other_commitments}`);
+  if (p.sleep_stress) lines.push(`- Sleep & stress baseline: ${p.sleep_stress}`);
+  return lines.join("\n");
+}
+
 function buildUserPrompt(args: GeneratePlanArgs): string {
+  const distUnit = args.profile.unit_system === "metric" ? "km" : "mi";
+  const paceUnit =
+    args.profile.unit_system === "metric" ? "min/km" : "min/mi";
+
   return `Generate a training plan for the following runner.
 
 RACE
-- Name: ${args.race.name}
-- Distance: ${args.race.distance}
-- Date: ${args.race.date}
+${formatRace(args.race, args.profile.unit_system)}
 
-RUNNER BASELINE
-- Current weekly running volume: ${args.baseline.weeklyVolume}
-- Longest run in the past 4 weeks: ${args.baseline.longestRunKm} km
-- Comfortable easy/conversational pace: ${args.baseline.easyPace}
-- Current injuries / things to manage carefully: ${args.baseline.injuryNotes}
+RUNNER PROFILE
+${formatProfile(args.profile)}
 
 WORKOUT HISTORY
 ${formatHistory(args.history)}
@@ -144,7 +173,7 @@ ${formatHistory(args.history)}
 PLAN PARAMETERS
 - Start date (today): ${args.startDate}
 - End date (race day): ${args.race.date}
-- Use metric units throughout (km, min/km pace)
+- Use ${args.profile.unit_system} units throughout: ${distUnit} for distance, ${paceUnit} for pace
 - Include a 2-week taper before race day
 - Include the race itself as the final workout on the race date
 - Generate workouts ONLY for dates from the start date onwards. Do NOT include any dates before the start date.

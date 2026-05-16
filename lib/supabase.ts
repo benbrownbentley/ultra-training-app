@@ -28,20 +28,19 @@ interface WorkoutRow {
   status: WorkoutStatus;
 }
 
-interface RaceRow {
-  name: string;
-  distance: string;
-  date: string;
-}
+const RACE_COLUMNS =
+  "name, distance, date, elevation_gain, terrain, target_time, intent";
+const PROFILE_COLUMNS =
+  "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, cross_training, other_commitments, sleep_stress";
 
-export async function getPlan(): Promise<Plan> {
+export async function getPlan(): Promise<Plan | null> {
   const [raceResult, workoutsResult] = await Promise.all([
     supabase
       .from("race")
-      .select("name, distance, date")
+      .select(RACE_COLUMNS)
       .order("id", { ascending: false })
       .limit(1)
-      .single<RaceRow>(),
+      .maybeSingle<import("./plan").Race>(),
     supabase
       .from("workouts")
       .select("id, date, kind, title, details, position, status")
@@ -53,6 +52,7 @@ export async function getPlan(): Promise<Plan> {
   if (raceResult.error) throw raceResult.error;
   if (workoutsResult.error) throw workoutsResult.error;
 
+  if (!raceResult.data) return null;
   const race = raceResult.data;
   const rows = workoutsResult.data ?? [];
 
@@ -77,15 +77,26 @@ export async function getPlan(): Promise<Plan> {
   return { race, days };
 }
 
-export async function getAthleteProfile(): Promise<AthleteProfile> {
+export async function getAthleteProfile(): Promise<AthleteProfile | null> {
   const { data, error } = await supabase
     .from("athlete_profile")
-    .select("weekly_volume, longest_run_km, easy_pace, injury_notes")
+    .select(PROFILE_COLUMNS)
     .order("id", { ascending: false })
     .limit(1)
-    .single<AthleteProfile>();
+    .maybeSingle<AthleteProfile>();
 
   if (error) throw error;
-  if (!data) throw new Error("No athlete_profile row found.");
+  return data;
+}
+
+export async function getRace(): Promise<import("./plan").Race | null> {
+  const { data, error } = await supabase
+    .from("race")
+    .select(RACE_COLUMNS)
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle<import("./plan").Race>();
+
+  if (error) throw error;
   return data;
 }

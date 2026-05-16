@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { redirect } from "next/navigation";
 import type { Workout } from "@/lib/plan";
 import { getPlan } from "@/lib/supabase";
 import { WorkoutLogButtons } from "@/app/_components/WorkoutLogButtons";
@@ -59,6 +61,9 @@ function workoutIcon(kind: Workout["kind"]) {
 
 export default async function Home() {
   const plan = await getPlan();
+  if (!plan || plan.days.length === 0) {
+    redirect("/wizard");
+  }
   const todayIso = getTodayISO();
   const today = plan.days.find((d) => d.date === todayIso);
   const daysToRace = daysBetween(todayIso, plan.race.date);
@@ -179,8 +184,14 @@ export default async function Home() {
         <RegeneratePlanButton />
       </div>
 
-      <footer className="mt-auto pt-6 text-center text-[11px] text-zinc-400 dark:text-zinc-600">
-        v1 · {plan.days.length} days loaded from Supabase
+      <footer className="mt-auto flex flex-col items-center gap-1 pt-6 text-center text-[11px] text-zinc-400 dark:text-zinc-600">
+        <div>v1 · {plan.days.length} days loaded from Supabase</div>
+        <Link
+          href="/wizard"
+          className="underline-offset-4 hover:underline hover:text-zinc-500 dark:hover:text-zinc-400"
+        >
+          Edit setup
+        </Link>
       </footer>
     </div>
   );

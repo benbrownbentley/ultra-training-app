@@ -30,6 +30,14 @@ function formatLongDate(iso: string) {
   });
 }
 
+function formatWeekLabel(iso: string) {
+  return parseISO(iso).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 function shortWeekday(iso: string) {
   return WEEKDAYS_SHORT[parseISO(iso).getUTCDay()];
 }
@@ -59,18 +67,32 @@ function workoutIcon(kind: Workout["kind"]) {
   return "🧘";
 }
 
-export default async function Home() {
+export default async function Home({
+  searchParams,
+}: {
+  searchParams: Promise<{ week?: string }>;
+}) {
   const plan = await getPlan();
   if (!plan || plan.days.length === 0) {
     redirect("/wizard");
   }
+  const params = await searchParams;
   const todayIso = getTodayISO();
   const today = plan.days.find((d) => d.date === todayIso);
   const daysToRace = daysBetween(todayIso, plan.race.date);
 
-  const weekStartIso = weekStart(todayIso);
+  const currentWeekStart = weekStart(todayIso);
+  const selectedWeekStart =
+    params.week && /^\d{4}-\d{2}-\d{2}$/.test(params.week)
+      ? weekStart(params.week)
+      : currentWeekStart;
+  const isCurrentWeek = selectedWeekStart === currentWeekStart;
+  const prevWeekStart = addDays(selectedWeekStart, -7);
+  const nextWeekStart = addDays(selectedWeekStart, 7);
+  const weekEnd = addDays(selectedWeekStart, 6);
+
   const weekDates = Array.from({ length: 7 }, (_, i) =>
-    addDays(weekStartIso, i),
+    addDays(selectedWeekStart, i),
   );
   const daysByDate = new Map(plan.days.map((d) => [d.date, d]));
   const weekDays = weekDates.map(
@@ -128,9 +150,12 @@ export default async function Home() {
                   {workoutIcon(w.kind)}
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium text-zinc-900 dark:text-zinc-50">
+                  <Link
+                    href={`/workout/${w.id}`}
+                    className="font-medium text-zinc-900 underline-offset-4 hover:underline dark:text-zinc-50"
+                  >
                     {w.title}
-                  </div>
+                  </Link>
                   <div className="text-sm text-zinc-600 dark:text-zinc-400">
                     {w.details}
                   </div>
@@ -147,9 +172,37 @@ export default async function Home() {
       </section>
 
       <section>
-        <h2 className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
-          This week
-        </h2>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xs font-semibold uppercase tracking-[0.2em] text-zinc-500 dark:text-zinc-400">
+            {isCurrentWeek
+              ? "This week"
+              : `Week of ${formatWeekLabel(selectedWeekStart)}–${formatWeekLabel(weekEnd)}`}
+          </h2>
+          <div className="flex items-center gap-1 text-xs">
+            <Link
+              href={`/?week=${prevWeekStart}`}
+              className="rounded-md px-2 py-1 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              aria-label="Previous week"
+            >
+              ←
+            </Link>
+            {!isCurrentWeek && (
+              <Link
+                href="/"
+                className="rounded-md px-2 py-1 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              >
+                Today
+              </Link>
+            )}
+            <Link
+              href={`/?week=${nextWeekStart}`}
+              className="rounded-md px-2 py-1 text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              aria-label="Next week"
+            >
+              →
+            </Link>
+          </div>
+        </div>
         <div className="grid grid-cols-7 gap-1.5">
           {weekDays.map((day) => {
             const isToday = day.date === todayIso;

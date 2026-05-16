@@ -89,6 +89,30 @@ export async function getAthleteProfile(): Promise<AthleteProfile | null> {
   return data;
 }
 
+export interface WorkoutDetail {
+  id: number;
+  date: string;
+  kind: WorkoutKind;
+  title: string;
+  details: string;
+  position: number;
+  status: WorkoutStatus;
+  logged_at: string | null;
+}
+
+export async function getWorkoutById(
+  id: number,
+): Promise<WorkoutDetail | null> {
+  const { data, error } = await supabase
+    .from("workouts")
+    .select("id, date, kind, title, details, position, status, logged_at")
+    .eq("id", id)
+    .maybeSingle<WorkoutDetail>();
+
+  if (error) throw error;
+  return data;
+}
+
 export async function getRace(): Promise<import("./plan").Race | null> {
   const { data, error } = await supabase
     .from("race")

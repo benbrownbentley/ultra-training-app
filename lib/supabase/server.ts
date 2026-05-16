@@ -1,22 +1,44 @@
-import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@supabase/ssr";
+import { cookies } from "next/headers";
 import type {
   AthleteProfile,
   Plan,
+  Race,
   Workout,
   WorkoutKind,
   WorkoutStatus,
-} from "./plan";
+} from "@/lib/plan";
 
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
-
-if (!url || !key) {
-  throw new Error(
-    "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY. Add them to .env.local (and to Vercel for production).",
+/**
+ * Server Supabase client. Use this inside Server Components, Server Actions,
+ * and Route Handlers. Reads and writes the user's session cookies — required
+ * for auth-aware queries. Each call returns a fresh instance bound to the
+ * current request.
+ */
+export async function createClient() {
+  const cookieStore = await cookies();
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return cookieStore.getAll();
+        },
+        setAll(cookiesToSet) {
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options),
+            );
+          } catch {
+            // Server Component context — cookie mutations are picked up by
+            // middleware and the response, so swallowing this is correct.
+          }
+        },
+      },
+    },
   );
 }
-
-export const supabase = createClient(url, key);
 
 interface WorkoutRow {
   id: number;
@@ -34,13 +56,14 @@ const PROFILE_COLUMNS =
   "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, cross_training, other_commitments, sleep_stress";
 
 export async function getPlan(): Promise<Plan | null> {
+  const supabase = await createClient();
   const [raceResult, workoutsResult] = await Promise.all([
     supabase
       .from("race")
       .select(RACE_COLUMNS)
       .order("id", { ascending: false })
       .limit(1)
-      .maybeSingle<import("./plan").Race>(),
+      .maybeSingle<Race>(),
     supabase
       .from("workouts")
       .select("id, date, kind, title, details, position, status")
@@ -78,6 +101,7 @@ export async function getPlan(): Promise<Plan | null> {
 }
 
 export async function getAthleteProfile(): Promise<AthleteProfile | null> {
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("athlete_profile")
     .select(PROFILE_COLUMNS)
@@ -89,7 +113,7 @@ export async function getAthleteProfile(): Promise<AthleteProfile | null> {
   return data;
 }
 
-export interface WorkoutDetail {
+interface WorkoutDetail {
   id: number;
   date: string;
   kind: WorkoutKind;
@@ -103,6 +127,7 @@ export interface WorkoutDetail {
 export async function getWorkoutById(
   id: number,
 ): Promise<WorkoutDetail | null> {
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("workouts")
     .select("id, date, kind, title, details, position, status, logged_at")
@@ -113,13 +138,14 @@ export async function getWorkoutById(
   return data;
 }
 
-export async function getRace(): Promise<import("./plan").Race | null> {
+export async function getRace(): Promise<Race | null> {
+  const supabase = await createClient();
   const { data, error } = await supabase
     .from("race")
     .select(RACE_COLUMNS)
     .order("id", { ascending: false })
     .limit(1)
-    .maybeSingle<import("./plan").Race>();
+    .maybeSingle<Race>();
 
   if (error) throw error;
   return data;

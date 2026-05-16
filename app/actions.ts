@@ -2,8 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getAthleteProfile } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getAthleteProfile } from "@/lib/supabase/server";
 import { generateTrainingPlan } from "@/lib/claude";
 import { getTodayISO } from "@/lib/utils";
 import type {

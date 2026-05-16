@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { Workout } from "@/lib/plan";
-import { getPlan } from "@/lib/supabase";
+import { getPlan } from "@/lib/supabase/server";
 import { getTodayISO } from "@/lib/utils";
 import { WorkoutLogButtons } from "@/app/_components/WorkoutLogButtons";
 import { RegeneratePlanButton } from "@/app/_components/RegeneratePlanButton";

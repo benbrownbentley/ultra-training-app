@@ -1,4 +1,4 @@
-import { getAthleteProfile, getRace } from "@/lib/supabase";
+import { getAthleteProfile, getRace } from "@/lib/supabase/server";
 import { WizardClient } from "./_components/WizardClient";
 
 export const dynamic = "force-dynamic";

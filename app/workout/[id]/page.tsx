@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getWorkoutById } from "@/lib/supabase";
+import { getWorkoutById } from "@/lib/supabase/server";
 import { WorkoutLogButtons } from "@/app/_components/WorkoutLogButtons";
 
 export const dynamic = "force-dynamic";

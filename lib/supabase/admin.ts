@@ -10,6 +10,11 @@ if (!url || !serviceRoleKey) {
   );
 }
 
+/**
+ * Service-role Supabase client. Bypasses Row Level Security. Use only for
+ * server-side plan generation where we delete/insert many rows on behalf of
+ * the user — never expose to the browser.
+ */
 export const supabaseAdmin = createClient(url, serviceRoleKey, {
   auth: { persistSession: false },
 });

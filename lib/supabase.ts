@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Plan, Workout, WorkoutKind } from "./plan";
+import type { Plan, Workout, WorkoutKind, WorkoutStatus } from "./plan";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -13,11 +13,13 @@ if (!url || !key) {
 export const supabase = createClient(url, key);
 
 interface WorkoutRow {
+  id: number;
   date: string;
   kind: WorkoutKind;
   title: string;
   details: string;
   position: number;
+  status: WorkoutStatus;
 }
 
 interface RaceRow {
@@ -36,7 +38,7 @@ export async function getPlan(): Promise<Plan> {
       .single<RaceRow>(),
     supabase
       .from("workouts")
-      .select("date, kind, title, details, position")
+      .select("id, date, kind, title, details, position, status")
       .order("date", { ascending: true })
       .order("position", { ascending: true })
       .returns<WorkoutRow[]>(),
@@ -51,7 +53,13 @@ export async function getPlan(): Promise<Plan> {
   const byDate = new Map<string, Workout[]>();
   for (const row of rows) {
     const list = byDate.get(row.date) ?? [];
-    list.push({ kind: row.kind, title: row.title, details: row.details });
+    list.push({
+      id: row.id,
+      kind: row.kind,
+      title: row.title,
+      details: row.details,
+      status: row.status,
+    });
     byDate.set(row.date, list);
   }
 

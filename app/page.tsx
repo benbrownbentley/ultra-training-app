@@ -1,7 +1,16 @@
-import { TODAY, type Workout } from "@/lib/plan";
+import type { Workout } from "@/lib/plan";
 import { getPlan } from "@/lib/supabase";
+import { WorkoutLogButtons } from "@/app/_components/WorkoutLogButtons";
+
+export const dynamic = "force-dynamic";
 
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function getTodayISO(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Vancouver",
+  }).format(new Date());
+}
 
 function parseISO(iso: string) {
   const [y, m, d] = iso.split("-").map(Number);
@@ -35,8 +44,8 @@ function workoutIcon(kind: Workout["kind"]) {
 
 export default async function Home() {
   const plan = await getPlan();
-  const today = plan.days.find((d) => d.date === TODAY);
-  const daysToRace = daysBetween(TODAY, plan.race.date);
+  const today = plan.days.find((d) => d.date === getTodayISO());
+  const daysToRace = daysBetween(getTodayISO(), plan.race.date);
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-5 py-8 sm:py-12">
@@ -76,26 +85,35 @@ export default async function Home() {
           {today ? formatLongDate(today.date) : "—"}
         </div>
 
-        <ul className="mt-4 flex flex-col gap-3">
-          {today?.workouts.map((w, i) => (
-            <li
-              key={i}
-              className="flex gap-3 rounded-xl bg-zinc-50 p-4 dark:bg-zinc-800/60"
-            >
-              <span className="text-2xl leading-none" aria-hidden>
-                {workoutIcon(w.kind)}
-              </span>
-              <div className="flex-1">
-                <div className="font-medium text-zinc-900 dark:text-zinc-50">
-                  {w.title}
+        {today ? (
+          <ul className="mt-4 flex flex-col gap-3">
+            {today.workouts.map((w) => (
+              <li
+                key={w.id}
+                className={`flex items-center gap-3 rounded-xl bg-zinc-50 p-4 transition dark:bg-zinc-800/60 ${
+                  w.status === "pending" ? "" : "opacity-60"
+                }`}
+              >
+                <span className="text-2xl leading-none" aria-hidden>
+                  {workoutIcon(w.kind)}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-zinc-900 dark:text-zinc-50">
+                    {w.title}
+                  </div>
+                  <div className="text-sm text-zinc-600 dark:text-zinc-400">
+                    {w.details}
+                  </div>
                 </div>
-                <div className="text-sm text-zinc-600 dark:text-zinc-400">
-                  {w.details}
-                </div>
-              </div>
-            </li>
-          ))}
-        </ul>
+                <WorkoutLogButtons id={w.id} status={w.status} />
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="mt-4 rounded-xl bg-zinc-50 p-4 text-sm text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400">
+            No workout scheduled for today. Enjoy the rest.
+          </div>
+        )}
       </section>
 
       <section>
@@ -104,7 +122,7 @@ export default async function Home() {
         </h2>
         <div className="grid grid-cols-7 gap-1.5">
           {plan.days.map((day) => {
-            const isToday = day.date === TODAY;
+            const isToday = day.date === getTodayISO();
             const hasRun = day.workouts.some((w) => w.kind === "run");
             const hasGym = day.workouts.some((w) => w.kind === "gym");
             return (

@@ -1,11 +1,12 @@
-export const TODAY = "2026-05-15";
-
 export type WorkoutKind = "run" | "gym" | "mobility";
+export type WorkoutStatus = "pending" | "completed" | "skipped";
 
 export interface Workout {
+  id: number;
   kind: WorkoutKind;
   title: string;
   details: string;
+  status: WorkoutStatus;
 }
 
 export interface Day {

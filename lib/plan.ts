@@ -20,6 +20,13 @@ export interface Race {
   date: string;
 }
 
+export interface AthleteProfile {
+  weekly_volume: string;
+  longest_run_km: number;
+  easy_pace: string;
+  injury_notes: string | null;
+}
+
 export interface Plan {
   race: Race;
   days: Day[];

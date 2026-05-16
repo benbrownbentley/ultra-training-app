@@ -1,5 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
-import type { Plan, Workout, WorkoutKind, WorkoutStatus } from "./plan";
+import type {
+  AthleteProfile,
+  Plan,
+  Workout,
+  WorkoutKind,
+  WorkoutStatus,
+} from "./plan";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
@@ -69,4 +75,17 @@ export async function getPlan(): Promise<Plan> {
   }));
 
   return { race, days };
+}
+
+export async function getAthleteProfile(): Promise<AthleteProfile> {
+  const { data, error } = await supabase
+    .from("athlete_profile")
+    .select("weekly_volume, longest_run_km, easy_pace, injury_notes")
+    .order("id", { ascending: false })
+    .limit(1)
+    .single<AthleteProfile>();
+
+  if (error) throw error;
+  if (!data) throw new Error("No athlete_profile row found.");
+  return data;
 }

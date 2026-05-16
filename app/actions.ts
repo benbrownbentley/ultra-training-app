@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getAthleteProfile } from "@/lib/supabase";
 import { generateTrainingPlan } from "@/lib/claude";
 import type { WorkoutStatus } from "@/lib/plan";
 
@@ -33,22 +34,24 @@ export async function regeneratePlan() {
   if (raceError) throw raceError;
   if (!race) throw new Error("No race configured.");
 
-  const { data: existing, error: existingErr } = await supabaseAdmin
-    .from("workouts")
-    .select("date, kind, title, details, status")
-    .lt("date", today)
-    .order("date", { ascending: true })
-    .order("position", { ascending: true });
+  const [{ data: existing, error: existingErr }, profile] = await Promise.all([
+    supabaseAdmin
+      .from("workouts")
+      .select("date, kind, title, details, status")
+      .lt("date", today)
+      .order("date", { ascending: true })
+      .order("position", { ascending: true }),
+    getAthleteProfile(),
+  ]);
   if (existingErr) throw existingErr;
 
   const workouts = await generateTrainingPlan({
     race,
     baseline: {
-      weeklyVolume: "25-30 km",
-      longestRunKm: 22,
-      easyPace: "6:00/km",
-      injuryNotes:
-        "Sprained left ankle and posterior tibialis tendonitis in the right ankle. Both lower legs need careful management — prefer low-impact cross-training (bike, pool) over high-mileage running on consecutive days, build mileage gradually, and prioritize recovery and mobility.",
+      weeklyVolume: profile.weekly_volume,
+      longestRunKm: profile.longest_run_km,
+      easyPace: profile.easy_pace,
+      injuryNotes: profile.injury_notes ?? "No specific injuries reported.",
     },
     startDate: today,
     history: existing ?? [],

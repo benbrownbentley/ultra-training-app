@@ -1,8 +1,10 @@
 import type { Workout } from "@/lib/plan";
 import { getPlan } from "@/lib/supabase";
 import { WorkoutLogButtons } from "@/app/_components/WorkoutLogButtons";
+import { RegeneratePlanButton } from "@/app/_components/RegeneratePlanButton";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -36,6 +38,19 @@ function daysBetween(fromIso: string, toIso: string) {
   );
 }
 
+function weekStart(iso: string) {
+  const d = parseISO(iso);
+  const offset = (d.getUTCDay() + 6) % 7;
+  d.setUTCDate(d.getUTCDate() - offset);
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(iso: string, n: number) {
+  const d = parseISO(iso);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
 function workoutIcon(kind: Workout["kind"]) {
   if (kind === "run") return "🏃";
   if (kind === "gym") return "🏋️";
@@ -44,8 +59,18 @@ function workoutIcon(kind: Workout["kind"]) {
 
 export default async function Home() {
   const plan = await getPlan();
-  const today = plan.days.find((d) => d.date === getTodayISO());
-  const daysToRace = daysBetween(getTodayISO(), plan.race.date);
+  const todayIso = getTodayISO();
+  const today = plan.days.find((d) => d.date === todayIso);
+  const daysToRace = daysBetween(todayIso, plan.race.date);
+
+  const weekStartIso = weekStart(todayIso);
+  const weekDates = Array.from({ length: 7 }, (_, i) =>
+    addDays(weekStartIso, i),
+  );
+  const daysByDate = new Map(plan.days.map((d) => [d.date, d]));
+  const weekDays = weekDates.map(
+    (date) => daysByDate.get(date) ?? { date, workouts: [] },
+  );
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 px-5 py-8 sm:py-12">
@@ -121,8 +146,8 @@ export default async function Home() {
           This week
         </h2>
         <div className="grid grid-cols-7 gap-1.5">
-          {plan.days.map((day) => {
-            const isToday = day.date === getTodayISO();
+          {weekDays.map((day) => {
+            const isToday = day.date === todayIso;
             const hasRun = day.workouts.some((w) => w.kind === "run");
             const hasGym = day.workouts.some((w) => w.kind === "gym");
             return (
@@ -149,6 +174,10 @@ export default async function Home() {
           })}
         </div>
       </section>
+
+      <div className="mt-2 flex justify-center">
+        <RegeneratePlanButton />
+      </div>
 
       <footer className="mt-auto pt-6 text-center text-[11px] text-zinc-400 dark:text-zinc-600">
         v1 · {plan.days.length} days loaded from Supabase

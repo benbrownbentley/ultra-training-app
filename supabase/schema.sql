@@ -33,18 +33,7 @@ create policy "Public read race" on race
 create policy "Public read workouts" on workouts
   for select using (true);
 
-insert into race (name, distance, date) values
-  ('Squamish 50K', '50 km', '2026-08-15');
-
-insert into workouts (date, kind, title, details, position) values
-  ('2026-05-11', 'gym',      'Upper body strength', '45 min — push/pull, core finisher',     0),
-  ('2026-05-12', 'run',      'Tempo run',           '6 mi @ 7:30 pace',                      0),
-  ('2026-05-12', 'gym',      'Core',                '15 min — planks, hollow holds',         1),
-  ('2026-05-13', 'run',      'Easy run',            '5 mi conversational',                   0),
-  ('2026-05-14', 'run',      'Hill repeats',        '6 mi w/ 6 × 90s climbs',                0),
-  ('2026-05-14', 'gym',      'Lower body strength', '45 min — squats, hinges, single-leg',   1),
-  ('2026-05-15', 'run',      'Shake-out run',       '3 mi very easy',                        0),
-  ('2026-05-15', 'mobility', 'Mobility',            '20 min foam roll + hips',               1),
-  ('2026-05-16', 'run',      'Long run',            '14 mi steady on trails',                0),
-  ('2026-05-17', 'run',      'Recovery run',        '6 mi easy',                             0),
-  ('2026-05-17', 'mobility', 'Stretching',          '20 min full body',                      1);
+-- No seed data here on purpose. The intake wizard (/wizard) populates the race
+-- and athlete_profile rows, and plan regeneration fills in workouts via
+-- generateTrainingPlan(). Re-seeding from SQL would clobber whatever the user
+-- has configured through the app.

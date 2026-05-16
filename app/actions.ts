@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getAthleteProfile } from "@/lib/supabase";
 import { generateTrainingPlan } from "@/lib/claude";
+import { getTodayISO } from "@/lib/utils";
 import type {
   GymAccess,
   Intent,
@@ -50,9 +51,7 @@ export async function logWorkout(id: number, status: WorkoutStatus) {
 }
 
 export async function regeneratePlan() {
-  const today = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Vancouver",
-  }).format(new Date());
+  const today = getTodayISO();
 
   const { data: race, error: raceError } = await supabaseAdmin
     .from("race")

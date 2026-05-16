@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { Workout } from "@/lib/plan";
 import { getPlan } from "@/lib/supabase";
+import { getTodayISO } from "@/lib/utils";
 import { WorkoutLogButtons } from "@/app/_components/WorkoutLogButtons";
 import { RegeneratePlanButton } from "@/app/_components/RegeneratePlanButton";
 
@@ -9,12 +10,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-function getTodayISO(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/Vancouver",
-  }).format(new Date());
-}
 
 function parseISO(iso: string) {
   const [y, m, d] = iso.split("-").map(Number);

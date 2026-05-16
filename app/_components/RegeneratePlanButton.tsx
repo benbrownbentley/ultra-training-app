@@ -10,7 +10,7 @@ export function RegeneratePlanButton() {
   function handleClick() {
     if (
       !confirm(
-        "Regenerating will replace the entire plan (and clear any ✓/⏭ you've logged). Continue?",
+        "Regenerate upcoming workouts (from today onward) based on your logged history? Past workouts and their logs stay intact.",
       )
     ) {
       return;

@@ -1,6 +1,6 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
-import type { WorkoutKind } from "./plan";
+import type { WorkoutKind, WorkoutStatus } from "./plan";
 
 const client = new Anthropic();
 
@@ -17,10 +17,19 @@ export interface BaselineInput {
   injuryNotes: string;
 }
 
+export interface LoggedWorkout {
+  date: string;
+  kind: WorkoutKind;
+  title: string;
+  details: string;
+  status: WorkoutStatus;
+}
+
 export interface GeneratePlanArgs {
   race: RaceInput;
   baseline: BaselineInput;
   startDate: string;
+  history: LoggedWorkout[];
 }
 
 export interface GeneratedWorkout {
@@ -42,6 +51,14 @@ const SYSTEM_PROMPT = `You are an expert ultra marathon coach generating persona
 - Include the race itself as a "run" workout on the race date
 
 Each day in the plan should have at least one workout. On rest days, schedule a short mobility session (15-20 min) so the day is not blank.
+
+ADAPTATION FROM HISTORY
+If a workout history is provided, the runner has been logging adherence. Use it to adapt the upcoming plan:
+- Strong adherence (mostly completed): progress as planned, consider modest increases in intensity or volume if appropriate for the phase
+- Frequent skipped runs: cut back planned volume, prioritize easier aerobic sessions, rebuild gradually
+- Specific patterns (e.g., all gym sessions skipped, or all hard workouts skipped): adjust the mix accordingly
+- Recent skipped long runs are the highest signal — protect aerobic base by extending the build phase if needed
+- Generate workouts ONLY from the start date through race day. Do not regenerate past workouts.
 
 Submit the plan using the submit_training_plan tool. Do not respond with any text — only call the tool.`;
 
@@ -92,8 +109,23 @@ const PLAN_TOOL: Anthropic.Tool = {
   },
 };
 
+function formatHistory(history: LoggedWorkout[]): string {
+  if (history.length === 0) {
+    return "No logged history yet — this is the initial plan.";
+  }
+  const lines = history.map(
+    (w) =>
+      `${w.date} [${w.kind}] ${w.title} — ${w.details}  →  ${w.status}`,
+  );
+  const completedCount = history.filter((w) => w.status === "completed").length;
+  const skippedCount = history.filter((w) => w.status === "skipped").length;
+  const pendingCount = history.filter((w) => w.status === "pending").length;
+  return `Past workouts and adherence (${completedCount} completed, ${skippedCount} skipped, ${pendingCount} unlogged):
+${lines.join("\n")}`;
+}
+
 function buildUserPrompt(args: GeneratePlanArgs): string {
-  return `Generate a complete training plan for the following runner.
+  return `Generate a training plan for the following runner.
 
 RACE
 - Name: ${args.race.name}
@@ -106,14 +138,18 @@ RUNNER BASELINE
 - Comfortable easy/conversational pace: ${args.baseline.easyPace}
 - Current injuries / things to manage carefully: ${args.baseline.injuryNotes}
 
+WORKOUT HISTORY
+${formatHistory(args.history)}
+
 PLAN PARAMETERS
 - Start date (today): ${args.startDate}
 - End date (race day): ${args.race.date}
 - Use metric units throughout (km, min/km pace)
 - Include a 2-week taper before race day
 - Include the race itself as the final workout on the race date
+- Generate workouts ONLY for dates from the start date onwards. Do NOT include any dates before the start date.
 
-Submit the complete plan using the submit_training_plan tool.`;
+Submit the plan using the submit_training_plan tool.`;
 }
 
 export async function generateTrainingPlan(

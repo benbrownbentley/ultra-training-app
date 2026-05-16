@@ -33,6 +33,14 @@ export async function regeneratePlan() {
   if (raceError) throw raceError;
   if (!race) throw new Error("No race configured.");
 
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from("workouts")
+    .select("date, kind, title, details, status")
+    .lt("date", today)
+    .order("date", { ascending: true })
+    .order("position", { ascending: true });
+  if (existingErr) throw existingErr;
+
   const workouts = await generateTrainingPlan({
     race,
     baseline: {
@@ -43,17 +51,20 @@ export async function regeneratePlan() {
         "Sprained left ankle and posterior tibialis tendonitis in the right ankle. Both lower legs need careful management — prefer low-impact cross-training (bike, pool) over high-mileage running on consecutive days, build mileage gradually, and prioritize recovery and mobility.",
     },
     startDate: today,
+    history: existing ?? [],
   });
+
+  const futureOnly = workouts.filter((w) => w.date >= today);
 
   const { error: delErr } = await supabaseAdmin
     .from("workouts")
     .delete()
-    .gte("id", 0);
+    .gte("date", today);
   if (delErr) throw delErr;
 
   const { error: insErr } = await supabaseAdmin
     .from("workouts")
-    .insert(workouts);
+    .insert(futureOnly);
   if (insErr) throw insErr;
 
   revalidatePath("/");

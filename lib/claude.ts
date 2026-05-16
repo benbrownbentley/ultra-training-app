@@ -119,22 +119,36 @@ Submit the complete plan using the submit_training_plan tool.`;
 export async function generateTrainingPlan(
   args: GeneratePlanArgs,
 ): Promise<GeneratedWorkout[]> {
-  const stream = client.messages.stream({
-    model: "claude-opus-4-7",
+  const model = process.env.CLAUDE_MODEL ?? "claude-haiku-4-5";
+  const supportsThinking =
+    model.startsWith("claude-opus-") || model === "claude-sonnet-4-6";
+
+  const baseParams = {
+    model,
     max_tokens: 32000,
-    thinking: { type: "adaptive" },
-    output_config: { effort: "medium" },
     system: [
       {
-        type: "text",
+        type: "text" as const,
         text: SYSTEM_PROMPT,
-        cache_control: { type: "ephemeral" },
+        cache_control: { type: "ephemeral" as const },
       },
     ],
     tools: [PLAN_TOOL],
-    tool_choice: { type: "auto" },
-    messages: [{ role: "user", content: buildUserPrompt(args) }],
-  });
+    tool_choice: { type: "auto" as const },
+    messages: [
+      { role: "user" as const, content: buildUserPrompt(args) },
+    ],
+  };
+
+  const stream = client.messages.stream(
+    supportsThinking
+      ? {
+          ...baseParams,
+          thinking: { type: "adaptive" as const },
+          output_config: { effort: "medium" as const },
+        }
+      : baseParams,
+  );
 
   const message = await stream.finalMessage();
 

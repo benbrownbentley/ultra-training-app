@@ -54,13 +54,16 @@ async function requireUser() {
 
 export async function logWorkout(id: number, status: WorkoutStatus) {
   const loggedAt = status === "pending" ? null : new Date().toISOString();
-  const { supabase } = await requireUser();
+  const { user, supabase } = await requireUser();
 
-  // No explicit user_id filter — RLS rejects updates to other users' rows.
+  // Two layers of isolation: RLS rejects cross-user updates server-side, and
+  // the explicit user_id filter narrows the query before it leaves the app.
+  // Belt-and-suspenders — if either layer is misconfigured the other catches it.
   const { error } = await supabase
     .from("workouts")
     .update({ status, logged_at: loggedAt })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("user_id", user.id);
 
   if (error) throw error;
 

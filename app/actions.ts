@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabase/admin";
-import { getAthleteProfile } from "@/lib/supabase/server";
+import { createClient, getAthleteProfile } from "@/lib/supabase/server";
 import { generateTrainingPlan } from "@/lib/claude";
 import { getTodayISO } from "@/lib/utils";
 import type {
@@ -37,10 +37,27 @@ export interface WizardPayload {
   sleepStress: string;
 }
 
+/**
+ * Resolves the current user from the cookie-aware server client. Middleware
+ * already gates protected routes, but each action still re-checks — auth
+ * decisions must never depend on the middleware being correctly configured
+ * for a given matcher.
+ */
+async function requireUser() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated.");
+  return { user, supabase };
+}
+
 export async function logWorkout(id: number, status: WorkoutStatus) {
   const loggedAt = status === "pending" ? null : new Date().toISOString();
+  const { supabase } = await requireUser();
 
-  const { error } = await supabaseAdmin
+  // No explicit user_id filter — RLS rejects updates to other users' rows.
+  const { error } = await supabase
     .from("workouts")
     .update({ status, logged_at: loggedAt })
     .eq("id", id);
@@ -52,21 +69,18 @@ export async function logWorkout(id: number, status: WorkoutStatus) {
 
 export async function regeneratePlan() {
   const today = getTodayISO();
+  const { user, supabase } = await requireUser();
 
-  const { data: race, error: raceError } = await supabaseAdmin
-    .from("race")
-    .select(
-      "name, distance, date, elevation_gain, terrain, target_time, intent",
-    )
-    .order("id", { ascending: false })
-    .limit(1)
-    .single<Race>();
-
-  if (raceError) throw raceError;
-  if (!race) throw new Error("No race configured.");
-
-  const [{ data: existing, error: existingErr }, profile] = await Promise.all([
-    supabaseAdmin
+  const [raceResult, historyResult, profile] = await Promise.all([
+    supabase
+      .from("race")
+      .select(
+        "name, distance, date, elevation_gain, terrain, target_time, intent",
+      )
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle<Race>(),
+    supabase
       .from("workouts")
       .select("date, kind, title, details, status")
       .lt("date", today)
@@ -74,7 +88,10 @@ export async function regeneratePlan() {
       .order("position", { ascending: true }),
     getAthleteProfile(),
   ]);
-  if (existingErr) throw existingErr;
+
+  if (raceResult.error) throw raceResult.error;
+  if (!raceResult.data) throw new Error("No race configured.");
+  if (historyResult.error) throw historyResult.error;
   if (!profile) {
     throw new Error(
       "No athlete profile configured. Run the intake wizard first.",
@@ -82,17 +99,22 @@ export async function regeneratePlan() {
   }
 
   const workouts = await generateTrainingPlan({
-    race,
+    race: raceResult.data,
     profile,
     startDate: today,
-    history: existing ?? [],
+    history: historyResult.data ?? [],
   });
 
-  const futureOnly = workouts.filter((w) => w.date >= today);
+  const futureOnly = workouts
+    .filter((w) => w.date >= today)
+    .map((w) => ({ ...w, user_id: user.id }));
 
+  // Admin client for the bulk delete+insert to bypass per-row RLS overhead,
+  // but always scope by user_id so we never touch another user's rows.
   const { error: delErr } = await supabaseAdmin
     .from("workouts")
     .delete()
+    .eq("user_id", user.id)
     .gte("date", today);
   if (delErr) throw delErr;
 
@@ -110,6 +132,8 @@ function blankToNull(s: string): string | null {
 }
 
 export async function submitWizard(data: WizardPayload) {
+  const { user } = await requireUser();
+
   const raceRow = {
     name: data.raceName.trim(),
     distance: data.raceDistance.trim(),
@@ -118,6 +142,7 @@ export async function submitWizard(data: WizardPayload) {
     terrain: data.terrain,
     target_time: blankToNull(data.targetTime),
     intent: data.intent,
+    user_id: user.id,
   };
 
   const profileRow = {
@@ -135,10 +160,11 @@ export async function submitWizard(data: WizardPayload) {
     sleep_stress: blankToNull(data.sleepStress),
   };
 
+  // Clear and re-insert this user's race row.
   const { error: raceDelErr } = await supabaseAdmin
     .from("race")
     .delete()
-    .gte("id", 0);
+    .eq("user_id", user.id);
   if (raceDelErr) throw raceDelErr;
 
   const { error: raceInsErr } = await supabaseAdmin
@@ -146,15 +172,16 @@ export async function submitWizard(data: WizardPayload) {
     .insert(raceRow);
   if (raceInsErr) throw raceInsErr;
 
+  // Same for the athlete profile.
   const { error: profDelErr } = await supabaseAdmin
     .from("athlete_profile")
     .delete()
-    .gte("id", 0);
+    .eq("user_id", user.id);
   if (profDelErr) throw profDelErr;
 
   const { error: profInsErr } = await supabaseAdmin
     .from("athlete_profile")
-    .insert(profileRow);
+    .insert({ ...profileRow, user_id: user.id });
   if (profInsErr) throw profInsErr;
 
   await regeneratePlan();

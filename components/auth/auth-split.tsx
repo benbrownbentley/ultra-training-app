@@ -13,7 +13,7 @@ import { GoogleIcon } from "./google-icon";
 import { TopoBackground } from "./topo-background";
 import { VertLogo } from "./vert-logo";
 
-import type { AuthResult } from "@/app/(auth)/actions";
+import type { AuthResult, OAuthResult } from "@/app/(auth)/actions";
 
 // Race context for the left panel. Lifted to a constant so it's trivial to
 // move to props or a CMS once we have more than one target race.
@@ -31,15 +31,23 @@ export type AuthMode = "signin" | "signup";
 interface AuthSplitProps {
   mode: AuthMode;
   action: (creds: { email: string; password: string }) => Promise<AuthResult>;
+  googleAction?: () => Promise<OAuthResult>;
+  initialError?: string;
 }
 
-export function AuthSplit({ mode, action }: AuthSplitProps) {
+export function AuthSplit({
+  mode,
+  action,
+  googleAction,
+  initialError,
+}: AuthSplitProps) {
   const isSignup = mode === "signup";
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
-  const [error, setError] = React.useState<string | null>(null);
+  const [error, setError] = React.useState<string | null>(initialError ?? null);
   const [confirmEmail, setConfirmEmail] = React.useState<string | null>(null);
   const [isPending, startTransition] = React.useTransition();
+  const [googlePending, startGoogleTransition] = React.useTransition();
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -53,6 +61,20 @@ export function AuthSplit({ mode, action }: AuthSplitProps) {
         setError(result.error);
       } else if (result.status === "confirm_email") {
         setConfirmEmail(result.email);
+      }
+    });
+  }
+
+  function handleGoogle() {
+    if (!googleAction) return;
+    setError(null);
+    startGoogleTransition(async () => {
+      const result = await googleAction();
+      if (result.ok) {
+        // Hard navigation to the Supabase-returned OAuth provider URL.
+        window.location.assign(result.url);
+      } else {
+        setError(result.error);
       }
     });
   }
@@ -130,12 +152,12 @@ export function AuthSplit({ mode, action }: AuthSplitProps) {
               <Button
                 type="button"
                 variant="outline"
-                disabled
-                title="Google sign-in lands in step 5"
+                onClick={handleGoogle}
+                disabled={!googleAction || googlePending || isPending}
                 className="h-11 w-full text-sm font-medium"
               >
                 <GoogleIcon />
-                Continue with Google
+                {googlePending ? "Redirecting…" : "Continue with Google"}
               </Button>
 
               <div className="my-5 flex items-center gap-3 font-mono text-[11px] tracking-[0.12em] text-zinc-400 dark:text-zinc-600">

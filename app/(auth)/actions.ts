@@ -1,11 +1,16 @@
 "use server";
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 
 export type AuthResult =
   | { ok: false; error: string }
   | { ok: true; status: "confirm_email"; email: string };
+
+export type OAuthResult =
+  | { ok: false; error: string }
+  | { ok: true; url: string };
 
 interface Credentials {
   email: string;
@@ -48,4 +53,36 @@ export async function signUp({ email, password }: Credentials): Promise<AuthResu
   }
 
   return { ok: true, status: "confirm_email", email };
+}
+
+/**
+ * Initiates the Google OAuth flow. Supabase returns a provider URL we have
+ * to navigate to client-side — we don't redirect from the action itself
+ * because the URL is external and client-side navigation handles it cleanly.
+ *
+ * The redirectTo origin is built from request headers so the same code works
+ * for localhost dev and the Vercel deployment without any env var plumbing.
+ */
+export async function signInWithGoogle(): Promise<OAuthResult> {
+  const h = await headers();
+  const host = h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "http";
+
+  if (!host) {
+    return { ok: false, error: "Could not determine request origin." };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    provider: "google",
+    options: {
+      redirectTo: `${proto}://${host}/auth/callback`,
+    },
+  });
+
+  if (error || !data.url) {
+    return { ok: false, error: error?.message ?? "OAuth init failed." };
+  }
+
+  return { ok: true, url: data.url };
 }

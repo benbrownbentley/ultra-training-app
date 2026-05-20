@@ -236,6 +236,46 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
   };
 }
 
+const PREVIEW_COLUMNS =
+  "id, user_id, workouts, notes, generation_summary, status, created_at";
+
+/**
+ * Returns the user's most recent pending preview, or null. Powers the
+ * regen sheet's "in flight" detection and the /regen fallback path when
+ * the URL is missing an explicit id.
+ */
+export async function getLatestPendingPreview(): Promise<
+  import("@/lib/preview").PreviewRow | null
+> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("plan_previews")
+    .select(PREVIEW_COLUMNS)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as import("@/lib/preview").PreviewRow | null) ?? null;
+}
+
+/**
+ * Single-row preview fetch by id. RLS makes cross-user reads return null
+ * rather than data, so this doubles as the authorisation check for /regen.
+ */
+export async function getPreviewById(
+  id: number,
+): Promise<import("@/lib/preview").PreviewRow | null> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("plan_previews")
+    .select(PREVIEW_COLUMNS)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as import("@/lib/preview").PreviewRow | null) ?? null;
+}
+
 const JOURNAL_COLUMNS =
   "id, type, entry_date, title, body, details, consumed, created_at";
 

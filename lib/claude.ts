@@ -51,13 +51,31 @@ export interface GeneratedWorkout {
   position: number;
 }
 
+// Coach-voice summary + change badges produced by the same tool call.
+// Stored on the preview row and rendered by the regen result screen.
+export interface GenerationSummary {
+  summary: string;
+  changes: Array<{
+    type: "shifted" | "reduced" | "added" | "removed";
+    text: string;
+  }>;
+}
+
+// What generateTrainingPlan returns: the workouts plus the coach summary.
+// Previously this function returned just GeneratedWorkout[] — callers must
+// now read .workouts.
+export interface PlanGenerationResult {
+  workouts: GeneratedWorkout[];
+  summary: GenerationSummary;
+}
+
 const SYSTEM_PROMPT = `You are an expert ultra marathon coach generating personalized training plans for amateur runners. Your plans:
 
 - Use a progressive overload approach with a hard/easy weekly structure and a cutback week every 3rd or 4th week
 - Mix running with strength/gym sessions (typically 2 per week) and mobility/recovery work
 - Build aerobic base before adding intensity; introduce tempo and hills only after several base weeks
 - Account for the runner's specific injury history with conservative ramp rates and low-impact cross-training alternatives (stationary bike, pool running) on days when high impact would aggravate the issue
-- Use metric units throughout (km for distance, min/km for pace)
+- Use the units specified in the user prompt — never hardcode metric. The athlete's unit_system field is the source of truth.
 - Include a deliberate 2-week taper before race day
 - Include the race itself as a "run" workout on the race date
 
@@ -71,12 +89,12 @@ If a workout history is provided, the runner has been logging adherence. Use it 
 - Recent skipped long runs are the highest signal — protect aerobic base by extending the build phase if needed
 - Generate workouts ONLY from the start date through race day. Do not regenerate past workouts.
 
-Submit the plan using the submit_training_plan tool. Do not respond with any text — only call the tool.`;
+Submit the plan using the submit_training_plan tool, including a short coach-voice summary and the high-level changes you made. Do not respond with any text — only call the tool.`;
 
 const PLAN_TOOL: Anthropic.Tool = {
   name: "submit_training_plan",
   description:
-    "Submit the generated training plan for storage in the database.",
+    "Submit the generated training plan plus a short coach-voice summary of the plan changes.",
   input_schema: {
     type: "object",
     properties: {
@@ -104,7 +122,7 @@ const PLAN_TOOL: Anthropic.Tool = {
             details: {
               type: "string",
               description:
-                "Concrete prescription in metric: e.g. '10 km @ 6:00/km easy', '6 × 90s hill repeats + warmup/cooldown', '45 min — squats, RDLs, single-leg work', '20 min foam roll + hip openers'",
+                "Concrete prescription using the athlete's unit system: e.g. '10 km @ 6:00/km easy', '6 × 90s hill repeats + warmup/cooldown', '45 min — squats, RDLs, single-leg work'",
             },
             position: {
               type: "integer",
@@ -115,8 +133,33 @@ const PLAN_TOOL: Anthropic.Tool = {
           required: ["date", "kind", "title", "details", "position"],
         },
       },
+      summary: {
+        type: "string",
+        description:
+          "1-2 sentences in coach voice (first person, addressed to the athlete) explaining the high-level rationale for this regeneration. Surfaces in the 'FROM YOUR COACH' card on the regen preview screen. Reference the athlete's most recent context (last 14 days, journal entries, notes) where useful.",
+      },
+      changes: {
+        type: "array",
+        description:
+          "High-level moves the AI made, rendered as small change badges (e.g. 'SHIFTED Sat long → Thu'). Keep to 1-4 entries. Use 'shifted' when moving sessions across days, 'reduced' for cuts in volume or intensity, 'added' for new sessions, 'removed' when dropping sessions entirely.",
+        items: {
+          type: "object",
+          properties: {
+            type: {
+              type: "string",
+              enum: ["shifted", "reduced", "added", "removed"],
+            },
+            text: {
+              type: "string",
+              description:
+                "Short text rendered after the type badge (e.g. 'Sat long → Thu', 'weekly volume −8%', '2× calf strength').",
+            },
+          },
+          required: ["type", "text"],
+        },
+      },
     },
-    required: ["workouts"],
+    required: ["workouts", "summary", "changes"],
   },
 };
 
@@ -194,9 +237,9 @@ ${lines.join("\n")}`;
 }
 
 function buildUserPrompt(args: GeneratePlanArgs): string {
-  const distUnit = args.profile.unit_system === "metric" ? "km" : "mi";
-  const paceUnit =
-    args.profile.unit_system === "metric" ? "min/km" : "min/mi";
+  const unit = args.profile.unit_system;
+  const distUnit = unit === "metric" ? "km" : "mi";
+  const paceUnit = unit === "metric" ? "min/km" : "min/mi";
 
   const notesSection = args.notes?.trim()
     ? `
@@ -221,17 +264,17 @@ ${formatHistory(args.history)}${journalSection}${notesSection}
 PLAN PARAMETERS
 - Start date (today): ${args.startDate}
 - End date (race day): ${args.race.date}
-- Use ${args.profile.unit_system} units throughout: ${distUnit} for distance, ${paceUnit} for pace
+- Athlete unit_system: ${unit}. Use ${distUnit} for distance and ${paceUnit} for pace in every workout's details. Never substitute metric.
 - Include a 2-week taper before race day
 - Include the race itself as the final workout on the race date
 - Generate workouts ONLY for dates from the start date onwards. Do NOT include any dates before the start date.
 
-Submit the plan using the submit_training_plan tool.`;
+Submit the plan using the submit_training_plan tool, including a coach-voice summary and a small array of change badges.`;
 }
 
 export async function generateTrainingPlan(
   args: GeneratePlanArgs,
-): Promise<GeneratedWorkout[]> {
+): Promise<PlanGenerationResult> {
   const model = process.env.CLAUDE_MODEL ?? "claude-haiku-4-5";
   const supportsThinking =
     model.startsWith("claude-opus-") || model === "claude-sonnet-4-6";
@@ -276,10 +319,44 @@ export async function generateTrainingPlan(
     );
   }
 
-  const input = toolUse.input as { workouts?: unknown };
+  const input = toolUse.input as {
+    workouts?: unknown;
+    summary?: unknown;
+    changes?: unknown;
+  };
   if (!Array.isArray(input.workouts)) {
     throw new Error("Claude returned no workouts array.");
   }
 
-  return input.workouts as GeneratedWorkout[];
+  // Fall back to a generic coach message if the tool call returned no
+  // summary — older model behaviour, defensive guard.
+  const summaryText =
+    typeof input.summary === "string" && input.summary.trim().length > 0
+      ? input.summary.trim()
+      : "I updated your plan based on the latest context. Tap a week to see what changed.";
+
+  // Filter changes to the accepted shape. Anything malformed is dropped
+  // silently rather than throwing — the diff still renders without badges.
+  const changes: GenerationSummary["changes"] = Array.isArray(input.changes)
+    ? (input.changes as unknown[])
+        .filter(
+          (c): c is { type: string; text: string } =>
+            typeof c === "object" &&
+            c !== null &&
+            typeof (c as { type?: unknown }).type === "string" &&
+            typeof (c as { text?: unknown }).text === "string",
+        )
+        .filter((c) =>
+          ["shifted", "reduced", "added", "removed"].includes(c.type),
+        )
+        .map((c) => ({
+          type: c.type as GenerationSummary["changes"][number]["type"],
+          text: c.text,
+        }))
+    : [];
+
+  return {
+    workouts: input.workouts as GeneratedWorkout[],
+    summary: { summary: summaryText, changes },
+  };
 }

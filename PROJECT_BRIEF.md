@@ -71,6 +71,7 @@ _Last updated: 2026-05-19_
 
 - Staging environment: second Supabase project + Vercel preview env vars so destructive migrations and risky changes can be tested without touching production
 - Playwright E2E tests covering wizard → plan → log → regenerate (now harder to test manually because of auth)
+- **Error screens polish pass** — sweep every error/empty state and replace dev-flavored copy (e.g., "check the server logs") with user-appropriate language. Inject brand personality where it fits (Vert is for athletes — the voice can have some energy). Audit list: training plan load failure, wizard submission errors, logging save failures, auth/sign-in errors, network/offline states, regen API failure. The "athletic vocabulary" framing already specced for regen errors (`— SIGNAL LOST`, `— REST DAY` etc., see "Regeneration result page" section) is the voice to extend everywhere.
 
 ---
 

@@ -1,11 +1,27 @@
+"use client";
+
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { StatusHeading } from "./atoms";
 
-// Confirmation interstitial. The design says it auto-routes back to Today
-// after ~1.5s; we leave that opt-in for now (client-side redirect would
-// require a "use client" boundary just for setTimeout) — the page renders
-// the visual state and any nav lands you on Today via the bottom button.
-export function StateAccepted() {
+interface Props {
+  // Defaults to 1500ms so the user reads the confirmation before being
+  // dropped into the live plan. Set to 0 to disable auto-routing in tests.
+  autoRouteMs?: number;
+}
+
+// Brief confirmation shown after a successful commitPlan. Auto-routes to
+// Today after a short delay; falls back to a tap-anywhere bail-out via
+// the router push.
+export function StateAccepted({ autoRouteMs = 1500 }: Props) {
+  const router = useRouter();
+  useEffect(() => {
+    if (autoRouteMs <= 0) return;
+    const handle = window.setTimeout(() => router.push("/"), autoRouteMs);
+    return () => window.clearTimeout(handle);
+  }, [router, autoRouteMs]);
+
   return (
     <div className="relative flex min-h-svh w-full flex-col overflow-hidden bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
       <div className="absolute inset-0">

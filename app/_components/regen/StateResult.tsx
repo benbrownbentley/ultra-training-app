@@ -1,5 +1,10 @@
+"use client";
+
 import { Section } from "@/app/_components/workout/Section";
 import { TabBar } from "@/app/_components/today/TabBar";
+import { ArrowRight } from "@/app/_components/today/icons";
+import type { WeekDiff } from "@/lib/preview";
+import type { ContextRow } from "@/lib/regen-context";
 import { RegenHeader } from "./RegenHeader";
 import {
   BasedOnRow,
@@ -9,14 +14,22 @@ import {
   SummaryCard,
   WeekSectionHeader,
 } from "./atoms";
-import { RegenActionBar } from "./RegenActionBar";
-import {
-  BASED_ON_ROWS,
-  SUMMARY_RESULT,
-  WEEK_6,
-  WEEK_7,
-  type WeekDiff,
-} from "./placeholders";
+
+interface Props {
+  summary: string;
+  changes: Array<{
+    type: "shifted" | "reduced" | "added" | "removed";
+    text: string;
+  }>;
+  changedWeeks: WeekDiff[];
+  unchangedTrailing: number;
+  contextRows: ContextRow[];
+  onAccept: () => void;
+  onRegenerateAgain: () => void;
+  onDiscard: () => void;
+  isPending: boolean;
+  pendingAction: "accept" | "discard" | "regenerate" | null;
+}
 
 function Week({ week }: { week: WeekDiff }) {
   return (
@@ -32,7 +45,18 @@ function Week({ week }: { week: WeekDiff }) {
   );
 }
 
-export function StateResult() {
+export function StateResult({
+  summary,
+  changes,
+  changedWeeks,
+  unchangedTrailing,
+  contextRows,
+  onAccept,
+  onRegenerateAgain,
+  onDiscard,
+  isPending,
+  pendingAction,
+}: Props) {
   return (
     <div className="flex min-h-svh w-full flex-col bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
       <RegenHeader />
@@ -43,50 +67,113 @@ export function StateResult() {
           </div>
 
           <div className="px-4 pb-3.5 sm:px-5">
-            <SummaryCard>{SUMMARY_RESULT}</SummaryCard>
+            <SummaryCard>{summary}</SummaryCard>
           </div>
 
-          <div className="flex flex-wrap gap-2 px-4 pb-4 sm:px-5">
-            <ChangeBadge kind="shifted" label="SHIFTED" body="Sat long → Thu" />
-            <ChangeBadge kind="reduced" label="REDUCED" body="weekly volume −8%" />
-            <ChangeBadge kind="added" label="ADDED" body="2× calf strength" />
-          </div>
-
-          <Section
-            label="WEEK BY WEEK"
-            right={
-              <span
-                className="font-mono text-[10px] uppercase text-zinc-500"
-                style={{ letterSpacing: "0.16em" }}
-              >
-                VIEW ALL 18 →
-              </span>
-            }
-          >
-            <Week week={WEEK_6} />
-            <Week week={WEEK_7} />
-            <p
-              className="mt-2 font-mono text-[11px] uppercase text-zinc-400 dark:text-zinc-600"
-              style={{ letterSpacing: "0.14em" }}
-            >
-              WEEKS 8–18 UNCHANGED
-            </p>
-          </Section>
-
-          <Section label="BASED ON">
-            <div>
-              {BASED_ON_ROWS.map((r) => (
-                <BasedOnRow key={r.label} label={r.label} value={r.value} />
+          {changes.length > 0 && (
+            <div className="flex flex-wrap gap-2 px-4 pb-4 sm:px-5">
+              {changes.map((c, i) => (
+                <ChangeBadge
+                  key={i}
+                  kind={c.type}
+                  label={c.type.toUpperCase()}
+                  body={c.text}
+                />
               ))}
-              <div className="border-t border-zinc-200 dark:border-zinc-800" />
             </div>
+          )}
+
+          <Section label="WEEK BY WEEK">
+            {changedWeeks.length === 0 ? (
+              <p
+                className="m-0 font-mono text-[11px] uppercase text-zinc-400 dark:text-zinc-600"
+                style={{ letterSpacing: "0.14em" }}
+              >
+                NO PER-WEEK CHANGES
+              </p>
+            ) : (
+              changedWeeks.map((week, i) => <Week key={i} week={week} />)
+            )}
+            {unchangedTrailing > 0 && (
+              <p
+                className="mt-2 font-mono text-[11px] uppercase text-zinc-400 dark:text-zinc-600"
+                style={{ letterSpacing: "0.14em" }}
+              >
+                +{unchangedTrailing} WEEK{unchangedTrailing === 1 ? "" : "S"} UNCHANGED
+              </p>
+            )}
           </Section>
+
+          {contextRows.length > 0 && (
+            <Section label="BASED ON">
+              <div>
+                {contextRows.map((r) => (
+                  <BasedOnRow key={r.label} label={r.label} value={r.value} />
+                ))}
+                <div className="border-t border-zinc-200 dark:border-zinc-800" />
+              </div>
+            </Section>
+          )}
 
           <div className="h-2" />
         </div>
       </div>
-      <RegenActionBar />
+      <ActionBar
+        onAccept={onAccept}
+        onRegenerateAgain={onRegenerateAgain}
+        onDiscard={onDiscard}
+        isPending={isPending}
+        pendingAction={pendingAction}
+      />
       <TabBar active="plan" />
+    </div>
+  );
+}
+
+function ActionBar({
+  onAccept,
+  onRegenerateAgain,
+  onDiscard,
+  isPending,
+  pendingAction,
+}: {
+  onAccept: () => void;
+  onRegenerateAgain: () => void;
+  onDiscard: () => void;
+  isPending: boolean;
+  pendingAction: "accept" | "discard" | "regenerate" | null;
+}) {
+  return (
+    <div className="border-t border-zinc-200 bg-zinc-50 px-4 pt-3 pb-3.5 sm:px-5 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex items-center gap-2.5">
+        <button
+          type="button"
+          onClick={onAccept}
+          disabled={isPending}
+          className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {pendingAction === "accept" ? "Accepting…" : "Accept new plan"}
+          {pendingAction !== "accept" && <ArrowRight color="#052e1f" size={16} />}
+        </button>
+        <button
+          type="button"
+          onClick={onRegenerateAgain}
+          disabled={isPending}
+          className="inline-flex h-11 items-center justify-center rounded-[10px] border border-zinc-200 px-4 text-sm font-medium text-zinc-950 transition hover:border-zinc-300 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700"
+        >
+          {pendingAction === "regenerate" ? "Working…" : "Regenerate again"}
+        </button>
+      </div>
+      <div className="mt-2.5 flex justify-end">
+        <button
+          type="button"
+          onClick={onDiscard}
+          disabled={isPending}
+          className="bg-transparent text-[12.5px] font-medium text-zinc-400 hover:text-zinc-600 disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-400"
+        >
+          {pendingAction === "discard" ? "Discarding…" : "Keep current plan"}
+        </button>
+      </div>
     </div>
   );
 }

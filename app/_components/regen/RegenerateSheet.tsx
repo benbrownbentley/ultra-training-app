@@ -23,7 +23,8 @@ function useIsClient(): boolean {
     () => false,
   );
 }
-import { regeneratePlan } from "@/app/actions";
+import { useRouter } from "next/navigation";
+import { previewPlan } from "@/app/actions";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { ArrowRight } from "@/app/_components/today/icons";
 import type { ContextRow } from "@/lib/regen-context";
@@ -91,17 +92,21 @@ function SheetBody({
     };
   }, [onClose, isPending]);
 
+  const router = useRouter();
   const submit = useCallback(() => {
     setError(null);
     startTransition(async () => {
       try {
-        await regeneratePlan(notes);
+        const { previewId } = await previewPlan(notes);
         onClose();
+        // Hand off to the regen result screen — it owns the accept/discard
+        // UX from here. Router.push so the sheet's parent state stays clean.
+        router.push(`/regen?preview=${previewId}`);
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to regenerate plan");
       }
     });
-  }, [notes, onClose]);
+  }, [notes, onClose, router]);
 
   return (
     <div

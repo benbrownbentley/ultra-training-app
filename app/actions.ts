@@ -112,13 +112,21 @@ export async function logWorkout(id: number, status: WorkoutStatus) {
   revalidatePath("/");
 }
 
-export async function regeneratePlan(notes?: string) {
+/**
+ * Phase 1 of the regenerate flow: generate a candidate plan and stash it
+ * in plan_previews. Does NOT touch the live workouts or journal — the
+ * commit phase handles that. Returns the new preview id so the caller can
+ * route to /regen?preview=<id>.
+ *
+ * Discards any existing pending preview for this user first so at most
+ * one is ever in flight (acceptance criterion #4 — no accumulation).
+ */
+export async function previewPlan(
+  notes?: string,
+): Promise<{ previewId: number }> {
   const today = getTodayISO();
   const { user } = await requireUser();
 
-  // All Supabase reads go through lib/supabase/server.ts — keeps query logic
-  // out of the actions file so it can be reused and is easy to find during
-  // a future React Native migration.
   const [{ race, history }, profile, journal] = await Promise.all([
     getRaceAndHistory(today),
     getAthleteProfile(),
@@ -141,7 +149,17 @@ export async function regeneratePlan(notes?: string) {
     consumed: e.consumed,
   }));
 
-  const workouts = await generateTrainingPlan({
+  // Mark any older pending preview as discarded before creating a new
+  // one. Done before the Claude call so a fast-clicking user can't end up
+  // with two pending rows even briefly.
+  const { error: oldErr } = await supabaseAdmin
+    .from("plan_previews")
+    .update({ status: "discarded", decided_at: new Date().toISOString() })
+    .eq("user_id", user.id)
+    .eq("status", "pending");
+  if (oldErr) throw oldErr;
+
+  const result = await generateTrainingPlan({
     race,
     profile,
     startDate: today,
@@ -150,12 +168,60 @@ export async function regeneratePlan(notes?: string) {
     journalEntries: journalContext,
   });
 
-  const futureOnly = workouts
+  const futureOnly = result.workouts.filter((w) => w.date >= today);
+
+  const { data, error } = await supabaseAdmin
+    .from("plan_previews")
+    .insert({
+      user_id: user.id,
+      workouts: futureOnly,
+      notes: blankToNull(notes ?? ""),
+      generation_summary: result.summary,
+      status: "pending",
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+
+  revalidatePath("/regen");
+  return { previewId: data.id };
+}
+
+/**
+ * Phase 2: swap the pending preview's workouts into the active plan.
+ * Verifies user_id ownership + pending status. After committing, marks
+ * unconsumed journal entries as seen so the next preview only carries
+ * truly-new context.
+ */
+export async function commitPlan(previewId: number): Promise<void> {
+  const today = getTodayISO();
+  const { user } = await requireUser();
+
+  const { data: preview, error: fetchErr } = await supabaseAdmin
+    .from("plan_previews")
+    .select("id, user_id, workouts, status")
+    .eq("id", previewId)
+    .maybeSingle();
+  if (fetchErr) throw fetchErr;
+  if (!preview) throw new Error("Preview not found.");
+  if (preview.user_id !== user.id) throw new Error("Preview not yours.");
+  if (preview.status !== "pending")
+    throw new Error("Preview is no longer pending.");
+
+  // Defensive: never trust a row's workouts as anything but its declared
+  // shape, and re-filter to future dates in case server time drifted.
+  const workouts = (
+    preview.workouts as Array<{
+      date: string;
+      kind: string;
+      title: string;
+      details: string;
+      position: number;
+    }>
+  )
     .filter((w) => w.date >= today)
     .map((w) => ({ ...w, user_id: user.id }));
 
-  // Admin client for the bulk delete+insert to bypass per-row RLS overhead,
-  // but always scope by user_id so we never touch another user's rows.
   const { error: delErr } = await supabaseAdmin
     .from("workouts")
     .delete()
@@ -165,11 +231,19 @@ export async function regeneratePlan(notes?: string) {
 
   const { error: insErr } = await supabaseAdmin
     .from("workouts")
-    .insert(futureOnly);
+    .insert(workouts);
   if (insErr) throw insErr;
 
-  // Flip every unconsumed entry to "seen" — they've now influenced a plan,
-  // so the Journal feed should stop badging them as PENDING.
+  // Mark the preview as accepted before the journal flip — if the flip
+  // fails for any reason, the next regen still sees the previous "NEW"
+  // entries, which is safer than losing them.
+  const { error: acceptErr } = await supabaseAdmin
+    .from("plan_previews")
+    .update({ status: "accepted", decided_at: new Date().toISOString() })
+    .eq("id", previewId)
+    .eq("user_id", user.id);
+  if (acceptErr) throw acceptErr;
+
   const { error: markErr } = await supabaseAdmin
     .from("journal_entries")
     .update({ consumed: true })
@@ -180,6 +254,24 @@ export async function regeneratePlan(notes?: string) {
   revalidatePath("/");
   revalidatePath("/plan");
   revalidatePath("/journal");
+  revalidatePath("/regen");
+}
+
+/**
+ * Phase 2b: explicitly drop a pending preview without committing. Used by
+ * the "Keep current plan" CTA. No data side effects beyond the preview
+ * row's own status flip.
+ */
+export async function discardPreview(previewId: number): Promise<void> {
+  const { user } = await requireUser();
+  const { error } = await supabaseAdmin
+    .from("plan_previews")
+    .update({ status: "discarded", decided_at: new Date().toISOString() })
+    .eq("id", previewId)
+    .eq("user_id", user.id)
+    .eq("status", "pending");
+  if (error) throw error;
+  revalidatePath("/regen");
 }
 
 // Renders the type-specific `details` JSON into bullet lines for the
@@ -267,8 +359,10 @@ export async function createJournalEntry(args: CreateJournalArgs) {
   revalidatePath("/journal");
 
   if (args.regenAfter) {
-    await regeneratePlan();
-    redirect("/");
+    // Generate a preview, then route the user to the regen preview screen
+    // so they can review the diff before the plan actually changes.
+    const { previewId } = await previewPlan();
+    redirect(`/regen?preview=${previewId}`);
   } else {
     redirect("/journal");
   }
@@ -605,5 +699,54 @@ export async function submitWizard(data: WizardPayload) {
     .insert(profileRow);
   if (profInsErr) throw profInsErr;
 
-  await regeneratePlan();
+  // Initial plan generation bypasses the preview pipeline — there's no
+  // existing plan to diff against, so we commit directly.
+  const today = getTodayISO();
+  const aRace = raceRows.find((r) => r.priority === "A") ?? raceRows[0];
+  if (!aRace) throw new Error("No race configured.");
+  const result = await generateTrainingPlan({
+    race: {
+      name: aRace.name,
+      distance: aRace.distance,
+      date: aRace.date,
+      elevation_gain: aRace.elevation_gain,
+      terrain: aRace.terrain,
+      target_time: aRace.target_time,
+      intent: aRace.intent,
+    },
+    profile: {
+      unit_system: data.unitSystem,
+      weekly_volume: profileRow.weekly_volume,
+      longest_run_distance: profileRow.longest_run_distance,
+      easy_pace: profileRow.easy_pace,
+      injury_notes: profileRow.injury_notes,
+      experience: profileRow.experience,
+      gym_access: profileRow.gym_access,
+      equipment: profileRow.equipment,
+      weekly_hours: profileRow.weekly_hours,
+      cross_training: profileRow.cross_training,
+      other_commitments: profileRow.other_commitments,
+      sleep_stress: profileRow.sleep_stress,
+    },
+    startDate: today,
+    history: [],
+    journalEntries: [],
+  });
+
+  const workouts = result.workouts
+    .filter((w) => w.date >= today)
+    .map((w) => ({ ...w, user_id: user.id }));
+
+  const { error: wDelErr } = await supabaseAdmin
+    .from("workouts")
+    .delete()
+    .eq("user_id", user.id)
+    .gte("date", today);
+  if (wDelErr) throw wDelErr;
+  const { error: wInsErr } = await supabaseAdmin
+    .from("workouts")
+    .insert(workouts);
+  if (wInsErr) throw wInsErr;
+
+  revalidatePath("/");
 }

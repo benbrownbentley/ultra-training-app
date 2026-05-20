@@ -7,7 +7,7 @@ import { MetricsRow } from "@/app/_components/workout/MetricsRow";
 import { Section } from "@/app/_components/workout/Section";
 import { Banner } from "@/app/_components/workout/Banner";
 import { WorkoutActions } from "@/app/_components/workout/WorkoutActions";
-import { VariantBody } from "@/app/_components/workout/VariantBody";
+import { ActualsForm } from "@/app/_components/workout/ActualsForm";
 import { TabBar } from "@/app/_components/today/TabBar";
 import { extractMetrics } from "@/app/_components/workout/extract-metrics";
 import { deriveWorkoutContent } from "@/lib/workout-content";
@@ -128,12 +128,23 @@ export default async function WorkoutPage({
             </p>
           </Section>
 
-          <VariantBody
+          <ActualsForm
+            workoutId={workout.id}
+            kind={workout.kind}
             content={content}
             variant={variant}
             status={workout.status}
             loggedAt={workout.logged_at}
             isFuture={isFuture}
+            initial={{
+              duration_min: workout.actual_duration_min,
+              distance_km: workout.actual_distance_km,
+              elevation_gain_m: workout.actual_elevation_gain_m,
+              hr_avg: workout.actual_hr_avg,
+              rpe: workout.actual_rpe,
+              notes: workout.actual_notes ?? "",
+              detail: workout.actual_detail,
+            }}
           />
         </div>
       </div>

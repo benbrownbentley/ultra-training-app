@@ -1,5 +1,6 @@
 "use server";
 
+import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { supabaseAdmin } from "@/lib/supabase/admin";
@@ -17,6 +18,7 @@ import type {
   RacePriority,
   Terrain,
   UnitSystem,
+  WorkoutKind,
   WorkoutStatus,
 } from "@/lib/plan";
 import type {
@@ -114,6 +116,116 @@ export async function logWorkout(id: number, status: WorkoutStatus) {
 
   if (error) throw error;
 
+  revalidatePath("/");
+}
+
+// Zod schema for the actuals payload. Drives both saveActuals and the
+// shape Claude reads back via formatHistory — keep them in sync.
+const ActualsSchema = z.object({
+  duration_min: z.number().nullable().optional(),
+  distance_km: z.number().nullable().optional(),
+  elevation_gain_m: z.number().nullable().optional(),
+  hr_avg: z.number().int().min(0).max(250).nullable().optional(),
+  rpe: z.number().int().min(1).max(10).nullable().optional(),
+  notes: z.string().nullable().optional(),
+  detail: z
+    .object({
+      zones: z
+        .array(z.object({ label: z.string(), minutes: z.number() }))
+        .optional(),
+      sets: z
+        .array(
+          z.object({
+            exerciseName: z.string(),
+            reps: z.number(),
+            weight: z.number(),
+            unit: z.string(),
+          }),
+        )
+        .optional(),
+      exercises: z
+        .array(
+          z.object({
+            name: z.string(),
+            done: z.boolean(),
+            pain: z.number().nullable().optional(),
+            note: z.string().nullable().optional(),
+          }),
+        )
+        .optional(),
+    })
+    .nullable()
+    .optional(),
+});
+
+// Persists captured actuals to the workouts row. Distinct from logWorkout
+// (which is the one-tap "mark done" path) because users can come back and
+// refine actuals on an already-logged workout without touching status.
+export async function saveActuals(
+  id: number,
+  actualsInput: unknown,
+): Promise<void> {
+  const a = ActualsSchema.parse(actualsInput);
+  const { user, supabase } = await requireUser();
+  const { error } = await supabase
+    .from("workouts")
+    .update({
+      actual_duration_min: a.duration_min ?? null,
+      actual_distance_km: a.distance_km ?? null,
+      actual_elevation_gain_m: a.elevation_gain_m ?? null,
+      actual_hr_avg: a.hr_avg ?? null,
+      actual_rpe: a.rpe ?? null,
+      actual_notes: a.notes ?? null,
+      actual_detail: a.detail ?? null,
+    })
+    .eq("id", id)
+    .eq("user_id", user.id);
+  if (error) throw error;
+  revalidatePath("/");
+  revalidatePath(`/workout/${id}`);
+}
+
+const CustomActivitySchema = z.object({
+  kind: z.enum(["run", "gym", "mobility"]),
+  title: z.string().min(1).max(120),
+  details: z.string().min(1).max(500),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+
+// Inserts a user-initiated workout on a given date. Sets is_custom=true so
+// the regen RPC (migration 0014) preserves it across plan swaps.
+export async function addCustomActivity(input: {
+  kind: WorkoutKind;
+  title: string;
+  details: string;
+  date: string;
+}): Promise<void> {
+  const parsed = CustomActivitySchema.parse(input);
+  const { user, supabase } = await requireUser();
+
+  // Append at the end of the date's existing workouts so the new card lands
+  // below the planned ones rather than reshuffling positions.
+  const { data: existing, error: posErr } = await supabase
+    .from("workouts")
+    .select("position")
+    .eq("user_id", user.id)
+    .eq("date", parsed.date)
+    .order("position", { ascending: false })
+    .limit(1);
+  if (posErr) throw posErr;
+
+  const nextPosition = (existing?.[0]?.position ?? -1) + 1;
+  const { error } = await supabase.from("workouts").insert({
+    user_id: user.id,
+    date: parsed.date,
+    kind: parsed.kind,
+    title: parsed.title,
+    details: parsed.details,
+    status: "pending",
+    position: nextPosition,
+    is_custom: true,
+  });
+  if (error) throw error;
   revalidatePath("/");
 }
 
@@ -621,8 +733,6 @@ export async function deleteAccount(confirmEmail: string) {
 }
 
 // ─── Preferences ─────────────────────────────────────────────────
-
-import { z } from "zod";
 
 const ThemeSchema = z.enum(["light", "dark", "system"]);
 const UnitSystemSchema = z.enum(["metric", "imperial"]);

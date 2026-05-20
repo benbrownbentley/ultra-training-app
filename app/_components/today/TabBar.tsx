@@ -19,33 +19,37 @@ const TABS: TabSpec[] = [
 
 // Persistent bottom navigation. Inactive tabs link to routes that don't
 // exist yet — they'll 404 today and stop 404'ing as those routes ship.
+// On wide viewports the inner grid is capped so the four tabs cluster in
+// the centre rather than spreading edge-to-edge.
 export function TabBar({ active = "today" }: { active?: TabId }) {
   return (
-    <div className="sticky bottom-0 z-30 grid grid-cols-4 border-t border-zinc-200 bg-zinc-50 pb-[env(safe-area-inset-bottom)] dark:border-zinc-800 dark:bg-zinc-950">
-      {TABS.map((tab) => {
-        const isOn = tab.id === active;
-        const color = isOn ? "#10b981" : "rgb(113 113 122)";
-        return (
-          <Link
-            key={tab.id}
-            href={tab.href}
-            className="flex flex-col items-center gap-1 pt-2.5 pb-3.5"
-            aria-current={isOn ? "page" : undefined}
-          >
-            <tab.Icon color={color} />
-            <span
-              className={`font-mono text-[9.5px] uppercase ${
-                isOn
-                  ? "font-semibold text-emerald-500"
-                  : "font-medium text-zinc-500"
-              }`}
-              style={{ letterSpacing: "0.12em" }}
+    <div className="sticky bottom-0 z-30 border-t border-zinc-200 bg-zinc-50 pb-[env(safe-area-inset-bottom)] dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mx-auto grid max-w-[420px] grid-cols-4">
+        {TABS.map((tab) => {
+          const isOn = tab.id === active;
+          const color = isOn ? "#10b981" : "rgb(113 113 122)";
+          return (
+            <Link
+              key={tab.id}
+              href={tab.href}
+              className="flex flex-col items-center gap-1 pt-2.5 pb-3.5"
+              aria-current={isOn ? "page" : undefined}
             >
-              {tab.label}
-            </span>
-          </Link>
-        );
-      })}
+              <tab.Icon color={color} />
+              <span
+                className={`font-mono text-[9.5px] uppercase ${
+                  isOn
+                    ? "font-semibold text-emerald-500"
+                    : "font-medium text-zinc-500"
+                }`}
+                style={{ letterSpacing: "0.12em" }}
+              >
+                {tab.label}
+              </span>
+            </Link>
+          );
+        })}
+      </div>
     </div>
   );
 }

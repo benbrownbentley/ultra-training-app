@@ -1,6 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import type {
+  ActualDetail,
   AthleteProfile,
   Race,
   WorkoutKind,
@@ -15,6 +16,16 @@ export interface LoggedWorkout {
   title: string;
   details: string;
   status: WorkoutStatus;
+  // Captured-on-the-day actuals. All optional. Fed into formatHistory so
+  // Claude can see overperformance / underperformance vs. prescribed and
+  // calibrate the next plan accordingly.
+  actual_duration_min?: number | null;
+  actual_distance_km?: number | null;
+  actual_elevation_gain_m?: number | null;
+  actual_hr_avg?: number | null;
+  actual_rpe?: number | null;
+  actual_notes?: string | null;
+  actual_detail?: ActualDetail | null;
 }
 
 export interface JournalContextEntry {
@@ -159,16 +170,54 @@ const PLAN_TOOL: Anthropic.Tool = {
   },
 };
 
+// Builds the `actual: …` sub-lines for a single workout. Each populated
+// field contributes one fragment, joined by " · ". Returns null when no
+// actuals are present so the caller can skip rendering the line.
+export function formatActuals(w: LoggedWorkout): string | null {
+  const parts: string[] = [];
+  if (w.actual_distance_km != null) parts.push(`${w.actual_distance_km} km`);
+  if (w.actual_duration_min != null) {
+    const minutes = w.actual_duration_min;
+    if (minutes >= 60) {
+      const hours = Math.floor(minutes / 60);
+      const rem = Math.round(minutes - hours * 60);
+      parts.push(rem > 0 ? `${hours}h${String(rem).padStart(2, "0")}` : `${hours}h`);
+    } else {
+      parts.push(`${minutes} min`);
+    }
+  }
+  if (w.actual_elevation_gain_m != null) {
+    parts.push(`+${w.actual_elevation_gain_m}m`);
+  }
+  if (w.actual_hr_avg != null) parts.push(`HR ${w.actual_hr_avg}`);
+  if (w.actual_rpe != null) parts.push(`RPE ${w.actual_rpe}`);
+  if (parts.length === 0 && !w.actual_notes && !w.actual_detail) return null;
+  return parts.length > 0 ? `actual: ${parts.join(" · ")}` : null;
+}
+
 // Pure formatters below are exported only so tests can snapshot them.
 // They aren't part of the public API — generateTrainingPlan is.
 export function formatHistory(history: LoggedWorkout[]): string {
   if (history.length === 0) {
     return "No logged history yet — this is the initial plan.";
   }
-  const lines = history.map(
-    (w) =>
-      `${w.date} [${w.kind}] ${w.title} — ${w.details}  →  ${w.status}`,
-  );
+  const lines = history.flatMap((w) => {
+    const out = [`${w.date} [${w.kind}] ${w.title} — ${w.details}  →  ${w.status}`];
+    const actuals = formatActuals(w);
+    if (actuals) out.push(`  ${actuals}`);
+    if (w.actual_notes && w.actual_notes.trim().length > 0) {
+      // Quote the note so Claude reads it as athlete voice rather than
+      // structured data. Single-line — collapse newlines defensively.
+      out.push(`  "${w.actual_notes.replace(/\s+/g, " ").trim()}"`);
+    }
+    if (w.actual_detail?.zones && w.actual_detail.zones.length > 0) {
+      const zoneStr = w.actual_detail.zones
+        .map((z) => `${z.label} ${z.minutes}min`)
+        .join(" · ");
+      out.push(`  time in zone: ${zoneStr}`);
+    }
+    return out;
+  });
   const completedCount = history.filter((w) => w.status === "completed").length;
   const skippedCount = history.filter((w) => w.status === "skipped").length;
   const pendingCount = history.filter((w) => w.status === "pending").length;

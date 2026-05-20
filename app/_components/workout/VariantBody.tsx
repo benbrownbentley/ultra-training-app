@@ -1,10 +1,14 @@
+"use client";
+
 // Composes the right Workout Detail variant (Running, Strength, Physio,
 // Cross, Mobility, Hike) into the shared page chrome. Each variant is a
-// fragment of sections; the page mounts the chosen body inside the same
-// shell.
+// fragment of sections; the page mounts the chosen body inside the shared
+// shell. All log fields are now controlled via the ActualsBindings the
+// parent ActualsForm provides — variants that don't need a field simply
+// don't read it.
 
 import type { WorkoutContent } from "@/lib/workout-content";
-import type { WorkoutStatus } from "@/lib/plan";
+import type { ActualDetail, WorkoutStatus } from "@/lib/plan";
 import { Section } from "./Section";
 import {
   DisclosureRow,
@@ -25,12 +29,41 @@ import {
 
 type Variant = "upcoming" | "logged" | "skipped" | "missed" | "future";
 
+// One shape for every variant. The parent ActualsForm passes the same
+// bindings object down; variants destructure only what they render. Keeps
+// the prop surface boring and additive — new fields go in once.
+export interface ActualsBindings {
+  duration_min: number | null;
+  distance_km: number | null;
+  elevation_gain_m: number | null;
+  hr_avg: number | null;
+  rpe: number | null;
+  notes: string;
+  detail: ActualDetail | null;
+  onChangeDuration: (next: number | null) => void;
+  onChangeDistance: (next: number | null) => void;
+  onChangeElevation: (next: number | null) => void;
+  onChangeHr: (next: number | null) => void;
+  onChangeRpe: (next: number) => void;
+  onChangeNotes: (next: string) => void;
+  // Mobility's "Mark this whole routine done" toggle. Page wires this to
+  // logWorkout(id, completed/pending) — distinct from saveActuals.
+  onChangeDone: (next: boolean) => void;
+  // Physio: array of per-exercise actuals. ActualsForm derives the shape
+  // from content.physioExercises on mount so the indices line up.
+  onChangePhysioExercise: (
+    index: number,
+    patch: { done?: boolean; pain?: number; note?: string },
+  ) => void;
+}
+
 interface CommonProps {
   content: WorkoutContent;
   variant: Variant;
   status: WorkoutStatus;
   loggedAt: string | null;
   isFuture: boolean;
+  bindings: ActualsBindings;
 }
 
 // Helper: "Logged Tue 17 May · 6:42 PM" caption shown beside the LOG label.
@@ -74,9 +107,11 @@ export function RunningBody({
   variant,
   loggedAt,
   isFuture,
+  bindings: b,
 }: CommonProps) {
   const logHidden = variant === "skipped";
   const isLogged = variant === "logged";
+  const zones = b.detail?.zones ?? [];
 
   return (
     <>
@@ -105,14 +140,42 @@ export function RunningBody({
           right={rightCaption(variant, loggedAt)}
         >
           <div className="flex flex-col gap-2">
-            <FieldRow label="Duration" value={isLogged ? "—" : "—"} unit="min" disabled={isFuture} />
-            <FieldRow label="Distance" value="—" unit="km" disabled={isFuture} />
-            <FieldRow label="Vert" value="—" unit="m" disabled={isFuture} />
-            <FieldRow label="Avg HR" value="—" unit="bpm" required disabled={isFuture} />
-            {isLogged ? (
-              <TimeInZoneBar zones={[]} />
+            <FieldRow
+              label="Duration"
+              value={b.duration_min}
+              onChange={b.onChangeDuration}
+              unit="min"
+              disabled={isFuture}
+            />
+            <FieldRow
+              label="Distance"
+              value={b.distance_km}
+              onChange={b.onChangeDistance}
+              unit="km"
+              disabled={isFuture}
+            />
+            <FieldRow
+              label="Vert"
+              value={b.elevation_gain_m}
+              onChange={b.onChangeElevation}
+              unit="m"
+              disabled={isFuture}
+            />
+            <FieldRow
+              label="Avg HR"
+              value={b.hr_avg}
+              onChange={b.onChangeHr}
+              unit="bpm"
+              required
+              disabled={isFuture}
+            />
+            {isLogged && zones.length > 0 ? (
+              <TimeInZoneBar zones={zones} />
             ) : (
-              <DisclosureRow label="Add time-in-zone breakdown" disabled={isFuture} />
+              <DisclosureRow
+                label="Add time-in-zone breakdown"
+                disabled={isFuture}
+              />
             )}
           </div>
         </Section>
@@ -120,7 +183,11 @@ export function RunningBody({
 
       {!logHidden && (
         <Section label="NOTES">
-          <NotesField disabled={isFuture} />
+          <NotesField
+            value={b.notes}
+            onChange={b.onChangeNotes}
+            disabled={isFuture}
+          />
         </Section>
       )}
     </>
@@ -132,6 +199,8 @@ export function StrengthBody({
   content,
   variant,
   loggedAt,
+  isFuture,
+  bindings: b,
 }: CommonProps) {
   const isLogged = variant === "logged";
 
@@ -166,18 +235,38 @@ export function StrengthBody({
           ) : (
             content.exercises.map((ex, i) => <ExerciseRow key={i} {...ex} />)
           )}
+          {/* Overall session actuals — duration + RPE + notes — even when
+              per-set capture isn't wired yet. Lets the user record that
+              "yes I did the session, here's how it felt". */}
+          <FieldRow
+            label="Duration"
+            value={b.duration_min}
+            onChange={b.onChangeDuration}
+            unit="min"
+            disabled={isFuture}
+          />
+          <EffortSlider
+            value={b.rpe}
+            onChange={b.onChangeRpe}
+            disabled={isFuture}
+          />
         </div>
       </Section>
 
       <Section label="NOTES">
-        <NotesField />
+        <NotesField
+          value={b.notes}
+          onChange={b.onChangeNotes}
+          disabled={isFuture}
+        />
       </Section>
     </>
   );
 }
 
 // ─── Physio ─────────────────────────────────────────────────
-export function PhysioBody({ content }: CommonProps) {
+export function PhysioBody({ content, isFuture, bindings: b }: CommonProps) {
+  const exercises = b.detail?.exercises ?? [];
   return (
     <>
       <Section label="WHY">
@@ -197,22 +286,52 @@ export function PhysioBody({ content }: CommonProps) {
               structured physio routines.
             </div>
           ) : (
-            content.physioExercises.map((ex, i) => (
-              <PhysioExerciseRow key={i} {...ex} />
-            ))
+            content.physioExercises.map((ex, i) => {
+              const captured = exercises[i];
+              return (
+                <PhysioExerciseRow
+                  key={i}
+                  name={ex.name}
+                  spec={ex.spec}
+                  pain={captured?.pain ?? null}
+                  notes={captured?.note ?? ""}
+                  done={captured?.done ?? false}
+                  onChangeDone={(next) =>
+                    b.onChangePhysioExercise(i, { done: next })
+                  }
+                  onChangePain={(next) =>
+                    b.onChangePhysioExercise(i, { pain: next })
+                  }
+                  onChangeNote={(next) =>
+                    b.onChangePhysioExercise(i, { note: next })
+                  }
+                  disabled={isFuture}
+                />
+              );
+            })
           )}
         </div>
       </Section>
 
       <Section label="NOTES">
-        <NotesField />
+        <NotesField
+          value={b.notes}
+          onChange={b.onChangeNotes}
+          disabled={isFuture}
+        />
       </Section>
     </>
   );
 }
 
 // ─── Cross-training (cycling / swim) ────────────────────────
-export function CrossBody({ content, variant, loggedAt, isFuture }: CommonProps) {
+export function CrossBody({
+  content,
+  variant,
+  loggedAt,
+  isFuture,
+  bindings: b,
+}: CommonProps) {
   return (
     <>
       {content.segments.length > 0 && (
@@ -236,21 +355,48 @@ export function CrossBody({ content, variant, loggedAt, isFuture }: CommonProps)
 
       <Section label={logSectionLabel(variant)} right={rightCaption(variant, loggedAt)}>
         <div className="flex flex-col gap-2">
-          <FieldRow label="Duration" value="—" unit="min" disabled={isFuture} />
-          <EffortSlider value={0} />
-          <FieldRow label="Avg HR" value="—" unit="bpm" disabled={isFuture} />
+          <FieldRow
+            label="Duration"
+            value={b.duration_min}
+            onChange={b.onChangeDuration}
+            unit="min"
+            disabled={isFuture}
+          />
+          <EffortSlider
+            value={b.rpe}
+            onChange={b.onChangeRpe}
+            disabled={isFuture}
+          />
+          <FieldRow
+            label="Avg HR"
+            value={b.hr_avg}
+            onChange={b.onChangeHr}
+            unit="bpm"
+            disabled={isFuture}
+          />
         </div>
       </Section>
 
       <Section label="NOTES">
-        <NotesField disabled={isFuture} />
+        <NotesField
+          value={b.notes}
+          onChange={b.onChangeNotes}
+          disabled={isFuture}
+        />
       </Section>
     </>
   );
 }
 
 // ─── Mobility ───────────────────────────────────────────────
-export function MobilityBody({ content, variant, loggedAt, status, isFuture }: CommonProps) {
+export function MobilityBody({
+  content,
+  variant,
+  loggedAt,
+  status,
+  isFuture,
+  bindings: b,
+}: CommonProps) {
   return (
     <>
       {content.routine.length > 0 && (
@@ -274,20 +420,40 @@ export function MobilityBody({ content, variant, loggedAt, status, isFuture }: C
 
       <Section label={logSectionLabel(variant)} right={rightCaption(variant, loggedAt)}>
         <div className="flex flex-col gap-2">
-          <DoneToggle done={status === "completed"} />
-          <FieldRow label="Actual duration" value="—" unit="min" disabled={isFuture} />
+          <DoneToggle
+            done={status === "completed"}
+            onChange={b.onChangeDone}
+            disabled={isFuture}
+          />
+          <FieldRow
+            label="Actual duration"
+            value={b.duration_min}
+            onChange={b.onChangeDuration}
+            unit="min"
+            disabled={isFuture}
+          />
         </div>
       </Section>
 
       <Section label="NOTES">
-        <NotesField disabled={isFuture} />
+        <NotesField
+          value={b.notes}
+          onChange={b.onChangeNotes}
+          disabled={isFuture}
+        />
       </Section>
     </>
   );
 }
 
 // ─── Hike ───────────────────────────────────────────────────
-export function HikeBody({ content, variant, loggedAt, isFuture }: CommonProps) {
+export function HikeBody({
+  content,
+  variant,
+  loggedAt,
+  isFuture,
+  bindings: b,
+}: CommonProps) {
   return (
     <>
       {content.fueling && (
@@ -317,16 +483,49 @@ export function HikeBody({ content, variant, loggedAt, isFuture }: CommonProps) 
 
       <Section label={logSectionLabel(variant)} right={rightCaption(variant, loggedAt)}>
         <div className="flex flex-col gap-2">
-          <FieldRow label="Time on feet" value="—" unit="hr" required disabled={isFuture} />
-          <FieldRow label="Vert" value="—" unit="m" disabled={isFuture} />
-          <FieldRow label="Distance" value="—" unit="km" disabled={isFuture} />
-          <FieldRow label="Avg HR" value="—" unit="bpm" disabled={isFuture} />
-          <EffortSlider value={0} />
+          <FieldRow
+            label="Time on feet"
+            value={b.duration_min}
+            onChange={b.onChangeDuration}
+            unit="min"
+            required
+            disabled={isFuture}
+          />
+          <FieldRow
+            label="Vert"
+            value={b.elevation_gain_m}
+            onChange={b.onChangeElevation}
+            unit="m"
+            disabled={isFuture}
+          />
+          <FieldRow
+            label="Distance"
+            value={b.distance_km}
+            onChange={b.onChangeDistance}
+            unit="km"
+            disabled={isFuture}
+          />
+          <FieldRow
+            label="Avg HR"
+            value={b.hr_avg}
+            onChange={b.onChangeHr}
+            unit="bpm"
+            disabled={isFuture}
+          />
+          <EffortSlider
+            value={b.rpe}
+            onChange={b.onChangeRpe}
+            disabled={isFuture}
+          />
         </div>
       </Section>
 
       <Section label="NOTES">
-        <NotesField disabled={isFuture} />
+        <NotesField
+          value={b.notes}
+          onChange={b.onChangeNotes}
+          disabled={isFuture}
+        />
       </Section>
     </>
   );

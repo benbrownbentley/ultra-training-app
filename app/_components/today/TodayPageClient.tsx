@@ -10,6 +10,8 @@ import { WeekStrip, buildWeekSummaries } from "./WeekStrip";
 import { PlanStrip } from "./PlanStrip";
 import { TabBar } from "./TabBar";
 import { RegenButton } from "./RegenButton";
+import { LoggedToastProvider } from "./LoggedToast";
+import { AddActivityRow } from "./AddActivityRow";
 
 interface Props {
   plan: Plan;
@@ -85,6 +87,7 @@ export function TodayPageClient({
   const phaseLabel = `WK ${weekIndex}/${totalWeeks} · ${daysToRace}D OUT`;
 
   return (
+    <LoggedToastProvider>
     <div className="flex min-h-svh flex-col bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
       <Header phase={phaseLabel} />
 
@@ -127,6 +130,7 @@ export function TodayPageClient({
                     summary={`${tomorrow.workouts[0].title} · ${tomorrow.workouts[0].details}`}
                   />
                 )}
+                <AddActivityRow date={todayIso} />
               </div>
             ) : (
               <div className="flex flex-col gap-2.5">
@@ -137,6 +141,7 @@ export function TodayPageClient({
                     loggedAt={loggedAtById[w.id] ?? null}
                   />
                 ))}
+                <AddActivityRow date={todayIso} />
               </div>
             )}
           </section>
@@ -165,5 +170,6 @@ export function TodayPageClient({
       />
       <TabBar active="today" />
     </div>
+    </LoggedToastProvider>
   );
 }

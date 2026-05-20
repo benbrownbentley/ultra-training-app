@@ -7,6 +7,7 @@ import { cache } from "react";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type {
+  ActualDetail,
   AthleteProfile,
   Plan,
   Race,
@@ -56,7 +57,21 @@ interface WorkoutRow {
   position: number;
   status: WorkoutStatus;
   logged_at: string | null;
+  actual_duration_min: number | null;
+  actual_distance_km: number | null;
+  actual_elevation_gain_m: number | null;
+  actual_hr_avg: number | null;
+  actual_rpe: number | null;
+  actual_notes: string | null;
+  actual_detail: ActualDetail | null;
+  is_custom: boolean | null;
 }
+
+// Single source of truth for the workout column list. Used by getPlan,
+// getWorkoutById, and getRaceAndHistory so adding a column lights up
+// everywhere automatically.
+const WORKOUT_COLUMNS =
+  "id, date, kind, title, details, position, status, logged_at, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail, is_custom";
 
 const RACE_COLUMNS =
   "id, name, distance, date, elevation_gain, terrain, target_time, intent, priority, elevation_loss, cutoff_time, climate, course_profile, support";
@@ -79,7 +94,7 @@ export async function getPlan(): Promise<Plan | null> {
       .maybeSingle<Race>(),
     supabase
       .from("workouts")
-      .select("id, date, kind, title, details, position, status, logged_at")
+      .select(WORKOUT_COLUMNS)
       .order("date", { ascending: true })
       .order("position", { ascending: true })
       .returns<WorkoutRow[]>(),
@@ -103,6 +118,14 @@ export async function getPlan(): Promise<Plan | null> {
       status: row.status,
       position: row.position,
       logged_at: row.logged_at,
+      actual_duration_min: row.actual_duration_min,
+      actual_distance_km: row.actual_distance_km,
+      actual_elevation_gain_m: row.actual_elevation_gain_m,
+      actual_hr_avg: row.actual_hr_avg,
+      actual_rpe: row.actual_rpe,
+      actual_notes: row.actual_notes,
+      actual_detail: row.actual_detail,
+      is_custom: Boolean(row.is_custom),
     });
     byDate.set(row.date, list);
   }
@@ -142,6 +165,14 @@ interface WorkoutDetail {
   position: number;
   status: WorkoutStatus;
   logged_at: string | null;
+  actual_duration_min: number | null;
+  actual_distance_km: number | null;
+  actual_elevation_gain_m: number | null;
+  actual_hr_avg: number | null;
+  actual_rpe: number | null;
+  actual_notes: string | null;
+  actual_detail: ActualDetail | null;
+  is_custom: boolean | null;
 }
 
 export async function getWorkoutById(
@@ -150,7 +181,7 @@ export async function getWorkoutById(
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("workouts")
-    .select("id, date, kind, title, details, position, status, logged_at")
+    .select(WORKOUT_COLUMNS)
     .eq("id", id)
     .maybeSingle<WorkoutDetail>();
 
@@ -206,6 +237,13 @@ export interface LoggedWorkoutRow {
   title: string;
   details: string;
   status: WorkoutStatus;
+  actual_duration_min: number | null;
+  actual_distance_km: number | null;
+  actual_elevation_gain_m: number | null;
+  actual_hr_avg: number | null;
+  actual_rpe: number | null;
+  actual_notes: string | null;
+  actual_detail: ActualDetail | null;
 }
 
 /**
@@ -229,7 +267,9 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
       .maybeSingle<Race>(),
     supabase
       .from("workouts")
-      .select("date, kind, title, details, status")
+      .select(
+        "date, kind, title, details, status, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail",
+      )
       .lt("date", beforeDate)
       .order("date", { ascending: true })
       .order("position", { ascending: true })

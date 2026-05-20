@@ -1,6 +1,26 @@
 export type WorkoutKind = "run" | "gym" | "mobility";
 export type WorkoutStatus = "pending" | "completed" | "skipped";
 
+// Kind-specific actuals shape — sparse by design. Runs carry `zones`;
+// strength carries `sets`; physio + mobility carry `exercises`. All
+// optional so a partially-filled log doesn't force every consumer to
+// branch on shape.
+export interface ActualDetail {
+  zones?: { label: string; minutes: number }[];
+  sets?: {
+    exerciseName: string;
+    reps: number;
+    weight: number;
+    unit: string;
+  }[];
+  exercises?: {
+    name: string;
+    done: boolean;
+    pain?: number | null;
+    note?: string | null;
+  }[];
+}
+
 export interface Workout {
   id: number;
   kind: WorkoutKind;
@@ -14,6 +34,19 @@ export interface Workout {
   // ISO timestamp written when the user logs the workout. Null while
   // pending; rendered as the "DONE · HH:MM" caption on cards.
   logged_at: string | null;
+  // Captured-on-the-day actuals. All optional — the UI surfaces "+ ADD
+  // ACTUALS" until any field is populated. Internal units stay metric;
+  // display layer converts via lib/units.ts.
+  actual_duration_min: number | null;
+  actual_distance_km: number | null;
+  actual_elevation_gain_m: number | null;
+  actual_hr_avg: number | null;
+  actual_rpe: number | null;
+  actual_notes: string | null;
+  actual_detail: ActualDetail | null;
+  // True when the user inserted this workout via the "Add activity" flow.
+  // Regen preserves these — see migration 0014 / commit_plan_preview RPC.
+  is_custom: boolean;
 }
 
 export interface Day {

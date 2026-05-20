@@ -167,6 +167,54 @@ describe("formatHistory", () => {
       2026-05-15 [gym] Strength A — 45 min lower body  →  skipped"
     `);
   });
+  it("appends actuals + notes + time-in-zone under a logged workout", () => {
+    const withActuals: LoggedWorkout[] = [
+      {
+        date: "2026-05-13",
+        kind: "run",
+        title: "Tempo",
+        details: "60 min @ Z3",
+        status: "completed",
+        actual_duration_min: 62,
+        actual_distance_km: 11.2,
+        actual_elevation_gain_m: 180,
+        actual_hr_avg: 158,
+        actual_rpe: 6,
+        actual_notes: "felt easy throughout, could have gone further",
+        actual_detail: {
+          zones: [
+            { label: "Z3", minutes: 42 },
+            { label: "Z4", minutes: 18 },
+          ],
+        },
+      },
+    ];
+    expect(formatHistory(withActuals)).toMatchInlineSnapshot(`
+      "Past workouts and adherence (1 completed, 0 skipped, 0 unlogged):
+      2026-05-13 [run] Tempo — 60 min @ Z3  →  completed
+        actual: 11.2 km · 1h02 · +180m · HR 158 · RPE 6
+        "felt easy throughout, could have gone further"
+        time in zone: Z3 42min · Z4 18min"
+    `);
+  });
+  it("renders only the populated actuals fields, no placeholder gaps", () => {
+    const partial: LoggedWorkout[] = [
+      {
+        date: "2026-05-14",
+        kind: "run",
+        title: "Easy",
+        details: "8 km easy",
+        status: "completed",
+        actual_distance_km: 8.5,
+        actual_rpe: 3,
+      },
+    ];
+    expect(formatHistory(partial)).toMatchInlineSnapshot(`
+      "Past workouts and adherence (1 completed, 0 skipped, 0 unlogged):
+      2026-05-14 [run] Easy — 8 km easy  →  completed
+        actual: 8.5 km · RPE 3"
+    `);
+  });
   it("returns the empty-history sentinel", () => {
     expect(formatHistory([])).toBe(
       "No logged history yet — this is the initial plan.",

@@ -1,6 +1,9 @@
+"use client";
+
 // Shared workout-detail atoms — small presentational blocks composed by the
-// per-variant body components. None of these own state; the parent decides
-// what data they render.
+// per-variant body components. None of these own state; the parent (the
+// ActualsForm) passes value + onChange so the entire form's state lives in
+// one place and one save round-trip captures everything.
 
 import Link from "next/link";
 import type { ReactNode } from "react";
@@ -84,30 +87,32 @@ export function SegmentRow({
 }
 
 // ─── Field row ──────────────────────────────────────────────
-// Static read-only display of a planned vs actual value. Editing comes in a
-// later milestone — for v1 we surface the design's layout so users see what
-// the log will look like when it fills in.
+// Controlled numeric input. `value` is the parsed number (or null when
+// empty); `onChange` fires on every keystroke. Visually identical to the
+// prior read-only version when no value is present — placeholder "—" reads
+// as the target glyph the design used.
 export function FieldRow({
   label,
   value,
+  onChange,
   unit,
   target,
   required,
   disabled,
 }: {
   label: string;
-  value: string;
+  value: number | null;
+  onChange?: (next: number | null) => void;
   unit?: string;
   target?: string;
   required?: boolean;
   disabled?: boolean;
 }) {
+  const readOnly = !onChange;
   return (
-    <div
+    <label
       className={`grid items-center gap-4 rounded-[10px] border border-zinc-200 px-3.5 py-3 dark:border-zinc-800 ${
-        disabled
-          ? "opacity-55"
-          : "bg-white dark:bg-[#0f0f11]"
+        disabled ? "opacity-55" : "bg-white dark:bg-[#0f0f11]"
       }`}
       style={{ gridTemplateColumns: "1fr auto" }}
     >
@@ -130,17 +135,27 @@ export function FieldRow({
         )}
       </div>
       <div className="flex items-baseline gap-1">
-        <span
-          className="font-mono text-[18px] font-medium text-zinc-950 dark:text-zinc-50"
+        <input
+          type="number"
+          inputMode="decimal"
+          step="any"
+          value={value ?? ""}
+          readOnly={readOnly}
+          onChange={(e) => {
+            if (!onChange) return;
+            const v = e.target.value;
+            onChange(v === "" ? null : Number(v));
+          }}
+          disabled={disabled}
+          placeholder="—"
+          className="w-20 rounded bg-transparent text-right font-mono text-[18px] font-medium text-zinc-950 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:cursor-not-allowed dark:text-zinc-50 dark:placeholder:text-zinc-600"
           style={{ letterSpacing: "-0.01em" }}
-        >
-          {value}
-        </span>
+        />
         {unit && (
           <span className="font-mono text-[12px] text-zinc-500">{unit}</span>
         )}
       </div>
-    </div>
+    </label>
   );
 }
 
@@ -241,28 +256,37 @@ export function TimeInZoneBar({
 }
 
 // ─── Notes field ────────────────────────────────────────────
-// Read-only display in v1: surfaces the user's previously-saved note when
-// the workout is logged, or an empty dashed placeholder otherwise.
+// Controlled textarea. The dashed placeholder treatment is reproduced via
+// CSS placeholder styling so the visual matches the prior read-only state
+// before the user types.
 export function NotesField({
   value,
+  onChange,
   disabled,
+  placeholder,
 }: {
-  value?: string;
+  value: string;
+  onChange?: (next: string) => void;
   disabled?: boolean;
+  placeholder?: string;
 }) {
-  const hasContent = (value ?? "").length > 0;
+  const readOnly = !onChange;
   return (
-    <div
-      className={`rounded-[10px] border px-3.5 py-3 text-[13px] leading-relaxed ${
-        hasContent
-          ? "border-zinc-200 bg-white text-zinc-950 dark:border-zinc-800 dark:bg-[#0f0f11] dark:text-zinc-50"
-          : "border-dashed border-zinc-200 text-zinc-400 dark:border-zinc-800 dark:text-zinc-600"
-      } ${disabled ? "opacity-55" : ""}`}
-    >
-      {hasContent
-        ? value
-        : "Add a note about how the session felt, weather, route, anything Claude should weigh into the next plan update."}
-    </div>
+    <textarea
+      value={value}
+      onChange={(e) => onChange?.(e.target.value)}
+      readOnly={readOnly}
+      disabled={disabled}
+      placeholder={
+        placeholder ??
+        "Add a note about how the session felt, weather, route, anything Claude should weigh into the next plan update."
+      }
+      className={`min-h-[80px] w-full resize-y rounded-[10px] border bg-white px-3.5 py-3 text-[13px] leading-relaxed text-zinc-950 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-55 dark:bg-[#0f0f11] dark:text-zinc-50 dark:placeholder:text-zinc-600 ${
+        value.length === 0
+          ? "border-dashed border-zinc-200 dark:border-zinc-800"
+          : "border-zinc-200 dark:border-zinc-800"
+      }`}
+    />
   );
 }
 
@@ -351,11 +375,20 @@ export function FuelingCallout({ body }: { body: string }) {
   );
 }
 
-// ─── Effort slider (read-only display) ──────────────────────
-// 1–10 perceived effort. Renders as a horizontal bar with an emerald fill
-// up to the current value. v1 is display-only; editing comes later.
-export function EffortSlider({ value }: { value: number }) {
-  const pct = Math.max(0, Math.min(10, value)) * 10;
+// ─── Effort slider ──────────────────────────────────────────
+// 1–10 perceived effort. Native <input type="range"> for tap-and-drag —
+// `accent-emerald-500` skins the thumb so the visual still reads as the
+// app's primary accent on both iOS and Android browsers.
+export function EffortSlider({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number | null;
+  onChange?: (next: number) => void;
+  disabled?: boolean;
+}) {
+  const v = value ?? 0;
   return (
     <div className="flex flex-col gap-1.5 rounded-[10px] border border-zinc-200 bg-white px-3.5 py-3 dark:border-zinc-800 dark:bg-[#0f0f11]">
       <div className="flex items-baseline justify-between">
@@ -366,32 +399,43 @@ export function EffortSlider({ value }: { value: number }) {
           PERCEIVED EFFORT
         </span>
         <span className="font-mono text-[12px] font-medium text-zinc-950 dark:text-zinc-50">
-          {value || "—"}
+          {value ?? "—"}
           <span className="ml-1 text-zinc-400 dark:text-zinc-600">/ 10</span>
         </span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
-        <span
-          className="block h-full rounded-full bg-emerald-500"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
+      <input
+        type="range"
+        min={1}
+        max={10}
+        step={1}
+        value={v || 1}
+        onChange={(e) => onChange?.(Number(e.target.value))}
+        disabled={disabled || !onChange}
+        className="w-full accent-emerald-500 disabled:opacity-55"
+        aria-label="Perceived effort, 1 to 10"
+      />
     </div>
   );
 }
 
 // ─── Pain slider (Physio) ───────────────────────────────────
-// 1–10 pain rating. The bar shifts from emerald → amber → red as the value
-// climbs, so a glance reveals which exercises are flagging.
-export function PainSlider({ value }: { value: number | null }) {
+// 1–10 pain rating. Colour shifts from emerald → amber → red as the value
+// climbs so a glance reveals which exercises are flagging. The native range
+// input drives interaction; the coloured bar underneath keeps the design
+// language.
+export function PainSlider({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number | null;
+  onChange?: (next: number) => void;
+  disabled?: boolean;
+}) {
   const v = value ?? 0;
   const pct = Math.max(0, Math.min(10, v)) * 10;
   const colour =
-    v <= 3
-      ? "#10b981"
-      : v <= 6
-        ? "#d97706"
-        : "#dc2626";
+    v <= 3 ? "#10b981" : v <= 6 ? "#d97706" : "#dc2626";
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between">
@@ -406,29 +450,51 @@ export function PainSlider({ value }: { value: number | null }) {
           <span className="ml-1 text-zinc-400 dark:text-zinc-600">/ 10</span>
         </span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+      <div className="relative h-1.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
         <span
           className="block h-full rounded-full"
           style={{ width: `${pct}%`, background: colour }}
         />
       </div>
+      {onChange && (
+        <input
+          type="range"
+          min={0}
+          max={10}
+          step={1}
+          value={v}
+          onChange={(e) => onChange(Number(e.target.value))}
+          disabled={disabled}
+          className="w-full disabled:opacity-55"
+          style={{ accentColor: colour }}
+          aria-label="Pain, 0 to 10"
+        />
+      )}
     </div>
   );
 }
 
 // ─── DoneToggle (Mobility) ──────────────────────────────────
-// Big tap target that flips the whole routine from pending → done.
-// Wraps a server-action call upstream; v1 renders it static.
+// Big tap target that flips the whole routine from pending → done. Wires
+// to logWorkout upstream via onChange; the page passes its current status
+// in via `done` so this stays a controlled, presentational atom.
 export function DoneToggle({
   done,
+  onChange,
   label,
+  disabled,
 }: {
   done: boolean;
+  onChange?: (next: boolean) => void;
   label?: string;
+  disabled?: boolean;
 }) {
   return (
-    <div
-      className={`flex w-full items-center justify-between gap-3 rounded-[12px] border px-4 py-4 transition active:scale-[0.99] ${
+    <button
+      type="button"
+      onClick={() => onChange?.(!done)}
+      disabled={disabled || !onChange}
+      className={`flex w-full items-center justify-between gap-3 rounded-[12px] border px-4 py-4 transition active:scale-[0.99] disabled:cursor-not-allowed ${
         done
           ? "border-emerald-500 bg-emerald-500 text-emerald-950 shadow-[0_8px_22px_rgba(16,185,129,0.28)]"
           : "border-zinc-200 bg-white text-zinc-950 dark:border-zinc-800 dark:bg-[#0f0f11] dark:text-zinc-50"
@@ -466,25 +532,28 @@ export function DoneToggle({
       >
         TAP
       </span>
-    </div>
+    </button>
   );
 }
 
 // ─── Routine row (Mobility) ─────────────────────────────────
+// Per-exercise checkbox. Wrapped in a button when `onChange` is provided
+// so the whole row is tap-target; reverts to a static div for read-only.
 export function RoutineRow({
   name,
   spec,
-  done,
+  done = false,
+  onChange,
+  disabled,
 }: {
   name: string;
   spec?: string;
   done?: boolean;
+  onChange?: (next: boolean) => void;
+  disabled?: boolean;
 }) {
-  return (
-    <div
-      className="grid items-center gap-3 rounded-[10px] border border-zinc-200 bg-white px-3.5 py-2.5 dark:border-zinc-800 dark:bg-[#0f0f11]"
-      style={{ gridTemplateColumns: "auto 1fr auto" }}
-    >
+  const inner = (
+    <>
       <span
         className={`inline-flex h-[18px] w-[18px] items-center justify-center rounded-full border-[1.5px] ${
           done
@@ -512,7 +581,29 @@ export function RoutineRow({
           {spec}
         </span>
       )}
-    </div>
+    </>
+  );
+  const gridStyle = { gridTemplateColumns: "auto 1fr auto" };
+  if (!onChange) {
+    return (
+      <div
+        className="grid items-center gap-3 rounded-[10px] border border-zinc-200 bg-white px-3.5 py-2.5 dark:border-zinc-800 dark:bg-[#0f0f11]"
+        style={gridStyle}
+      >
+        {inner}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!done)}
+      disabled={disabled}
+      className="grid items-center gap-3 rounded-[10px] border border-zinc-200 bg-white px-3.5 py-2.5 text-left transition active:scale-[0.99] disabled:opacity-55 dark:border-zinc-800 dark:bg-[#0f0f11]"
+      style={gridStyle}
+    >
+      {inner}
+    </button>
   );
 }
 
@@ -570,24 +661,39 @@ export function ExerciseRow({
 }
 
 // ─── Physio exercise row ────────────────────────────────────
+// Controlled. `done`, `pain`, `note` come from the parent's actuals state;
+// each field has its own onChange so a single typed character doesn't have
+// to round-trip the whole exercise row through the parent.
 export function PhysioExerciseRow({
   name,
   spec,
   pain,
   notes,
-  done,
+  done = false,
+  onChangeDone,
+  onChangePain,
+  onChangeNote,
+  disabled,
 }: {
   name: string;
   spec?: string;
   pain: number | null;
   notes?: string;
   done?: boolean;
+  onChangeDone?: (next: boolean) => void;
+  onChangePain?: (next: number) => void;
+  onChangeNote?: (next: string) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-2.5 rounded-[10px] border border-zinc-200 bg-white px-3.5 py-3 dark:border-zinc-800 dark:bg-[#0f0f11]">
       <div className="flex items-start gap-2.5">
-        <span
-          className={`mt-0.5 inline-flex h-[22px] w-[22px] items-center justify-center rounded-md border-[1.5px] ${
+        <button
+          type="button"
+          onClick={() => onChangeDone?.(!done)}
+          disabled={disabled || !onChangeDone}
+          aria-label={done ? "Mark not done" : "Mark done"}
+          className={`mt-0.5 inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md border-[1.5px] transition active:scale-[0.94] ${
             done
               ? "border-emerald-500 bg-emerald-500"
               : "border-zinc-200 dark:border-zinc-800"
@@ -604,7 +710,7 @@ export function PhysioExerciseRow({
               />
             </svg>
           )}
-        </span>
+        </button>
         <div className="flex flex-1 flex-wrap items-baseline justify-between gap-2.5">
           <span className="text-[14px] font-medium text-zinc-950 dark:text-zinc-50">
             {name}
@@ -616,16 +722,16 @@ export function PhysioExerciseRow({
           )}
         </div>
       </div>
-      <PainSlider value={pain} />
-      <div
-        className={`min-h-[28px] rounded-md border border-dashed px-2.5 py-1.5 text-[12.5px] leading-snug ${
-          notes
-            ? "border-zinc-200 text-zinc-600 dark:border-zinc-800 dark:text-zinc-400"
-            : "border-zinc-200 text-zinc-400 dark:border-zinc-800 dark:text-zinc-600"
-        }`}
-      >
-        {notes ?? "note (optional)"}
-      </div>
+      <PainSlider value={pain} onChange={onChangePain} disabled={disabled} />
+      <input
+        type="text"
+        value={notes ?? ""}
+        onChange={(e) => onChangeNote?.(e.target.value)}
+        readOnly={!onChangeNote}
+        disabled={disabled}
+        placeholder="note (optional)"
+        className="min-h-[28px] rounded-md border border-dashed border-zinc-200 bg-transparent px-2.5 py-1.5 text-[12.5px] leading-snug text-zinc-950 placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none dark:border-zinc-800 dark:text-zinc-50 dark:placeholder:text-zinc-600"
+      />
     </div>
   );
 }

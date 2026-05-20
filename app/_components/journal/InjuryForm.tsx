@@ -243,8 +243,8 @@ function FormFooter({
   saving: boolean;
 }) {
   return (
-    <div className="flex flex-col gap-2 border-t border-zinc-200 px-4 pt-3 pb-[max(env(safe-area-inset-bottom),18px)] sm:px-5 sm:pb-5 dark:border-zinc-800">
-      <div className="flex flex-wrap items-center gap-2.5">
+    <div className="border-t border-zinc-200 px-4 pt-3 pb-[max(env(safe-area-inset-bottom),18px)] sm:px-5 sm:pb-5 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center justify-center gap-3">
         <button
           type="button"
           onClick={onSaveAndRegen}
@@ -262,8 +262,6 @@ function FormFooter({
         >
           Save only
         </button>
-      </div>
-      <div className="flex justify-end">
         <Link
           href="/journal"
           className="text-[13px] font-medium text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-50"

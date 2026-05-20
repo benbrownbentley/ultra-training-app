@@ -6,6 +6,7 @@ import { logWorkout } from "@/app/actions";
 import type { Workout, WorkoutKind } from "@/lib/plan";
 import { MOTIFS } from "./motifs";
 import { ArrowRight, CheckCircle, ChevronUpRight } from "./icons";
+import { useLoggedToast } from "./LoggedToast";
 
 // Maps the database kind to the design's eyebrow label.
 function eyebrowFor(kind: WorkoutKind): string {
@@ -22,17 +23,46 @@ interface Props {
   loggedAt?: string | null;
 }
 
+// True if any actuals field has been populated. Drives whether the
+// "+ ADD ACTUALS →" affordance shows in the logged footer.
+function hasActuals(w: Workout): boolean {
+  return (
+    w.actual_duration_min != null ||
+    w.actual_distance_km != null ||
+    w.actual_elevation_gain_m != null ||
+    w.actual_hr_avg != null ||
+    w.actual_rpe != null ||
+    (w.actual_notes != null && w.actual_notes.length > 0) ||
+    w.actual_detail != null
+  );
+}
+
 export function WorkoutCard({ workout, dim, loggedAt }: Props) {
   const [isPending, startTransition] = useTransition();
+  const toast = useLoggedToast();
   const Motif = MOTIFS[workout.kind];
   const isLogged = workout.status === "completed";
   const isSkipped = workout.status === "skipped";
   const isFaded = dim || isPending;
   const eyebrow = eyebrowFor(workout.kind);
+  const actualsCaptured = hasActuals(workout);
 
   function setStatus(next: Workout["status"]) {
+    const wasUnlogged = workout.status !== "completed";
     startTransition(() => {
-      void logWorkout(workout.id, next);
+      void (async () => {
+        try {
+          await logWorkout(workout.id, next);
+          // Only nudge the user toward actuals if they just transitioned
+          // from not-done → done. Editing a logged card or skipping
+          // shouldn't surface the toast.
+          if (next === "completed" && wasUnlogged) {
+            toast.show({ workoutId: workout.id, title: workout.title });
+          }
+        } catch (e) {
+          console.error("Failed to log workout", e);
+        }
+      })();
     });
   }
 
@@ -113,7 +143,7 @@ export function WorkoutCard({ workout, dim, loggedAt }: Props) {
       )}
       </Link>
 
-      <div className="relative flex items-center gap-2.5 px-[18px] pb-3.5 pt-2.5">
+      <div className="relative flex flex-wrap items-center gap-2.5 px-[18px] pb-3.5 pt-2.5">
         {isLogged ? (
           <>
             <button
@@ -124,6 +154,15 @@ export function WorkoutCard({ workout, dim, loggedAt }: Props) {
             >
               Edit log <ArrowRight color="currentColor" size={13} />
             </button>
+            {!actualsCaptured && (
+              <Link
+                href={`/workout/${workout.id}`}
+                className="inline-flex items-center gap-1 whitespace-nowrap font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:underline dark:text-emerald-400"
+                style={{ letterSpacing: "0.18em" }}
+              >
+                + ADD ACTUALS →
+              </Link>
+            )}
             <span className="flex-1" />
             {doneTime && (
               <span

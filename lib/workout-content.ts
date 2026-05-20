@@ -1,0 +1,384 @@
+// Best-effort parser turning a free-text Claude-generated `details` string
+// into the structured payload the Workout Detail design expects. Where data
+// can't be parsed (most v1 plans), the helper falls back to kind-specific
+// stub copy so the design layout still renders honestly — the user sees a
+// real eyebrow + description even if the AI hasn't been asked to emit
+// structured prose yet.
+
+import type { WorkoutKind } from "./plan";
+
+export type WorkoutSubtype =
+  | "running"
+  | "strength"
+  | "mobility"
+  | "physio"
+  | "cross"
+  | "hike";
+
+export interface Segment {
+  name: string;
+  value: string;
+  zone?: string;
+  note?: string;
+  emphasis: "low" | "high";
+}
+
+export interface Exercise {
+  name: string;
+  sets: number;
+  reps: number;
+  weight?: string;
+  unit?: string;
+  equip?: string;
+  note?: string;
+  isTime?: boolean;
+}
+
+export interface RoutineItem {
+  name: string;
+  spec?: string;
+}
+
+export interface PhysioExercise {
+  name: string;
+  spec?: string;
+  // Pain rating, 1–10. Null until logged.
+  pain: number | null;
+  notes?: string;
+}
+
+export interface WorkoutContent {
+  subtype: WorkoutSubtype;
+  // Eyebrow sub-label fragment used after the date / week. E.g.
+  // "RUN · TEMPO", "CROSS-TRAINING · HIKE".
+  subLabel: string;
+  description: string;
+  why: string;
+  glossarySlug: string | null;
+  glossaryLabel: string;
+  segments: Segment[];
+  exercises: Exercise[];
+  routine: RoutineItem[];
+  physioExercises: PhysioExercise[];
+  // For long hikes (>3h) — appears between metrics and STRUCTURE.
+  fueling: string | null;
+  // For strength — appears at the top of the exercise list.
+  warmup: {
+    duration: string;
+    note: string;
+    items: string[];
+  } | null;
+}
+
+const HIKE_HINT_RE = /\bhike|trekking\b/i;
+const PHYSIO_HINT_RE = /\bphysio|prehab|rehab\b/i;
+const CYCLING_HINT_RE = /\bcycl(ing|e)|bike|spin\b/i;
+const SWIMMING_HINT_RE = /\bswim/i;
+
+// Map kind + title to the visual subtype that drives the variant body.
+export function pickSubtype(
+  kind: WorkoutKind,
+  title: string,
+): WorkoutSubtype {
+  if (kind === "run") {
+    if (HIKE_HINT_RE.test(title)) return "hike";
+    return "running";
+  }
+  if (kind === "gym") return "strength";
+  if (PHYSIO_HINT_RE.test(title)) return "physio";
+  if (CYCLING_HINT_RE.test(title) || SWIMMING_HINT_RE.test(title)) {
+    return "cross";
+  }
+  return "mobility";
+}
+
+// Kind-specific eyebrow tail. The page assembles "WED 18 MAY · WK 6/18 ·
+// BUILD · <tail>" — the tail tells the user which variant they're looking at.
+export function subLabel(subtype: WorkoutSubtype, title: string): string {
+  const t = title.toLowerCase();
+  if (subtype === "running") {
+    if (t.includes("tempo")) return "RUN · TEMPO";
+    if (t.includes("hill")) return "RUN · HILLS";
+    if (t.includes("long")) return "RUN · LONG";
+    if (t.includes("interval")) return "RUN · INTERVALS";
+    if (t.includes("easy") || t.includes("recovery")) return "RUN · EASY";
+    if (t.includes("race")) return "RUN · RACE";
+    return "RUN";
+  }
+  if (subtype === "strength") {
+    if (t.includes("upper")) return "STRENGTH · UPPER";
+    if (t.includes("lower")) return "STRENGTH · LOWER";
+    if (t.includes("core")) return "STRENGTH · CORE";
+    return "STRENGTH";
+  }
+  if (subtype === "hike") return "CROSS-TRAINING · HIKE";
+  if (subtype === "cross") {
+    if (CYCLING_HINT_RE.test(title)) return "CROSS-TRAINING · CYCLING";
+    if (SWIMMING_HINT_RE.test(title)) return "CROSS-TRAINING · SWIM";
+    return "CROSS-TRAINING";
+  }
+  if (subtype === "physio") return "MOBILITY · PHYSIO";
+  return "MOBILITY";
+}
+
+// Stub copy keyed by subtype. These are intentionally generic — the day a
+// plan generator emits real per-workout copy, swap the helper for a column
+// read. Until then the layout still has *some* description / why text and
+// reads honestly rather than empty.
+const STUB_DESCRIPTION: Record<WorkoutSubtype, string> = {
+  running: "Aerobic effort. Builds the engine that carries you through the back third of a long race.",
+  strength: "Targeted strength work. Bulletproofs the joints that take a beating on the trails.",
+  mobility: "Joint mobility and activation. Ten focused minutes anywhere.",
+  physio: "Targeted prehab to keep cranky tissues honest. Log pain per exercise.",
+  cross: "Cross-training. Aerobic stimulus without the impact load of running.",
+  hike: "Time on feet at vert. Hill-strength stimulus without the impact of running.",
+};
+
+const STUB_WHY: Record<WorkoutSubtype, string> = {
+  running: "Running is the spine of the plan — every session has a purpose, even the easy ones. Today's effort matches where you are in the build, and how Claude has weighed your recent adherence and feedback.",
+  strength: "Lower-body strength carries you through the back third of an ultra, where quads are the limiter. Today's session targets the posterior chain — the muscles that take over when quads fade.",
+  mobility: "Hip and ankle mobility is the single best injury-prevention investment for an ultrarunner. Ten minutes a day pays for itself in week 12 of a build cycle.",
+  physio: "Targeted prehab protects the next eight days of training. Log honestly so Claude knows if a tissue is heading the wrong way.",
+  cross: "Active recovery: circulation without stimulus. Keep the cadence high and the effort low — if you can't hold a conversation you're going too hard.",
+  hike: "Your race profile has thousands of metres of vert — most of it climbed at hiking pace. Today conditions the legs for sustained climbing under fatigue and lets you practice mountain-pace fueling without the impact of running.",
+};
+
+const GLOSSARY_SLUG: Record<WorkoutSubtype, string | null> = {
+  running: "tempo",
+  strength: "strength-for-runners",
+  mobility: "movement-prep",
+  physio: "hip-glute-prehab",
+  cross: "active-recovery",
+  hike: "training-hikes",
+};
+
+const GLOSSARY_LABEL: Record<WorkoutSubtype, string> = {
+  running: "Read more about endurance running",
+  strength: "Read more about strength for trail running",
+  mobility: "Read more about movement prep",
+  physio: "Read more about hip & glute prehab",
+  cross: "Read more about active recovery",
+  hike: "Read more about training hikes",
+};
+
+// Pull warm-up / main set / cool-down out of the details string. Claude
+// tends to emit "Warm-up: 15 min easy. Main set: 4×8 min @ Z3. Cool-down:
+// 10 min easy." — we split on these labels and assign zones if present.
+export function parseRunningSegments(details: string): Segment[] {
+  const segments: Segment[] = [];
+  const lower = details.toLowerCase();
+
+  const warmupMatch = details.match(
+    /warm[\s-]?up[:\s]+([^.;]+?)(?=(?:[.;]|\bmain\s|\bcool[\s-]?down))/i,
+  );
+  const mainMatch = details.match(
+    /(?:main set|main)[:\s]+([^.;]+?)(?=(?:[.;]|\bcool[\s-]?down))/i,
+  );
+  const cooldownMatch = details.match(
+    /cool[\s-]?down[:\s]+([^.;]+)/i,
+  );
+
+  if (warmupMatch) {
+    segments.push({
+      name: "Warm-up",
+      value: extractValue(warmupMatch[1]) ?? warmupMatch[1].trim(),
+      zone: extractZone(warmupMatch[1]) ?? "Z1–Z2",
+      note: stripValueAndZone(warmupMatch[1]),
+      emphasis: "low",
+    });
+  }
+  if (mainMatch) {
+    segments.push({
+      name: "Main set",
+      value: extractValue(mainMatch[1]) ?? mainMatch[1].trim(),
+      zone: extractZone(mainMatch[1]) ?? extractZone(details) ?? "Z3",
+      note: stripValueAndZone(mainMatch[1]),
+      emphasis: "high",
+    });
+  }
+  if (cooldownMatch) {
+    segments.push({
+      name: "Cool-down",
+      value: extractValue(cooldownMatch[1]) ?? cooldownMatch[1].trim(),
+      zone: extractZone(cooldownMatch[1]) ?? "Z1",
+      note: stripValueAndZone(cooldownMatch[1]),
+      emphasis: "low",
+    });
+  }
+
+  // Fallback — no labelled sections found. If the details has a zone
+  // reference and a duration, render as a single "main set" so the
+  // STRUCTURE block isn't empty.
+  if (segments.length === 0) {
+    const zone = extractZone(details);
+    const value = extractValue(details);
+    if (zone || value) {
+      segments.push({
+        name: "Main set",
+        value: value ?? details.trim(),
+        zone: zone ?? undefined,
+        note: stripValueAndZone(details),
+        emphasis: "high",
+      });
+    }
+  }
+
+  // Defensive: if the lower-cased details have neither "warm" nor "main"
+  // nor "cool", and we got nothing above, leave segments empty so the
+  // caller hides the STRUCTURE block.
+  if (
+    segments.length === 0 &&
+    !lower.includes("warm") &&
+    !lower.includes("main") &&
+    !lower.includes("cool")
+  ) {
+    return [];
+  }
+
+  return segments;
+}
+
+const VALUE_RE = /(\d+(?:\.\d+)?)\s*(min|hr|h|km|mi|sec|s)\b/i;
+const ZONE_RE = /(Z\d(?:[–-]Z\d)?)/i;
+const INTERVAL_RE = /(\d+\s*[×x]\s*(?:\(?[^,;)]+\)?))/i;
+
+function extractValue(text: string): string | null {
+  const interval = text.match(INTERVAL_RE);
+  if (interval) return interval[1].replace(/\s*[×x]\s*/, " × ").trim();
+  const m = text.match(VALUE_RE);
+  if (!m) return null;
+  return `${m[1]} ${m[2].toLowerCase().startsWith("h") ? "hr" : m[2].toLowerCase()}`;
+}
+
+function extractZone(text: string): string | null {
+  const m = text.match(ZONE_RE);
+  return m ? m[1].toUpperCase().replace("-", "–") : null;
+}
+
+function stripValueAndZone(text: string): string | undefined {
+  const cleaned = text
+    .replace(VALUE_RE, "")
+    .replace(ZONE_RE, "")
+    .replace(/^[\s,·.:-]+|[\s,·.:-]+$/g, "")
+    .trim();
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+// "Squat 4×6 @ 60kg", "Romanian Deadlift 3×8 @ 50kg", one per line / comma.
+const EXERCISE_LINE_RE =
+  /([A-Z][A-Za-z' /-]+?)\s+(\d+)\s*[×x]\s*(\d+)\s*(?:@\s*([\d.]+)\s*(kg|lb|lbs|bw)?)?/g;
+
+export function parseStrengthExercises(details: string): Exercise[] {
+  const exercises: Exercise[] = [];
+  for (const match of details.matchAll(EXERCISE_LINE_RE)) {
+    const [, name, sets, reps, weight, unit] = match;
+    exercises.push({
+      name: name.trim(),
+      sets: Number(sets),
+      reps: Number(reps),
+      weight: weight ?? undefined,
+      unit: unit?.toLowerCase() === "bw" ? "BW" : unit,
+    });
+  }
+  return exercises;
+}
+
+// Mobility / physio routine: split on bullets, dashes, or new lines.
+export function parseRoutine(details: string): RoutineItem[] {
+  const cleaned = details.replace(/\s+/g, " ");
+  const candidates = cleaned
+    .split(/[·•;]|(?:\.\s+(?=[A-Z]))/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0 && s.length < 80);
+  if (candidates.length < 2) return [];
+  return candidates.slice(0, 8).map((line) => {
+    const m = line.match(/^(.*?)[\s,]+(\d+\s*[×x][\s\d/per\-a-z]+|\d+s)$/i);
+    if (m) return { name: m[1].trim(), spec: m[2].trim() };
+    return { name: line };
+  });
+}
+
+// Single entry point used by the page.
+export function deriveWorkoutContent(
+  kind: WorkoutKind,
+  title: string,
+  details: string,
+): WorkoutContent {
+  const subtype = pickSubtype(kind, title);
+
+  const segments =
+    subtype === "running" || subtype === "hike" || subtype === "cross"
+      ? parseRunningSegments(details)
+      : [];
+
+  const exercises =
+    subtype === "strength" ? parseStrengthExercises(details) : [];
+
+  const routine =
+    subtype === "mobility" ? parseRoutine(details) : [];
+
+  const physioExercises =
+    subtype === "physio"
+      ? parseRoutine(details).map<PhysioExercise>((r) => ({
+          name: r.name,
+          spec: r.spec,
+          pain: null,
+        }))
+      : [];
+
+  // Long-hike fueling reminder — surfaced when the title or details look
+  // like a multi-hour effort.
+  const fueling = (() => {
+    if (subtype !== "hike") return null;
+    const hours = details.match(/(\d+(?:\.\d+)?)\s*(?:hr|h)\b/i);
+    if (!hours) return null;
+    if (Number(hours[1]) < 3) return null;
+    return "Fuel ~80g carbs/hr · 1.5L water";
+  })();
+
+  // Generic warm-up reminder for heavy lifts. We can't know "heaviness"
+  // from text, so emit when the parsed exercises include a Squat / DL.
+  const warmup =
+    subtype === "strength" &&
+    exercises.some((e) => /squat|deadlift|press/i.test(e.name))
+      ? {
+          duration: "~8 min",
+          note: "Build to working weight. Heavy compound lifts need a thorough ramp-up.",
+          items: [
+            "Goblet squat · 2 × 8 light",
+            "Glute bridge · 2 × 10 BW",
+            "Working set ramps · 50% → 70% → 90%",
+          ],
+        }
+      : null;
+
+  return {
+    subtype,
+    subLabel: subLabel(subtype, title),
+    description: STUB_DESCRIPTION[subtype],
+    why: STUB_WHY[subtype],
+    glossarySlug: GLOSSARY_SLUG[subtype],
+    glossaryLabel: GLOSSARY_LABEL[subtype],
+    segments,
+    exercises,
+    routine,
+    physioExercises,
+    fueling,
+    warmup,
+  };
+}
+
+// Keep the existing extractMetrics call surface stable by re-exporting an
+// alias here — callers can migrate at their own pace.
+export type { MetricTile } from "@/app/_components/workout/extract-metrics";
+export { extractMetrics } from "@/app/_components/workout/extract-metrics";
+
+// Mobile-friendly: when raceDistanceKm is known, hint at vert importance for
+// the running variant by elevating the VERT tile. Returned alongside content
+// derivation so the caller can plumb it into MetricsRow without recomputing.
+export function shouldElevateVert(
+  raceDistanceKm: number | null | undefined,
+): boolean {
+  if (raceDistanceKm == null) return false;
+  return raceDistanceKm >= 50;
+}

@@ -7,11 +7,10 @@ import { MetricsRow } from "@/app/_components/workout/MetricsRow";
 import { Section } from "@/app/_components/workout/Section";
 import { Banner } from "@/app/_components/workout/Banner";
 import { WorkoutActions } from "@/app/_components/workout/WorkoutActions";
+import { VariantBody } from "@/app/_components/workout/VariantBody";
 import { TabBar } from "@/app/_components/today/TabBar";
-import {
-  extractMetrics,
-  kindEyebrow,
-} from "@/app/_components/workout/extract-metrics";
+import { extractMetrics } from "@/app/_components/workout/extract-metrics";
+import { deriveWorkoutContent } from "@/lib/workout-content";
 
 export const dynamic = "force-dynamic";
 
@@ -98,7 +97,8 @@ export default async function WorkoutPage({
   const todayIso = getTodayISO();
   const { variant, badge, banner } = classify(workout.status, workout.date, todayIso);
 
-  const eyebrow = `${formatEyebrowDate(workout.date)} · ${kindEyebrow(workout.kind, workout.title)}`;
+  const content = deriveWorkoutContent(workout.kind, workout.title, workout.details);
+  const eyebrow = `${formatEyebrowDate(workout.date)} · ${content.subLabel}`;
   const metrics = extractMetrics(workout.details, workout.kind);
   const isFuture = variant === "future";
 
@@ -116,6 +116,7 @@ export default async function WorkoutPage({
             kind={workout.kind}
             eyebrow={eyebrow}
             title={workout.title}
+            description={content.description}
             badge={badge}
           />
 
@@ -127,25 +128,13 @@ export default async function WorkoutPage({
             </p>
           </Section>
 
-          <Section
-            label={isFuture ? "LOG · AVAILABLE ON THE DAY" : "LOG"}
-            right={
-              variant === "logged" && workout.logged_at ? (
-                <span
-                  className="font-mono text-[10px] uppercase text-zinc-400 dark:text-zinc-600"
-                  style={{ letterSpacing: "0.18em" }}
-                >
-                  {formatLoggedAtFull(workout.logged_at)}
-                </span>
-              ) : undefined
-            }
-          >
-            <LogSummary
-              status={workout.status}
-              loggedAt={workout.logged_at}
-              isFuture={isFuture}
-            />
-          </Section>
+          <VariantBody
+            content={content}
+            variant={variant}
+            status={workout.status}
+            loggedAt={workout.logged_at}
+            isFuture={isFuture}
+          />
         </div>
       </div>
 
@@ -155,66 +144,6 @@ export default async function WorkoutPage({
         loggedAt={workout.logged_at}
       />
       <TabBar active="today" />
-    </div>
-  );
-}
-
-function formatLoggedAtFull(iso: string): string {
-  return new Date(iso)
-    .toLocaleString("en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-    })
-    .toUpperCase();
-}
-
-// Free-text logging isn't in v1; this read-only summary stands in for the
-// design's per-field log inputs until the data model grows them.
-function LogSummary({
-  status,
-  loggedAt,
-  isFuture,
-}: {
-  status: "pending" | "completed" | "skipped";
-  loggedAt: string | null;
-  isFuture: boolean;
-}) {
-  if (isFuture) {
-    return (
-      <div className="rounded-[10px] border border-dashed border-zinc-200 bg-transparent px-3.5 py-3 text-[13px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
-        Detailed log fields unlock on{" "}
-        <span className="text-zinc-950 dark:text-zinc-50">the day of the workout</span>.
-      </div>
-    );
-  }
-  if (status === "completed") {
-    return (
-      <div className="rounded-[10px] border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-[13px] leading-snug text-zinc-950 dark:border-emerald-500/40 dark:bg-emerald-500/[0.08] dark:text-zinc-50">
-        <span
-          className="mr-2 font-mono text-[10px] uppercase text-emerald-700 dark:text-emerald-400"
-          style={{ letterSpacing: "0.2em" }}
-        >
-          — DONE
-        </span>
-        {loggedAt
-          ? `Marked complete · ${new Date(loggedAt).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}`
-          : "Marked complete."}
-      </div>
-    );
-  }
-  if (status === "skipped") {
-    return (
-      <div className="rounded-[10px] border border-zinc-200 bg-zinc-100 px-3.5 py-3 text-[13px] text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
-        Marked skipped. Tap{" "}
-        <span className="text-zinc-950 dark:text-zinc-50">Log retrospectively</span> below to
-        flip this to done.
-      </div>
-    );
-  }
-  return (
-    <div className="rounded-[10px] border border-dashed border-zinc-200 bg-transparent px-3.5 py-3 text-[13px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
-      Use the action bar below to mark this workout done or skipped.
-      Detailed per-zone, per-set fields ship in a later update.
     </div>
   );
 }

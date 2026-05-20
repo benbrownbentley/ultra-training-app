@@ -24,6 +24,7 @@ interface Props {
   raceElevationGain: number | null;
   regenContextRows: ContextRow[];
   regenSparseTip: boolean;
+  unitSystem: import("@/lib/plan").UnitSystem;
 }
 
 // Maximum number of past weeks shown before requiring the "view earlier"
@@ -43,6 +44,7 @@ export function PlanPageClient({
   raceElevationGain,
   regenContextRows,
   regenSparseTip,
+  unitSystem,
 }: Props) {
   const [pastExpanded, setPastExpanded] = useState(false);
   // RegeneratePlanRow now owns its own pending state via the regen sheet;
@@ -111,6 +113,7 @@ export function PlanPageClient({
               todayIso={todayIso}
               prevPhase={null}
               dim={isRegenerating}
+              unitSystem={unitSystem}
             />
 
             {currentWeekObj && (
@@ -126,6 +129,7 @@ export function PlanPageClient({
                   week={currentWeekObj}
                   totalWeeks={totalWeeks}
                   todayIso={todayIso}
+                  unitSystem={unitSystem}
                   dim={isRegenerating}
                 />
               </>
@@ -137,6 +141,7 @@ export function PlanPageClient({
               todayIso={todayIso}
               prevPhase={currentWeekObj?.phase ?? null}
               dim={isRegenerating}
+              unitSystem={unitSystem}
             />
 
             <div className="mt-2">
@@ -164,12 +169,14 @@ function WeekList({
   todayIso,
   prevPhase,
   dim,
+  unitSystem,
 }: {
   weeks: PlanWeek[];
   totalWeeks: number;
   todayIso: string;
   prevPhase: string | null;
   dim: boolean;
+  unitSystem: import("@/lib/plan").UnitSystem;
 }) {
   let last = prevPhase;
   const out: React.ReactNode[] = [];
@@ -188,6 +195,7 @@ function WeekList({
         week={w}
         totalWeeks={totalWeeks}
         todayIso={todayIso}
+        unitSystem={unitSystem}
         dim={dim}
       />,
     );

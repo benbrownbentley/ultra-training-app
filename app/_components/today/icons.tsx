@@ -2,6 +2,7 @@
 // `color` prop so they pick up the surrounding theme token at the call site.
 
 import type { WorkoutKind } from "@/lib/plan";
+import { BRAND_NAME } from "@/lib/brand";
 
 type IconProps = { color?: string; size?: number };
 
@@ -35,7 +36,7 @@ export function VertLogo({
           color: textColor,
         }}
       >
-        VERT
+        {BRAND_NAME.toUpperCase()}
       </span>
     </div>
   );

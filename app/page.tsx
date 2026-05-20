@@ -72,9 +72,15 @@ export default async function Home({
     Math.max(1, Math.floor(daysBetween(planStart, todayIso) / 7) + 1),
   );
 
-  // No logged_at exposed via getPlan() yet — passing an empty map is fine,
-  // the card simply omits the "DONE · HH:MM" caption when the value is null.
-  const loggedAtById: Record<number, string | null> = {};
+  // Map workout id → logged_at ISO so cards can render the
+  // "DONE · HH:MM" caption when the user has logged the session.
+  const loggedAtById: Record<number, string | null> = Object.fromEntries(
+    plan.days.flatMap((d) =>
+      d.workouts
+        .filter((w) => w.logged_at)
+        .map((w) => [w.id, w.logged_at] as const),
+    ),
+  );
 
   const regenContextRows = buildContextRows({ plan, profile, todayIso });
   // Sparse if we have no fresh adherence data to feed Claude — the sheet

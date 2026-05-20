@@ -31,22 +31,27 @@ Then find every hardcoded "Vert" string and replace with the constant:
   `${BRAND_NAME.toUpperCase()} · 2026 BLOCK`
 - app/layout.tsx (metadata.title and metadata.description) — use
   `${BRAND_NAME} — ${BRAND_TAGLINE}` or similar
-- Any other "Vert" string in copy (search the codebase: `grep -ri "vert"
-  --include="*.tsx" --include="*.ts"` excluding node_modules)
+- Any other "Vert" string in copy. Use word-boundary, case-sensitive
+  search to avoid matching `convert`, `Vertical`, `revert`, etc.:
+  `rg -w "Vert" --type ts --type tsx` (or `grep -rwn "Vert"
+  --include="*.tsx" --include="*.ts"` excluding node_modules).
 
 Do not rename file paths, component names, or class names that contain
 "Vert" (e.g. VertLogo.tsx, .vert-* CSS classes). Those are internal
 identifiers; only user-facing strings should use BRAND_NAME.
 
 TASK 2 — VITEST SETUP
-Install: npm install -D vitest @vitest/ui
+Install: npm install -D vitest @vitest/ui vite-tsconfig-paths
 
 Add to package.json scripts:
 - "test": "vitest run"
 - "test:watch": "vitest"
 - "test:ui": "vitest --ui"
 
-Create vitest.config.ts at the repo root pointing at the project's tsconfig.
+Create vitest.config.ts at the repo root and include `vite-tsconfig-paths`
+in the plugins array so `@/*` imports resolve in tests the same way they
+do in Next.js. Without this, `import { ... } from "@/lib/plan"` will fail
+to resolve in Vitest.
 
 Write unit tests for the pure functions that are most likely to grow
 complex:
@@ -63,6 +68,9 @@ complex:
   formatJournal, buildUserPrompt): give them sample inputs, verify
   the output is the expected string structure. Snapshot tests are fine
   here — these are about ensuring the prompt doesn't silently change.
+  IMPORTANT: use fixed, hand-authored fixture inputs only — no
+  `new Date()`, no `Date.now()`, no current-date references. Snapshots
+  must be deterministic or CI flakes on day boundaries.
 - lib/journal.ts type discrimination: verify the discriminated unions
   parse correctly for each entry type.
 
@@ -75,10 +83,17 @@ TASK 3 — PER-ROUTE ERROR BOUNDARIES
 Add error.tsx files for the substantive route segments:
 
 - app/error.tsx already exists — verify it has reasonable copy
-- app/(auth)/error.tsx — for sign-in/sign-up errors
-- app/wizard/error.tsx — wizard errors should preserve form state
-  when possible; if not possible, copy should say "Your inputs are
-  preserved — try again."
+- app/(auth)/error.tsx — for sign-in/sign-up errors. NOTE: a route-group
+  error.tsx only catches errors thrown *inside* the group's segments,
+  not errors thrown by the group's own layout. If `app/(auth)/layout.tsx`
+  throws, the root `app/error.tsx` is what catches it. Plan copy
+  accordingly.
+- app/wizard/error.tsx — wizard form state currently lives in client
+  React state and IS wiped when error.tsx renders. Do NOT promise
+  "Your inputs are preserved" unless you also persist a draft to
+  localStorage on each step transition. For v1, the honest copy is:
+  "— SETUP · PAUSED — Something went wrong. Head back to the start
+  and we'll get you set up." Persisting drafts is a v2 hygiene item.
 - app/regen/error.tsx — falls back to a "Regeneration failed" with
   Try Again button
 - app/journal/error.tsx
@@ -94,8 +109,9 @@ day. Your plan is safe and unchanged. Give us a minute — we'll be
 back at it shortly." plus Try Again CTA.
 
 For other error pages, adapt the framing:
-- Wizard: "— SETUP · PAUSED — Something went wrong setting up your
-  plan. Your inputs are saved — try again."
+- Wizard: "— SETUP · PAUSED — Something went wrong. Head back to the
+  start and we'll get you set up." (Do not promise saved inputs unless
+  draft persistence is implemented — see note above.)
 - Workout/[id]: "— SESSION · NOT FOUND — This workout isn't in your
   plan. Head back to Today."
 
@@ -106,7 +122,11 @@ TASK 4 — END-TO-END SMOKE TEST OF V2 AUTH (manual, document the steps)
 
 Add docs/SMOKE_TEST_V2.md with a step-by-step checklist:
 
-1. Sign-up with a new email (use a Mailinator address or similar)
+1. Sign-up with a new email. Do NOT use Mailinator or other public
+   throwaway inboxes — anyone can read confirmation links during the
+   test window. Use Gmail `+tag` addressing (e.g.
+   `your.address+vert-test1@gmail.com`) or a private alias service
+   like SimpleLogin or DuckDuckGo Email Protection.
 2. Verify email confirmation flow works
 3. Land on /wizard, complete it end-to-end (race + B/C + fitness +
    experience + about + health + schedule + equipment)
@@ -152,6 +172,14 @@ This is the "if anything is regressing, this catches it" test. Add it
 to CI via GitHub Actions if you have a CI setup, otherwise run it
 locally before each deploy.
 
+CAVEAT: each Playwright run creates a real user in whatever Supabase
+project the local `.env.local` points at. Until a separate staging
+Supabase project exists (flagged in PROJECT_BRIEF.md deferrals), these
+accumulate in the dev/prod-shared database. Add a TODO in the test
+file: "Once staging env exists, point Playwright at it. Until then,
+periodically purge `*+vert-test*@` users from Supabase Auth dashboard."
+Use a recognizable email prefix in every test run so cleanup is easy.
+
 TASK 6 — DOCUMENTATION
 
 Update PROJECT_BRIEF.md:
@@ -185,19 +213,71 @@ VERIFICATION CHECKLIST
 
 ---
 
-## Order of execution
+## Carry-over items from the prompt 3 (form wiring) review
 
-The four prompts can be done in this order:
+Fold these into the polish pass:
 
-1. **Regen flow rewrite** first — most architecturally significant, and other
-   work assumes the preview+commit pattern exists
-2. **Missing routes** second — once the regen flow stabilises, these are
-   independent pieces that can be done in parallel sessions
-3. **Form wiring** third — depends on missing routes being scaffolded (the
-   account preferences route is one of the targets)
-4. **Polish** last — brand, tests, error boundaries, smoke tests. After this
-   you can hand the app to friends.
+- **Verify `athlete_profile.user_id` has a unique constraint.** The new
+  `upsertProfileColumn` helper uses `onConflict: "user_id"`. If no unique
+  index exists, the upsert silently inserts duplicate rows on second call.
+  Check existing migrations; if missing, add:
+  `alter table athlete_profile add constraint athlete_profile_user_id_key unique (user_id);`
+- **Preserve preference columns when the wizard re-runs.** `submitWizard`
+  currently does delete-then-insert on athlete_profile, and the
+  `profileRow` it builds doesn't include `theme`, `daily_reminder`,
+  `regen_complete_notify`, `weekly_summary`. A user who sets Dark theme,
+  then re-runs the wizard via `/wizard`, loses their preference. Fix:
+  either (a) `select` the existing preference columns before the delete
+  and merge into `profileRow`, or (b) switch submitWizard's
+  athlete_profile write from delete-then-insert to `upsert`. Option (b)
+  is cleaner.
+- **Wrap `getAthleteProfile` in React's `cache()`** so the root-layout
+  theme lookup and any same-render component reads share one DB roundtrip:
+  `import { cache } from "react"; export const getAthleteProfile = cache(async () => { ... });`
+  Hot-path optimisation; safe because the cache is per-request.
+- **Add a unit test for `lib/units.ts` `formatPace`** specifically
+  verifying the metric→imperial conversion lands at the expected value
+  (5:00 /km → 8:03 /mi, etc.). The math is right but easy to break
+  silently if someone refactors the constants.
 
-Estimated total: ~1 week of focused work for prompts 1–3, then another
-3–4 days for the polish prompt depending on how thorough you want to be on
-tests.
+## Carry-over items from the prompt 2 (missing routes) review
+
+Fold these into the polish pass alongside the items above:
+
+- **Split `app/_components/profile/AccountClient.tsx` (~600 lines) into focused
+  files** under `app/_components/profile/account/`: `ChangeEmailForm.tsx`,
+  `ChangePasswordForm.tsx`, `GoogleRow.tsx`, `SignOutAllConfirm.tsx`,
+  `FormField.tsx`, `InlineError.tsx`, `InlineSuccess.tsx`. Pure mechanical
+  refactor, no behavior change. AGENTS.md says "split if >150 lines."
+- **Add a pre-check in `disconnectProvider`** for the "Google is your only
+  sign-in method" case: if the user has no password set AND Google is the
+  only identity, return a custom error like "Set a password first — Google
+  is your only sign-in method." Avoids the cryptic Supabase error.
+- **Move the 6-character password minimum to a shared constant** in
+  `lib/auth-constants.ts` and reference it from both the client form
+  validation and any server-side check. Single source of truth.
+- **Show pending-email indicator on the Account page** after change-email
+  is submitted: render the new email in the EMAIL DisplayRow above with a
+  small "pending confirmation" pill. Otherwise the form clears and the
+  user has no visual trace of their request.
+- **Add a comment in `changeEmail` / `changePassword`** noting that the
+  `signInWithPassword` re-auth call creates a fresh session as a side
+  effect. Practically harmless (same user) but worth documenting so future
+  changes don't trip on it.
+- **Manual smoke tests to add to `docs/SMOKE_TEST_V2.md`**:
+  - Change-email happy path (new email + current password → both inboxes
+    receive a confirmation → click both → email updates)
+  - Sign-out-all-devices (sign in on two browsers, trigger from one,
+    verify the second is logged out on refresh)
+  - Disconnect Google for an only-Google user (verify the pre-check error
+    is friendly, not cryptic)
+  - Race calendar past-race treatment (a race with `priority: 'A'` but
+    a past date renders as COMPLETED + strikethrough)
+
+## Status
+
+This is the **final implementation prompt** in the v1 build sequence.
+Prompts 1–3 (regen flow rewrite, missing routes, form wiring) are
+already merged. After polish lands, the app is friend-ready and the next
+work stream is v2 hygiene (staging environment, draft persistence in the
+wizard, coverage thresholds, Supabase test-user cleanup automation).

@@ -517,3 +517,70 @@ When working autonomously in this codebase:
 9. **Keep components small and focused.** If a component exceeds ~150 lines, split it.
 10. **Environment variables**: check `.env.example` before assuming a variable exists. Add new ones there with a description.
 11. **Suggest a code review after each major feature.** When you complete a significant feature (a new route, a new DB table, auth integration, a complete UI flow, etc.), explicitly prompt Ben to do a code review before starting the next feature. The suggested message is: *"This feature is complete and deployed. Before we start the next one, I recommend doing a quick code review in Cowork — just ask Claude there to 'run a code review on the codebase.' It catches security issues and code quality problems while the context is fresh."* This is non-blocking — if Ben wants to continue, that's fine — but always surface the suggestion.
+
+---
+
+## Patterns introduced during the v1 build
+
+These are load-bearing conventions agents should follow on subsequent work.
+
+### Brand name centralisation
+
+Every user-facing reference to the brand name goes through `lib/brand.ts`:
+
+```typescript
+import { BRAND_NAME, BRAND_TAGLINE } from "@/lib/brand";
+```
+
+Internal identifiers (filenames like `VertLogo.tsx`, CSS classes like
+`.vert-pulse-dot`) keep their literal names — they're not user-visible.
+
+### Units conversion layer
+
+Internal storage is always **metric** (km, m, kg, sec/km). The display
+layer converts via `lib/units.ts`:
+
+```typescript
+import { formatDistance, formatElevation } from "@/lib/units";
+formatDistance(8, "metric"); // "8 km"
+formatDistance(8, "imperial"); // "5.0 mi"
+```
+
+Server pages read `profile.unit_system` and pass it down as a prop. Never
+hardcode `km` / `mi` in display code.
+
+### Plan regeneration: preview-then-accept
+
+The regen flow is split into two phases by design:
+
+1. **`previewPlan(notes?)`** — calls Claude, stashes the candidate in
+   `plan_previews` with status `pending`. Does NOT touch live workouts or
+   journal. Returns `{ previewId }`.
+2. **`commitPlan(previewId)`** — atomic swap via the
+   `commit_plan_preview` Postgres RPC (delete + bulk insert in one tx).
+   Flips unconsumed journal entries to `consumed=true`.
+
+Discard is its own action; never auto-commits. The unique partial index
+`plan_previews_one_pending_per_user` enforces at most one pending
+preview per user.
+
+### Athlete profile upsert pattern
+
+`athlete_profile` has a unique constraint on `user_id`. Any write must
+use `upsert({ ...row, user_id }, { onConflict: "user_id" })` rather than
+delete-then-insert, so co-located preference columns (theme,
+notifications, etc.) survive form submits that only set a subset.
+
+### Per-route error boundaries
+
+Each substantive segment has its own `error.tsx` using the shared
+`ErrorShell` component from `@/app/_components/error-shell` and
+athletic-vocabulary framing ("REST DAY", "STUMBLE", "PAUSED"). New
+routes should add one when the segment can throw.
+
+### React `cache()` on hot-path reads
+
+Server helpers that get called from multiple places in the same request
+(currently `getAthleteProfile` — root layout reads theme, Profile page
+reads units + preferences) are wrapped in `import { cache } from "react"`
+so they share one DB round-trip.

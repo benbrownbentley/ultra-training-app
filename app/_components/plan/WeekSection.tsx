@@ -1,6 +1,8 @@
 import Link from "next/link";
 import type { PlanWeek } from "@/lib/plan-derive";
 import { dayPrimaryKind, daySummaryLabel, phaseLabel } from "@/lib/plan-derive";
+import type { UnitSystem } from "@/lib/plan";
+import { formatDistance, formatElevation } from "@/lib/units";
 import {
   CheckMini,
   WorkoutKindIcon,
@@ -10,6 +12,9 @@ interface Props {
   week: PlanWeek;
   totalWeeks: number;
   todayIso: string;
+  // User's preferred display units. Storage is always km; this is the
+  // render-time conversion only.
+  unitSystem: UnitSystem;
   // Visually mute the whole week (used during regeneration).
   dim?: boolean;
 }
@@ -32,7 +37,13 @@ function phaseTintClass(phase: string, isCurrent: boolean): string {
 
 // One week in the long-form plan list. Whole row links to `/plan/week/[n]`
 // so a tap deep-links into the day-by-day drilldown.
-export function WeekSection({ week, totalWeeks, todayIso, dim }: Props) {
+export function WeekSection({
+  week,
+  totalWeeks,
+  todayIso,
+  unitSystem,
+  dim,
+}: Props) {
   const tint = phaseTintClass(week.phase, week.isCurrent);
   const borderColor = week.isCurrent
     ? "border-emerald-500"
@@ -133,7 +144,7 @@ export function WeekSection({ week, totalWeeks, todayIso, dim }: Props) {
         >
           VOL{" "}
           <span className="ml-1 font-medium text-zinc-950 dark:text-zinc-50">
-            {week.stats.volKm} km
+            {formatDistance(week.stats.volKm, unitSystem)}
           </span>
         </span>
         {week.stats.vertM > 0 && (
@@ -143,7 +154,7 @@ export function WeekSection({ week, totalWeeks, todayIso, dim }: Props) {
           >
             VERT{" "}
             <span className="ml-1 font-medium text-zinc-950 dark:text-zinc-50">
-              +{week.stats.vertM} m
+              {formatElevation(week.stats.vertM, unitSystem)}
             </span>
           </span>
         )}

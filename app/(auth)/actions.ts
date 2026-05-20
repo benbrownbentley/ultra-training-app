@@ -86,3 +86,136 @@ export async function signInWithGoogle(): Promise<OAuthResult> {
 
   return { ok: true, url: data.url };
 }
+
+// ─── Account self-service ─────────────────────────────────────────
+
+import {
+  PASSWORD_MIN_LENGTH,
+  PASSWORD_TOO_SHORT_MESSAGE,
+} from "@/lib/auth-constants";
+
+export type AccountResult = { ok: true } | { ok: false; error: string };
+
+interface ChangeEmailArgs {
+  newEmail: string;
+  currentPassword: string;
+}
+
+/**
+ * Updates the signed-in user's email. Re-authenticates with the current
+ * password first so a stolen session can't silently take over the account.
+ * Supabase sends confirmation links to both addresses; the change isn't
+ * effective until the user clicks them.
+ *
+ * Side effect: signInWithPassword issues a fresh session cookie for the
+ * same user. Harmless in practice (the user is still themselves) but
+ * worth knowing if future changes care about session continuity.
+ */
+export async function changeEmail({
+  newEmail,
+  currentPassword,
+}: ChangeEmailArgs): Promise<AccountResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) return { ok: false, error: "Not signed in." };
+
+  // Re-auth gate — Supabase's updateUser doesn't require the current
+  // password by itself, so we verify here.
+  const { error: pwErr } = await supabase.auth.signInWithPassword({
+    email: user.email,
+    password: currentPassword,
+  });
+  if (pwErr) return { ok: false, error: "Current password is incorrect." };
+
+  const { error } = await supabase.auth.updateUser({ email: newEmail });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+interface ChangePasswordArgs {
+  currentPassword: string;
+  newPassword: string;
+}
+
+/**
+ * Updates the signed-in user's password. Same re-auth gate as changeEmail
+ * (also re-issues a fresh session for the current user — see that
+ * function's note).
+ */
+export async function changePassword({
+  currentPassword,
+  newPassword,
+}: ChangePasswordArgs): Promise<AccountResult> {
+  if (newPassword.length < PASSWORD_MIN_LENGTH) {
+    return { ok: false, error: PASSWORD_TOO_SHORT_MESSAGE };
+  }
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.email) return { ok: false, error: "Not signed in." };
+
+  const { error: pwErr } = await supabase.auth.signInWithPassword({
+    email: user.email,
+    password: currentPassword,
+  });
+  if (pwErr) return { ok: false, error: "Current password is incorrect." };
+
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/**
+ * Unlinks an OAuth identity (Google, etc.) from the current user. The
+ * user must keep at least one sign-in method; we pre-check the
+ * password-only-via-OAuth case here so the UI can show a friendly
+ * message instead of the raw Supabase error.
+ */
+export async function disconnectProvider(
+  provider: "google",
+): Promise<AccountResult> {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { ok: false, error: "Not signed in." };
+
+  const { data: identityData, error: idErr } =
+    await supabase.auth.getUserIdentities();
+  if (idErr) return { ok: false, error: idErr.message };
+  const identities = identityData?.identities ?? [];
+  const identity = identities.find((i) => i.provider === provider);
+  if (!identity) return { ok: false, error: `${provider} isn't connected.` };
+
+  // If the user has NO email/password identity AND this OAuth provider
+  // is their only other identity, unlinking would lock them out. Catch
+  // it before Supabase's cryptic error surfaces.
+  const hasEmailIdentity = identities.some((i) => i.provider === "email");
+  const otherProviders = identities.filter(
+    (i) => i.provider !== provider && i.provider !== "email",
+  );
+  if (!hasEmailIdentity && otherProviders.length === 0) {
+    return {
+      ok: false,
+      error: `Set a password first — ${provider} is your only sign-in method.`,
+    };
+  }
+
+  const { error } = await supabase.auth.unlinkIdentity(identity);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+/**
+ * Revokes every session for the current user. Useful when a device is
+ * lost. Returns ok so the caller can navigate to the sign-in screen.
+ */
+export async function signOutAllDevices(): Promise<AccountResult> {
+  const supabase = await createClient();
+  const { error } = await supabase.auth.signOut({ scope: "global" });
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}

@@ -1,4 +1,8 @@
-import { createClient, getRace } from "@/lib/supabase/server";
+import {
+  createClient,
+  getAthleteProfile,
+  getRace,
+} from "@/lib/supabase/server";
 import { daysBetween, getTodayISO } from "@/lib/utils";
 import { TabBar } from "@/app/_components/today/TabBar";
 import { ProfileTabHeader } from "@/app/_components/profile/ProfileHeader";
@@ -6,19 +10,20 @@ import {
   ActionRow,
   Group,
   RowDivider,
-  SegmentedRow,
   SettingsRow,
-  ToggleRow,
 } from "@/app/_components/profile/atoms";
+import { PreferencesGroups } from "@/app/_components/profile/PreferencesGroups";
 import { SignOutRow } from "@/app/_components/profile/SignOutRow";
+import { BRAND_NAME } from "@/lib/brand";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProfilePage() {
   const supabase = await createClient();
-  const [{ data: userRes }, race] = await Promise.all([
+  const [{ data: userRes }, race, profile] = await Promise.all([
     supabase.auth.getUser(),
     getRace(),
+    getAthleteProfile(),
   ]);
   const user = userRes.user;
   const todayIso = getTodayISO();
@@ -80,38 +85,13 @@ export default async function ProfilePage() {
             />
           </Group>
 
-          <Group label="PREFERENCES">
-            <SegmentedRow
-              label="Units"
-              options={["Metric", "Imperial"]}
-              value="Metric"
-              helper="All distances, elevation, and weight throughout the app."
-            />
-            <RowDivider />
-            <SegmentedRow
-              label="Theme"
-              options={["Light", "Dark", "System"]}
-              value="System"
-            />
-            <RowDivider />
-            <ToggleRow
-              label="Daily workout reminder"
-              sub="A morning nudge for today's plan"
-              defaultOn
-            />
-            <RowDivider />
-            <ToggleRow
-              label="Regeneration complete"
-              sub="Notify when your plan is updated"
-              defaultOn
-            />
-            <RowDivider />
-            <ToggleRow
-              label="Weekly summary"
-              sub="Sunday recap of the week's work"
-              defaultOn
-            />
-          </Group>
+          <PreferencesGroups
+            unitSystem={profile?.unit_system ?? "metric"}
+            theme={profile?.theme ?? "system"}
+            dailyReminder={profile?.daily_reminder ?? true}
+            regenCompleteNotify={profile?.regen_complete_notify ?? true}
+            weeklySummary={profile?.weekly_summary ?? true}
+          />
 
           <Group label="ACCOUNT">
             <SettingsRow
@@ -140,7 +120,7 @@ export default async function ProfilePage() {
               className="font-mono text-[10.5px] uppercase text-zinc-400 dark:text-zinc-600"
               style={{ letterSpacing: "0.18em" }}
             >
-              VERT · 2026 BLOCK
+              {BRAND_NAME.toUpperCase()} · 2026 BLOCK
             </span>
           </div>
         </div>

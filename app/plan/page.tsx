@@ -38,6 +38,7 @@ export default async function PlanPage() {
       raceElevationGain={plan.race.elevation_gain ?? null}
       regenContextRows={regenContextRows}
       regenSparseTip={regenSparseTip}
+      unitSystem={profile?.unit_system ?? "metric"}
     />
   );
 }

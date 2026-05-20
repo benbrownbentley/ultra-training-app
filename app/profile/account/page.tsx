@@ -8,8 +8,17 @@ export const dynamic = "force-dynamic";
 
 export default async function AccountPage() {
   const supabase = await createClient();
-  const { data } = await supabase.auth.getUser();
+  const [{ data }, identitiesRes] = await Promise.all([
+    supabase.auth.getUser(),
+    supabase.auth.getUserIdentities(),
+  ]);
   const email = data.user?.email ?? "—";
+  // Surface only the provider names — disconnect action takes the
+  // provider string and looks up the identity row server-side, so the
+  // client doesn't need to ferry the full identity object.
+  const connectedProviders = (
+    identitiesRes.data?.identities?.map((i) => i.provider) ?? []
+  ).filter((p) => p !== "email");
 
   return (
     <div className="flex min-h-svh flex-col bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
@@ -32,7 +41,10 @@ export default async function AccountPage() {
           </div>
 
           <Suspense fallback={null}>
-            <AccountClient email={email} />
+            <AccountClient
+              email={email}
+              connectedProviders={connectedProviders}
+            />
           </Suspense>
         </div>
       </div>

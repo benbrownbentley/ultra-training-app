@@ -3,6 +3,7 @@
 // the "no next/* imports in lib/" rule. When migrating to React Native (Expo),
 // replace this file with lib/supabase/native.ts that uses the Expo SecureStore
 // adapter instead — all the query functions below move over unchanged.
+import { cache } from "react";
 import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import type {
@@ -54,12 +55,13 @@ interface WorkoutRow {
   details: string;
   position: number;
   status: WorkoutStatus;
+  logged_at: string | null;
 }
 
 const RACE_COLUMNS =
   "id, name, distance, date, elevation_gain, terrain, target_time, intent, priority, elevation_loss, cutoff_time, climate, course_profile, support";
 const PROFILE_COLUMNS =
-  "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, cross_training, other_commitments, sleep_stress, fitness_rating, weekly_volume_km, longest_run_date, years_running, years_ultras, ultras_completed, longest_race_distance, longest_race_name, longest_race_date, previous_endurance, age, body_weight, sex, chronic_conditions, sleep_hours, stress_baseline, training_days, long_run_day, quality_day, strength_freq, time_of_day, job_type, outdoor_terrain, cross_training_enjoys, max_hr, resting_hr, lactate_threshold_hr, vo2_max, training_preferences";
+  "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, cross_training, other_commitments, sleep_stress, fitness_rating, weekly_volume_km, longest_run_date, years_running, years_ultras, ultras_completed, longest_race_distance, longest_race_name, longest_race_date, previous_endurance, age, body_weight, sex, chronic_conditions, sleep_hours, stress_baseline, training_days, long_run_day, quality_day, strength_freq, time_of_day, job_type, outdoor_terrain, cross_training_enjoys, max_hr, resting_hr, lactate_threshold_hr, vo2_max, training_preferences, theme, daily_reminder, regen_complete_notify, weekly_summary";
 
 export async function getPlan(): Promise<Plan | null> {
   const supabase = await createClient();
@@ -77,7 +79,7 @@ export async function getPlan(): Promise<Plan | null> {
       .maybeSingle<Race>(),
     supabase
       .from("workouts")
-      .select("id, date, kind, title, details, position, status")
+      .select("id, date, kind, title, details, position, status, logged_at")
       .order("date", { ascending: true })
       .order("position", { ascending: true })
       .returns<WorkoutRow[]>(),
@@ -100,6 +102,7 @@ export async function getPlan(): Promise<Plan | null> {
       details: row.details,
       status: row.status,
       position: row.position,
+      logged_at: row.logged_at,
     });
     byDate.set(row.date, list);
   }
@@ -112,18 +115,23 @@ export async function getPlan(): Promise<Plan | null> {
   return { race, days };
 }
 
-export async function getAthleteProfile(): Promise<AthleteProfile | null> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("athlete_profile")
-    .select(PROFILE_COLUMNS)
-    .order("id", { ascending: false })
-    .limit(1)
-    .maybeSingle<AthleteProfile>();
+// Wrapped in React's `cache()` so multiple callers in the same request
+// (root layout reads theme; Profile page reads units + prefs; etc.)
+// share one DB round-trip. Cache is per-request — no cross-user leak.
+export const getAthleteProfile = cache(
+  async (): Promise<AthleteProfile | null> => {
+    const supabase = await createClient();
+    const { data, error } = await supabase
+      .from("athlete_profile")
+      .select(PROFILE_COLUMNS)
+      .order("id", { ascending: false })
+      .limit(1)
+      .maybeSingle<AthleteProfile>();
 
-  if (error) throw error;
-  return data;
-}
+    if (error) throw error;
+    return data;
+  },
+);
 
 interface WorkoutDetail {
   id: number;

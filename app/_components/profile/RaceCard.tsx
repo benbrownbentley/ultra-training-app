@@ -17,16 +17,25 @@ const STYLE: Record<RacePriority, string> = {
 };
 
 const PRIORITY_LABEL: Record<RacePriority, string> = {
-  A: "A · PRIMARY",
-  B: "B · TUNE-UP",
+  A: "A · PRIMARY TARGET",
+  B: "B · TUNE-UP RACE",
   C: "C · TRAINING-GRADE",
   completed: "COMPLETED",
 };
 
 export function RaceCard({ race }: Props) {
-  const priority = (race.priority ?? "A") as RacePriority;
   const today = getTodayISO();
-  const days = race.date >= today ? daysBetween(today, race.date) : null;
+  // A race whose date has passed gets the "completed" treatment regardless
+  // of what its priority column still says — the date is the truth.
+  const isPast = race.date < today;
+  const priority = isPast
+    ? ("completed" as RacePriority)
+    : ((race.priority ?? "A") as RacePriority);
+  const days = !isPast ? daysBetween(today, race.date) : null;
+  const labelColour =
+    priority === "completed"
+      ? "text-zinc-400 dark:text-zinc-600"
+      : "text-emerald-700 dark:text-emerald-400";
   return (
     <Link
       href={`/profile/race/${race.id ?? ""}`}
@@ -34,7 +43,7 @@ export function RaceCard({ race }: Props) {
     >
       <div className="mb-2 flex items-baseline justify-between gap-3">
         <span
-          className="whitespace-nowrap font-mono text-[10.5px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"
+          className={`whitespace-nowrap font-mono text-[10.5px] font-semibold uppercase ${labelColour}`}
           style={{ letterSpacing: "0.2em" }}
         >
           — {PRIORITY_LABEL[priority]}
@@ -51,7 +60,7 @@ export function RaceCard({ race }: Props) {
         )}
       </div>
       <div
-        className="text-[18px] font-medium leading-tight text-zinc-950 dark:text-zinc-50"
+        className={`text-[18px] font-medium leading-tight text-zinc-950 dark:text-zinc-50 ${isPast ? "line-through decoration-zinc-400 dark:decoration-zinc-600" : ""}`}
         style={{ letterSpacing: "-0.015em" }}
       >
         {race.name}

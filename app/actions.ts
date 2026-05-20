@@ -564,16 +564,13 @@ export async function saveAthleteProfile(payload: AthleteFormPayload) {
     training_preferences: blankToNull(payload.trainingPreferences),
   };
 
-  const { error: delErr } = await supabaseAdmin
+  // Upsert preserves the app-level preference columns (theme, daily
+  // reminder, etc.) which aren't in this form's row — they're managed
+  // by their own actions and would be wiped by delete+insert.
+  const { error: profErr } = await supabaseAdmin
     .from("athlete_profile")
-    .delete()
-    .eq("user_id", user.id);
-  if (delErr) throw delErr;
-
-  const { error: insErr } = await supabaseAdmin
-    .from("athlete_profile")
-    .insert(row);
-  if (insErr) throw insErr;
+    .upsert(row, { onConflict: "user_id" });
+  if (profErr) throw profErr;
 
   revalidatePath("/profile");
   revalidatePath("/profile/athlete");
@@ -609,6 +606,65 @@ export async function deleteAccount(confirmEmail: string) {
   if (error) throw error;
   await supabase.auth.signOut();
   redirect("/sign-up");
+}
+
+// ─── Preferences ─────────────────────────────────────────────────
+
+import { z } from "zod";
+
+const ThemeSchema = z.enum(["light", "dark", "system"]);
+const UnitSystemSchema = z.enum(["metric", "imperial"]);
+const NotificationKeySchema = z.enum([
+  "daily_reminder",
+  "regen_complete",
+  "weekly_summary",
+]);
+
+// Upsert preference values onto the user's athlete_profile row. Each
+// action validates input via zod, then writes a single column. We use
+// upsert so a brand-new user (no profile row yet — e.g. mid-wizard)
+// gets a sensible default row written under the hood.
+async function upsertProfileColumn(
+  userId: string,
+  patch: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("athlete_profile")
+    .upsert({ user_id: userId, ...patch }, { onConflict: "user_id" });
+  if (error) throw error;
+}
+
+export async function setTheme(themeInput: string): Promise<void> {
+  const theme = ThemeSchema.parse(themeInput);
+  const { user } = await requireUser();
+  await upsertProfileColumn(user.id, { theme });
+  revalidatePath("/profile");
+}
+
+export async function setUnitSystem(unitInput: string): Promise<void> {
+  const unit_system = UnitSystemSchema.parse(unitInput);
+  const { user } = await requireUser();
+  await upsertProfileColumn(user.id, { unit_system });
+  // Distance/elevation/weight strings change everywhere — revalidate
+  // every surface that renders them.
+  revalidatePath("/");
+  revalidatePath("/plan");
+  revalidatePath("/journal");
+  revalidatePath("/profile");
+}
+
+export async function setNotificationPreference(
+  keyInput: string,
+  value: boolean,
+): Promise<void> {
+  const key = NotificationKeySchema.parse(keyInput);
+  // Map UI keys to DB columns. `regen_complete` → `regen_complete_notify`
+  // is the only renaming; the others match 1:1.
+  const column =
+    key === "regen_complete" ? "regen_complete_notify" : key;
+  const { user } = await requireUser();
+  await upsertProfileColumn(user.id, { [column]: value });
+  revalidatePath("/profile");
 }
 
 // Finalises the intake wizard: replaces race rows + athlete_profile with
@@ -695,16 +751,13 @@ export async function submitWizard(data: WizardPayload) {
     if (raceInsErr) throw raceInsErr;
   }
 
-  const { error: profDelErr } = await supabaseAdmin
+  // Upsert (not delete+insert) so a user who re-runs the wizard keeps
+  // their app-level preferences (theme, daily_reminder, …) — those
+  // columns aren't in `profileRow` and would be wiped by a fresh insert.
+  const { error: profErr } = await supabaseAdmin
     .from("athlete_profile")
-    .delete()
-    .eq("user_id", user.id);
-  if (profDelErr) throw profDelErr;
-
-  const { error: profInsErr } = await supabaseAdmin
-    .from("athlete_profile")
-    .insert(profileRow);
-  if (profInsErr) throw profInsErr;
+    .upsert(profileRow, { onConflict: "user_id" });
+  if (profErr) throw profErr;
 
   // Initial plan generation bypasses the preview pipeline — there's no
   // existing plan to diff against, so we commit directly.

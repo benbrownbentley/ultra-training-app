@@ -11,6 +11,9 @@ export interface Workout {
   // the `workouts.position` column so diff comparisons can stabilise
   // multi-workout days deterministically.
   position: number;
+  // ISO timestamp written when the user logs the workout. Null while
+  // pending; rendered as the "DONE · HH:MM" caption on cards.
+  logged_at: string | null;
 }
 
 export interface Day {
@@ -86,6 +89,12 @@ export interface AthleteProfile {
   lactate_threshold_hr?: number | null;
   vo2_max?: number | null;
   training_preferences?: string | null;
+  // App-level preferences. Co-located on athlete_profile because the
+  // row's already fetched on every Profile render.
+  theme?: "light" | "dark" | "system" | null;
+  daily_reminder?: boolean | null;
+  regen_complete_notify?: boolean | null;
+  weekly_summary?: boolean | null;
 }
 
 export interface Plan {

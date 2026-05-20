@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
-import { getPlan } from "@/lib/supabase/server";
+import { getAthleteProfile, getPlan } from "@/lib/supabase/server";
 import { getTodayISO, formatWeekLabel } from "@/lib/utils";
 import { buildPlanWeeks, phaseLabel } from "@/lib/plan-derive";
-import type { Day, Workout } from "@/lib/plan";
+import type { Day } from "@/lib/plan";
+import { formatDistance, formatElevation } from "@/lib/units";
 import { TabBar } from "@/app/_components/today/TabBar";
-import { MOTIFS } from "@/app/_components/today/motifs";
-import { ChevronUpRight } from "@/app/_components/today/icons";
-import { kindEyebrow } from "@/app/_components/workout/extract-metrics";
+import { WorkoutCard } from "@/app/_components/today/WorkoutCard";
+import { MotifStretch } from "@/app/_components/today/motifs";
 
 export const dynamic = "force-dynamic";
 
@@ -33,7 +33,7 @@ export default async function WeekDrilldownPage({
   const weekN = Number(n);
   if (!Number.isFinite(weekN) || weekN < 1) notFound();
 
-  const plan = await getPlan();
+  const [plan, profile] = await Promise.all([getPlan(), getAthleteProfile()]);
   if (!plan || plan.days.length === 0) {
     redirect("/wizard");
   }
@@ -41,6 +41,7 @@ export default async function WeekDrilldownPage({
   const weeks = buildPlanWeeks(plan, todayIso);
   const week = weeks.find((w) => w.weekNum === weekN);
   if (!week) notFound();
+  const unitSystem = profile?.unit_system ?? "metric";
 
   const phaseSlotIdx = weeks
     .filter((w) => w.phase === week.phase)
@@ -95,12 +96,15 @@ export default async function WeekDrilldownPage({
 
           <div className="px-4 pt-4 pb-2 sm:px-5">
             <div className="flex gap-1.5">
-              <SummaryTile label="VOL" value={String(week.stats.volKm)} unit="km" primary />
+              <SummaryTile
+                label="VOL"
+                value={formatDistance(week.stats.volKm, unitSystem)}
+                primary
+              />
               {week.stats.vertM > 0 && (
                 <SummaryTile
                   label="VERT"
-                  value={`+${week.stats.vertM}`}
-                  unit="m"
+                  value={formatElevation(week.stats.vertM, unitSystem)}
                 />
               )}
               <SummaryTile
@@ -193,7 +197,10 @@ function DayRow({ day, todayIso }: { day: Day; todayIso: string }) {
       ) : (
         <div className="flex flex-col gap-2">
           {day.workouts.map((w) => (
-            <WorkoutMini key={w.id} workout={w} />
+            // Full Today-style card with motif + Log done / Skip / Edit log
+            // buttons. Logging happens inline; tapping anywhere else routes
+            // to /workout/[id] through the inner Link.
+            <WorkoutCard key={w.id} workout={w} />
           ))}
         </div>
       )}
@@ -201,54 +208,31 @@ function DayRow({ day, todayIso }: { day: Day; todayIso: string }) {
   );
 }
 
+// Rest day chip — uses the brief's "Recovery is the work" copy and the
+// flowing-line motif so it stays consistent with the Today rest card.
 function RestRow() {
   return (
-    <div className="rounded-[12px] border border-dashed border-zinc-200 px-3.5 py-3 text-[13px] text-zinc-500 dark:border-zinc-800">
-      Recovery day — no prescribed work.
-    </div>
-  );
-}
-
-// Compact tappable workout card used in the week list. Routes to the
-// full /workout/[id] page for logging.
-function WorkoutMini({ workout }: { workout: Workout }) {
-  const Motif = MOTIFS[workout.kind];
-  return (
-    <Link
-      href={`/workout/${workout.id}`}
-      className="relative block overflow-hidden rounded-[12px] border border-zinc-200 bg-white px-4 pb-3 pt-3 dark:border-zinc-800 dark:bg-[#0f0f11]"
-    >
+    <div className="relative overflow-hidden rounded-[12px] border border-zinc-200 bg-white px-4 py-3.5 dark:border-zinc-800 dark:bg-[#0f0f11]">
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-y-0 right-0 w-[55%]"
-        style={{
-          maskImage: "linear-gradient(to left, black 30%, transparent 100%)",
-          WebkitMaskImage:
-            "linear-gradient(to left, black 30%, transparent 100%)",
-        }}
+        className="pointer-events-none absolute inset-0 opacity-60 dark:opacity-50"
       >
-        <Motif color="#10b981" opacity={0.14} />
+        <MotifStretch color="#10b981" opacity={0.1} />
       </div>
-      <div className="relative flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <span
-            className="font-mono text-[10.5px] font-semibold uppercase text-zinc-500"
-            style={{ letterSpacing: "0.2em" }}
-          >
-            — {kindEyebrow(workout.kind, workout.title)}
-          </span>
-          <div
-            className="mt-1 text-[16px] font-medium leading-tight text-zinc-950 dark:text-zinc-50"
-            style={{ letterSpacing: "-0.01em" }}
-          >
-            {workout.title}
-          </div>
-          <div className="mt-1 font-mono text-[12.5px] text-zinc-600 dark:text-zinc-400">
-            {workout.details}
-          </div>
+      <div className="relative">
+        <div
+          className="font-mono text-[10px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"
+          style={{ letterSpacing: "0.2em" }}
+        >
+          — REST
         </div>
-        <ChevronUpRight color="rgb(161 161 170)" size={15} />
+        <div className="mt-1 text-[14.5px] font-medium leading-snug text-zinc-950 dark:text-zinc-50">
+          Recovery is the work.{" "}
+          <span className="text-zinc-600 dark:text-zinc-400">
+            See you tomorrow.
+          </span>
+        </div>
       </div>
-    </Link>
+    </div>
   );
 }

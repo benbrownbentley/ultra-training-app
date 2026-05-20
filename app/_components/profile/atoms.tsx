@@ -3,7 +3,6 @@
 // Shared profile-tab UI atoms: grouped settings list, segmented control,
 // toggle row, action row, header. Reused across profile landing + sub-routes.
 
-import { useState } from "react";
 import Link from "next/link";
 
 // Grouped section frame — title above, single bordered card containing
@@ -208,17 +207,23 @@ export function SegmentedControl<T extends string>({
   );
 }
 
-// Settings row with a right-aligned segmented control.
-export function SegmentedRow({
+// Settings row with a right-aligned segmented control. Both `onChange`
+// and `disabled` are wired through to the underlying SegmentedControl
+// so callers can drive a server action via useTransition.
+export function SegmentedRow<T extends string>({
   label,
   helper,
   options,
   value,
+  onChange,
+  disabled,
 }: {
   label: string;
   helper?: string;
-  options: string[];
-  value: string;
+  options: readonly T[];
+  value: T | null;
+  onChange?: (v: T) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex flex-col gap-2 px-4 py-3">
@@ -226,7 +231,13 @@ export function SegmentedRow({
         <span className="text-[14.5px] font-medium text-zinc-950 dark:text-zinc-50">
           {label}
         </span>
-        <SegmentedControl options={options} value={value} size="sm" />
+        <SegmentedControl
+          options={options}
+          value={value}
+          onChange={onChange}
+          disabled={disabled}
+          size="sm"
+        />
       </div>
       {helper && (
         <span className="text-[12px] leading-snug text-zinc-500 dark:text-zinc-400">
@@ -237,16 +248,20 @@ export function SegmentedRow({
   );
 }
 
-// Visual toggle row (used for notification preferences). State is local
-// only because the underlying preferences table doesn't exist yet.
+// Toggle row backed by a controlled bool. Caller drives the value + flip
+// callback (typically through useTransition + a server action).
 export function ToggleRow({
   label,
   sub,
-  defaultOn,
+  value,
+  onChange,
+  disabled,
 }: {
   label: string;
   sub?: string;
-  defaultOn?: boolean;
+  value: boolean;
+  onChange?: (next: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 px-4 py-3.5">
@@ -260,28 +275,36 @@ export function ToggleRow({
           </span>
         )}
       </div>
-      <Toggle defaultOn={defaultOn} />
+      <Toggle value={value} onChange={onChange} disabled={disabled} />
     </div>
   );
 }
 
-function Toggle({ defaultOn }: { defaultOn?: boolean }) {
-  const [on, setOn] = useState(!!defaultOn);
+function Toggle({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: boolean;
+  onChange?: (next: boolean) => void;
+  disabled?: boolean;
+}) {
   return (
     <button
       type="button"
       role="switch"
-      aria-checked={on}
-      onClick={() => setOn((v) => !v)}
-      className={`relative inline-flex h-6 w-10 shrink-0 cursor-pointer rounded-full transition ${
-        on
+      aria-checked={value}
+      disabled={disabled}
+      onClick={onChange ? () => onChange(!value) : undefined}
+      className={`relative inline-flex h-6 w-10 shrink-0 cursor-pointer rounded-full transition disabled:opacity-50 ${
+        value
           ? "bg-emerald-500"
           : "bg-zinc-200 dark:bg-zinc-800"
       }`}
     >
       <span
         className={`absolute top-0.5 inline-block h-5 w-5 rounded-full bg-white shadow transition ${
-          on ? "left-4" : "left-0.5"
+          value ? "left-4" : "left-0.5"
         }`}
       />
     </button>

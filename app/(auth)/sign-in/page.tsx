@@ -1,8 +1,9 @@
 import { AuthSplit } from "@/components/auth/auth-split";
 import { signIn, signInWithGoogle } from "../actions";
+import { BRAND_NAME } from "@/lib/brand";
 
 export const metadata = {
-  title: "Sign in · Vert",
+  title: `Sign in · ${BRAND_NAME}`,
 };
 
 const ERROR_MESSAGES: Record<string, string> = {

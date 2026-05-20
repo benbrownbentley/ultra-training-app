@@ -159,7 +159,9 @@ const PLAN_TOOL: Anthropic.Tool = {
   },
 };
 
-function formatHistory(history: LoggedWorkout[]): string {
+// Pure formatters below are exported only so tests can snapshot them.
+// They aren't part of the public API — generateTrainingPlan is.
+export function formatHistory(history: LoggedWorkout[]): string {
   if (history.length === 0) {
     return "No logged history yet — this is the initial plan.";
   }
@@ -174,7 +176,7 @@ function formatHistory(history: LoggedWorkout[]): string {
 ${lines.join("\n")}`;
 }
 
-function formatRace(race: Race, unit: "metric" | "imperial"): string {
+export function formatRace(race: Race, unit: "metric" | "imperial"): string {
   const distanceUnit = unit === "metric" ? "m" : "ft";
   const lines = [
     `- Name: ${race.name}`,
@@ -189,7 +191,7 @@ function formatRace(race: Race, unit: "metric" | "imperial"): string {
   return lines.join("\n");
 }
 
-function formatProfile(p: AthleteProfile): string {
+export function formatProfile(p: AthleteProfile): string {
   const distUnit = p.unit_system === "metric" ? "km" : "mi";
   const paceUnit = p.unit_system === "metric" ? "min/km" : "min/mi";
   const lines = [
@@ -214,7 +216,7 @@ function formatProfile(p: AthleteProfile): string {
 
 // Formats the journal entries into a prompt section. Unconsumed entries
 // are marked NEW so the model knows what's fresh since the last regen.
-function formatJournal(entries: JournalContextEntry[] | undefined): string {
+export function formatJournal(entries: JournalContextEntry[] | undefined): string {
   if (!entries || entries.length === 0) return "";
   const lines = entries.map((e) => {
     const flag = e.consumed ? "(seen)" : "(NEW)";
@@ -232,7 +234,7 @@ JOURNAL ENTRIES (athlete-logged context — travel, injuries, physio visits, fre
 ${lines.join("\n")}`;
 }
 
-function buildUserPrompt(args: GeneratePlanArgs): string {
+export function buildUserPrompt(args: GeneratePlanArgs): string {
   const unit = args.profile.unit_system;
   const distUnit = unit === "metric" ? "km" : "mi";
   const paceUnit = unit === "metric" ? "min/km" : "min/mi";

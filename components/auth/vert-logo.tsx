@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { BRAND_NAME } from "@/lib/brand";
 
 interface VertLogoProps {
   size?: "md" | "lg";
@@ -31,7 +32,7 @@ export function VertLogo({ size = "md", className }: VertLogoProps) {
           big ? "text-lg" : "text-sm",
         )}
       >
-        VERT
+        {BRAND_NAME.toUpperCase()}
       </span>
     </div>
   );

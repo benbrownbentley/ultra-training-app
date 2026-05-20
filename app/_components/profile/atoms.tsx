@@ -80,7 +80,7 @@ export function SettingsRow({
     return (
       <Link
         href={href}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left"
+        className="flex w-full items-center justify-between gap-3 px-4 py-3.5 text-left transition active:scale-[0.99]"
       >
         {inner}
       </Link>
@@ -296,7 +296,7 @@ function Toggle({
       aria-checked={value}
       disabled={disabled}
       onClick={onChange ? () => onChange(!value) : undefined}
-      className={`relative inline-flex h-6 w-10 shrink-0 cursor-pointer rounded-full transition disabled:opacity-50 ${
+      className={`relative inline-flex h-6 w-10 shrink-0 cursor-pointer rounded-full transition active:scale-[0.94] disabled:opacity-50 ${
         value
           ? "bg-emerald-500"
           : "bg-zinc-200 dark:bg-zinc-800"

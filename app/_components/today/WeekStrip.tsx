@@ -10,6 +10,10 @@ interface DaySummary {
   label: string;
   done: boolean;
   isToday: boolean;
+  // True when this is the day the user has navigated to via ?day= — the
+  // strip needs a separate marker so "today" and "currently viewing" can
+  // both be visible at the same time.
+  isSelected: boolean;
   isPast: boolean;
 }
 
@@ -45,6 +49,7 @@ function summarise(day: Day): string {
 export function buildWeekSummaries(
   weekDays: Day[],
   todayIso: string,
+  selectedIso: string = todayIso,
 ): DaySummary[] {
   return weekDays.map((day) => {
     const parsed = day.date.split("-").map(Number);
@@ -60,6 +65,7 @@ export function buildWeekSummaries(
       label: summarise(day),
       done: allDone,
       isToday: day.date === todayIso,
+      isSelected: day.date === selectedIso,
       isPast: day.date < todayIso,
     };
   });
@@ -93,9 +99,13 @@ export function WeekStrip({
             href={`/?day=${d.iso}`}
             aria-label={`Open ${d.iso}`}
             className={`flex flex-col items-center gap-1.5 rounded-[10px] border px-1 py-2 transition active:scale-[0.97] ${
-              d.isToday
+              d.isToday && d.isSelected
                 ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/[0.08]"
-                : "border-zinc-200 dark:border-zinc-800"
+                : d.isToday
+                  ? "border-emerald-500"
+                  : d.isSelected
+                    ? "border-zinc-400 bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-800/40"
+                    : "border-zinc-200 dark:border-zinc-800"
             }`}
             style={{ opacity: d.isPast && !d.done ? 0.55 : 1 }}
           >

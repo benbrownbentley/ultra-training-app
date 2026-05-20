@@ -53,38 +53,82 @@ export function PreferencesGroups({
   const [daily, setDaily] = useState(dailyReminder);
   const [regen, setRegen] = useState(regenCompleteNotify);
   const [weekly, setWeekly] = useState(weeklySummary);
+  // Surfaces any persist failure inline so the toggle doesn't silently
+  // diverge from server state. Cleared the next time the user pokes a row.
+  const [error, setError] = useState<string | null>(null);
 
   function pickUnits(next: UnitSystem) {
+    const prev = units;
     setUnits(next);
-    startTransition(() => {
-      void setUnitSystem(next);
+    setError(null);
+    startTransition(async () => {
+      try {
+        await setUnitSystem(next);
+      } catch (e) {
+        console.error("Failed to save units", e);
+        setUnits(prev);
+        setError("Couldn't save — try again.");
+      }
     });
   }
 
   function pickTheme(next: ThemeId) {
+    const prev = themeId;
     setThemeId(next);
     setNextTheme(next);
-    startTransition(() => {
-      void persistTheme(next);
+    setError(null);
+    startTransition(async () => {
+      try {
+        await persistTheme(next);
+      } catch (e) {
+        console.error("Failed to save theme", e);
+        setThemeId(prev);
+        setNextTheme(prev);
+        setError("Couldn't save — try again.");
+      }
     });
   }
 
   function flipDaily(value: boolean) {
+    const prev = daily;
     setDaily(value);
-    startTransition(() => {
-      void setNotificationPreference("daily_reminder", value);
+    setError(null);
+    startTransition(async () => {
+      try {
+        await setNotificationPreference("daily_reminder", value);
+      } catch (e) {
+        console.error("Failed to save daily reminder", e);
+        setDaily(prev);
+        setError("Couldn't save — try again.");
+      }
     });
   }
   function flipRegen(value: boolean) {
+    const prev = regen;
     setRegen(value);
-    startTransition(() => {
-      void setNotificationPreference("regen_complete", value);
+    setError(null);
+    startTransition(async () => {
+      try {
+        await setNotificationPreference("regen_complete", value);
+      } catch (e) {
+        console.error("Failed to save regen notify", e);
+        setRegen(prev);
+        setError("Couldn't save — try again.");
+      }
     });
   }
   function flipWeekly(value: boolean) {
+    const prev = weekly;
     setWeekly(value);
-    startTransition(() => {
-      void setNotificationPreference("weekly_summary", value);
+    setError(null);
+    startTransition(async () => {
+      try {
+        await setNotificationPreference("weekly_summary", value);
+      } catch (e) {
+        console.error("Failed to save weekly summary", e);
+        setWeekly(prev);
+        setError("Couldn't save — try again.");
+      }
     });
   }
 
@@ -139,6 +183,16 @@ export function PreferencesGroups({
         onChange={flipWeekly}
         disabled={isPending}
       />
+      {error && (
+        <div className="border-t border-zinc-200 px-4 py-2.5 dark:border-zinc-800">
+          <span
+            className="font-mono text-[11.5px] text-red-600 dark:text-red-500"
+            style={{ letterSpacing: "0.04em" }}
+          >
+            {error}
+          </span>
+        </div>
+      )}
     </Group>
   );
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { Day, Plan } from "@/lib/plan";
 import type { ContextRow } from "@/lib/regen-context";
 import { Header } from "./Header";
@@ -13,6 +14,9 @@ import { RegenButton } from "./RegenButton";
 interface Props {
   plan: Plan;
   todayIso: string;
+  // The day the user is currently viewing — equals todayIso when they're on
+  // actual today, otherwise the ?day= they tapped to.
+  selectedDayIso: string;
   today: Day | null;
   tomorrow: Day | null;
   daysToRace: number;
@@ -46,6 +50,7 @@ function shortRaceName(name: string): string {
 export function TodayPageClient({
   plan,
   todayIso,
+  selectedDayIso,
   today,
   tomorrow,
   daysToRace,
@@ -67,15 +72,16 @@ export function TodayPageClient({
   const allLogged =
     !isRestDay && todayWorkouts.every((w) => w.status === "completed");
 
-  // Section label flips to emerald + "LOGGED" suffix once everything is done.
-  // When the user is viewing a non-today day via ?day=, swap the TODAY prefix
-  // so the chrome doesn't lie about which day they're looking at.
-  const prefix = isViewingToday ? "TODAY" : "DAY";
-  const sectionLabel = allLogged
-    ? `${prefix} · ${todayLabel} · LOGGED`
-    : `${prefix} · ${todayLabel}`;
+  // Stacked centered eyebrow — date prominent on top, contextual state below.
+  // The bottom label flips to LOGGED in emerald when the user's done with the
+  // day, otherwise it tells them whether they're on today or browsing.
+  const bottomLabel = allLogged
+    ? "LOGGED"
+    : isViewingToday
+      ? "TODAY"
+      : "BROWSING";
 
-  const weekSummaries = buildWeekSummaries(weekDays, todayIso);
+  const weekSummaries = buildWeekSummaries(weekDays, todayIso, selectedDayIso);
   const phaseLabel = `WK ${weekIndex}/${totalWeeks} · ${daysToRace}D OUT`;
 
   return (
@@ -85,15 +91,32 @@ export function TodayPageClient({
       <div className="flex flex-1 flex-col gap-4 overflow-hidden px-4 py-4 sm:px-5 sm:py-5">
         <div className="mx-auto flex w-full max-w-[600px] flex-col gap-4">
           <section>
-            <div
-              className={`mb-2.5 whitespace-nowrap font-mono text-[11px] uppercase ${
-                allLogged
-                  ? "text-emerald-700 dark:text-emerald-400"
-                  : "text-zinc-500"
-              }`}
-              style={{ letterSpacing: "0.2em" }}
-            >
-              — {sectionLabel}
+            <div className="mb-4 flex flex-col items-center gap-1">
+              <div
+                className="font-mono text-[13px] uppercase text-zinc-700 dark:text-zinc-300"
+                style={{ letterSpacing: "0.18em" }}
+              >
+                {todayLabel}
+              </div>
+              <div
+                className={`font-mono text-[11px] uppercase ${
+                  allLogged
+                    ? "text-emerald-700 dark:text-emerald-400"
+                    : "text-zinc-500"
+                }`}
+                style={{ letterSpacing: "0.2em" }}
+              >
+                — {bottomLabel} —
+              </div>
+              {!isViewingToday && (
+                <Link
+                  href="/"
+                  className="mt-1 font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:text-emerald-600 dark:text-emerald-400"
+                  style={{ letterSpacing: "0.18em" }}
+                >
+                  ← BACK TO TODAY
+                </Link>
+              )}
             </div>
 
             {isRestDay ? (

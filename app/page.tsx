@@ -103,6 +103,7 @@ export default async function Home({
     <TodayPageClient
       plan={plan}
       todayIso={todayIso}
+      selectedDayIso={selectedDayIso}
       today={selectedDay}
       tomorrow={selectedTomorrow}
       daysToRace={daysToRace}

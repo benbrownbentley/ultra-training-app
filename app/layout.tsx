@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Ultra Training — Squamish 50K",
-  description: "Adaptive ultra marathon training plan for Ben.",
+  title: "Vert",
+  description: "Adaptive endurance training plans that evolve as you train.",
 };
 
 export default function RootLayout({

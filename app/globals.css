@@ -132,3 +132,41 @@ body {
     @apply font-sans;
   }
 }
+
+/* Staggered pulse used by the "updating your plan" banner on the Today screen. */
+@keyframes vert-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.vert-pulse-dot {
+  animation: vert-pulse 1.4s ease-in-out infinite;
+}
+
+/* Rotating status lines on the regeneration "generating" state.
+   Each line opacity-cycles on an offset so one is always visible. */
+@keyframes vert-fade-rotate {
+  0% {
+    opacity: 0;
+  }
+  12% {
+    opacity: 1;
+  }
+  32% {
+    opacity: 1;
+  }
+  44% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.vert-fade-rotate {
+  animation: vert-fade-rotate 8s infinite;
+  opacity: 0;
+}

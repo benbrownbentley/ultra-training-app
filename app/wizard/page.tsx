@@ -1,9 +1,9 @@
-import { getAthleteProfile, getRace } from "@/lib/supabase/server";
 import { WizardClient } from "./_components/WizardClient";
 
 export const dynamic = "force-dynamic";
 
-export default async function WizardPage() {
-  const [race, profile] = await Promise.all([getRace(), getAthleteProfile()]);
-  return <WizardClient race={race} profile={profile} />;
+// The wizard is intake-only — initialised from scratch every time. Edits to
+// an already-configured profile live under /profile/athlete and /profile/race.
+export default function WizardPage() {
+  return <WizardClient />;
 }

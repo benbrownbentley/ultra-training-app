@@ -17,11 +17,30 @@ export interface LoggedWorkout {
   status: WorkoutStatus;
 }
 
+export interface JournalContextEntry {
+  type: "note" | "travel" | "injury" | "physio";
+  entry_date: string;
+  title: string | null;
+  body: string | null;
+  // Structured per-type payload as already-formatted lines, e.g.
+  // ["body_part: Achilles", "side: right", "severity: 3/10"].
+  details_lines: string[];
+  consumed: boolean;
+}
+
 export interface GeneratePlanArgs {
   race: Race;
   profile: AthleteProfile;
   startDate: string;
   history: LoggedWorkout[];
+  // Free-text the athlete typed in the regenerate sheet — surfaces what
+  // happened since the last regen that the database can't see (subjective
+  // feel, last-minute travel, "push the volume", etc.).
+  notes?: string | null;
+  // Persistent context from the journal tab: travel plans, injury
+  // reports, physio notes, free notes. Anything still flagged
+  // `consumed: false` is fresh since the last regen.
+  journalEntries?: JournalContextEntry[];
 }
 
 export interface GeneratedWorkout {
@@ -154,10 +173,39 @@ function formatProfile(p: AthleteProfile): string {
   return lines.join("\n");
 }
 
+// Formats the journal entries into a prompt section. Unconsumed entries
+// are marked NEW so the model knows what's fresh since the last regen.
+function formatJournal(entries: JournalContextEntry[] | undefined): string {
+  if (!entries || entries.length === 0) return "";
+  const lines = entries.map((e) => {
+    const flag = e.consumed ? "(seen)" : "(NEW)";
+    const head = `[${e.type.toUpperCase()} · ${e.entry_date}] ${flag}`;
+    const titleLine = e.title ? `\n  ${e.title}` : "";
+    const bodyLine = e.body ? `\n  ${e.body}` : "";
+    const detailLines = e.details_lines
+      .map((d) => `\n  · ${d}`)
+      .join("");
+    return `${head}${titleLine}${bodyLine}${detailLines}`;
+  });
+  return `
+
+JOURNAL ENTRIES (athlete-logged context — travel, injuries, physio visits, free notes. Items flagged NEW haven't been factored into a plan yet):
+${lines.join("\n")}`;
+}
+
 function buildUserPrompt(args: GeneratePlanArgs): string {
   const distUnit = args.profile.unit_system === "metric" ? "km" : "mi";
   const paceUnit =
     args.profile.unit_system === "metric" ? "min/km" : "min/mi";
+
+  const notesSection = args.notes?.trim()
+    ? `
+
+ATHLETE NOTES (just shared via the regenerate sheet — treat as the most recent context, overriding stale assumptions):
+${args.notes.trim()}`
+    : "";
+
+  const journalSection = formatJournal(args.journalEntries);
 
   return `Generate a training plan for the following runner.
 
@@ -168,7 +216,7 @@ RUNNER PROFILE
 ${formatProfile(args.profile)}
 
 WORKOUT HISTORY
-${formatHistory(args.history)}
+${formatHistory(args.history)}${journalSection}${notesSection}
 
 PLAN PARAMETERS
 - Start date (today): ${args.startDate}

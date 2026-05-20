@@ -1,4 +1,4 @@
-# AGENTS.md — Ultra Marathon Training App
+# AGENTS.md — Vert
 
 This file is the single source of truth for any coding agent working in this repository.
 Read it fully before writing a single line of code.
@@ -38,40 +38,57 @@ build order, or what is explicitly out of scope.
 
 ## Folder structure
 
+### Current actual structure (as of 2026-05-16)
+
 ```
-app/                    # Next.js App Router — all pages and API routes live here
-  layout.tsx            # Root layout: fonts, global providers, <html> shell
-  page.tsx              # Home page (/)
-  globals.css           # Global styles + Tailwind base imports
-  (auth)/               # Route group for auth pages — does NOT affect URL
-    login/page.tsx
-    signup/page.tsx
-  dashboard/
-    page.tsx            # Main dashboard (/dashboard)
-  api/                  # API Route Handlers (server-side only)
-    plan/
-      generate/route.ts # POST /api/plan/generate — calls Claude API
-      route.ts          # GET /api/plan — fetch current plan
+app/                         # Next.js App Router
+  _components/               # Page-level components (underscore prefix = not a route)
+    RegeneratePlanButton.tsx  # "Regenerate plan" button — calls regeneratePlan() server action
+    WorkoutLogButtons.tsx     # Done / Skip buttons — calls logWorkout() server action
+  actions.ts                 # Server Actions: logWorkout(), regeneratePlan()
+  globals.css                # Global styles + Tailwind base
+  layout.tsx                 # Root layout
+  page.tsx                   # Home page (/) — shows today's workouts + weekly strip
 
-components/             # Shared UI components
-  ui/                   # shadcn/ui primitives (auto-generated, do not hand-edit)
-  [feature]/            # Feature-specific components, e.g. components/training/WorkoutCard.tsx
+lib/
+  claude.ts                  # Anthropic SDK client + generateTrainingPlan() + all prompt logic
+  plan.ts                    # Shared TypeScript types: Workout, Day, Race, Plan
+  supabase.ts                # Supabase client + getPlan() read helper (uses publishable key)
+  supabase-admin.ts          # Supabase service-role client for server-side writes
 
-lib/                    # Shared utilities and service clients
-  supabase/
-    client.ts           # Browser-side Supabase client (for Client Components)
-    server.ts           # Server-side Supabase client (for Server Components + Route Handlers)
-    middleware.ts        # Auth token refresh middleware helper
-  anthropic.ts          # Anthropic SDK client + prompt helpers
-  plan.ts               # Training plan types and business logic
-  utils.ts              # General utilities (cn(), dates, formatting)
+supabase/
+  schema.sql                 # Full schema — re-running drops and recreates all tables
+  migrations/
+    001_workout_logging.sql  # Adds status + logged_at columns to workouts table
+```
 
-types/                  # Shared TypeScript types and interfaces
-  index.ts
+**IMPORTANT — shadcn/ui is NOT yet installed.** `components/ui/` does not exist.
+Run `npx shadcn@latest init` before adding any shadcn components.
 
-middleware.ts           # Next.js middleware — runs on every request for auth session refresh
+### Target structure as features are added
 
-public/                 # Static assets served at root URL
+Follow these conventions when adding new routes and components:
+
+```
+app/
+  _components/               # Components scoped to the home page only
+  wizard/                    # Intake wizard route (/wizard)
+    page.tsx
+    _components/
+  workout/
+    [id]/                    # Workout drill-down (/workout/123)
+      page.tsx
+
+components/                  # Shared components used across multiple pages
+  ui/                        # shadcn/ui primitives (auto-generated — do not hand-edit)
+  training/                  # Training-domain shared components
+
+lib/
+  supabase.ts                # Read helpers (getPlan, getAthleteProfile, etc.)
+  supabase-admin.ts          # Write helpers — server-side only
+  claude.ts                  # All Anthropic SDK usage
+  plan.ts                    # Types and pure business logic (no DB or API calls)
+  utils.ts                   # General utilities: cn(), date helpers, formatters
 ```
 
 ---
@@ -250,6 +267,32 @@ Run `npx shadcn@latest add [component-name]` when a new primitive is required.
 
 ---
 
+## Frontend aesthetics
+
+<frontend_aesthetics>
+You tend to converge toward generic, "on distribution" outputs. In frontend design, this creates what users call the "AI slop" aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight. Focus on:
+
+Typography: Choose fonts that are beautiful, unique, and interesting. Avoid generic fonts like Arial and Inter; opt instead for distinctive choices that elevate the frontend's aesthetics.
+
+Color & Theme: Commit to a cohesive aesthetic. Use CSS variables for consistency. Dominant colors with sharp accents outperform timid, evenly-distributed palettes. Draw from IDE themes and cultural aesthetics for inspiration.
+
+Motion: Use animations for effects and micro-interactions. Prioritize CSS-only solutions for HTML. Use Motion library for React when available. Focus on high-impact moments: one well-orchestrated page load with staggered reveals (animation-delay) creates more delight than scattered micro-interactions.
+
+Backgrounds: Create atmosphere and depth rather than defaulting to solid colors. Layer CSS gradients, use geometric patterns, or add contextual effects that match the overall aesthetic.
+
+Avoid generic AI-generated aesthetics:
+- Overused font families (Inter, Roboto, Arial, system fonts)
+- Clichéd color schemes (particularly purple gradients on white backgrounds)
+- Predictable layouts and component patterns
+- Cookie-cutter design that lacks context-specific character
+
+Interpret creatively and make unexpected choices that feel genuinely designed for the context. Vary between light and dark themes, different fonts, different aesthetics. You still tend to converge on common choices (Space Grotesk, for example) across generations. Avoid this: it is critical that you think outside the box!
+</frontend_aesthetics>
+
+**Note:** This project uses shadcn/ui + Tailwind. Apply aesthetic ambition within that system — extend via Tailwind config (custom fonts, colors, keyframes) rather than fighting the component library.
+
+---
+
 ## Anthropic Claude API — rules and patterns
 
 ### Client setup
@@ -314,6 +357,93 @@ export async function POST(request: NextRequest) {
 
 When the API should return structured data (e.g., a JSON training plan), instruct it explicitly
 in the prompt and parse the response. Use a try/catch around `JSON.parse`.
+
+---
+
+## Mobile-readiness rules
+
+Vert is built in Next.js as a mobile-first responsive web app for v1 and v2. A React Native
+(Expo) mobile app is deferred to v3+. These rules are **load-bearing**, not aspirational —
+the strategic decision (locked in 2026-05-18, see `PROJECT_BRIEF.md` → Mobile strategy) is
+that Vert is the *brain* (adaptive AI plan), not the *tracker*. Device sync (Garmin / Apple
+Health / Strava) is the planned activity-input path, and a future native app remains a real
+option contingent on user demand. Both require `lib/` to be cleanly portable.
+
+The goal: when v3 arrives, `lib/` moves to the Expo app unchanged and only the UI layer
+needs to be rebuilt. Follow these rules on every file you touch.
+
+### Keep business logic out of the UI
+
+All logic that isn't rendering belongs in `lib/`, not in components or pages.
+
+```typescript
+// ✅ Good — logic lives in lib/, component just calls it
+import { calculateWeeklyLoad } from '@/lib/plan'
+export function WeekSummary({ workouts }: Props) {
+  const load = calculateWeeklyLoad(workouts)
+  return <p>{load} TSS this week</p>
+}
+
+// ❌ Bad — business logic embedded in a component
+export function WeekSummary({ workouts }: Props) {
+  const load = workouts.reduce((sum, w) => sum + (w.tss ?? 0), 0)
+  return <p>{load} TSS this week</p>
+}
+```
+
+### Wrap browser APIs in service files
+
+Never call browser APIs (`localStorage`, `navigator`, `window`, `document`) directly in
+components or `lib/` files. Wrap them in a service in `lib/platform/` so the mobile app can
+swap in the React Native equivalent (AsyncStorage, expo-location, etc.) without touching
+business logic.
+
+```typescript
+// lib/platform/storage.ts
+// Wraps localStorage so React Native can swap in AsyncStorage later
+export const storage = {
+  get: (key: string) => localStorage.getItem(key),
+  set: (key: string, value: string) => localStorage.setItem(key, value),
+  remove: (key: string) => localStorage.removeItem(key),
+}
+
+// Usage in components:
+import { storage } from '@/lib/platform/storage'
+storage.set('lastViewedWeek', weekOffset.toString())
+```
+
+### Keep Supabase queries in lib/
+
+All Supabase read/write logic belongs in `lib/supabase.ts` or `lib/supabase-admin.ts`,
+never inline in components. This is already the pattern — maintain it. These files move to
+the Expo app unchanged.
+
+### No Next.js-specific imports in lib/
+
+Files in `lib/` must not import from `next/*` (e.g. `next/headers`, `next/navigation`).
+Those imports are Next.js-only and will break in React Native. Keep `lib/` pure TypeScript.
+
+### Server actions are API contracts
+
+Treat every server action in `app/actions.ts` (or feature-scoped `actions/` files) as an
+API endpoint a future native client will call. Practical consequences:
+
+- Inputs validated with `zod` (or equivalent), not trusted blindly
+- Errors returned as typed shapes, not thrown for the UI to catch
+- No tight coupling to Next.js form internals where avoidable
+- Authorisation (`requireUser()`) at the top of every mutation, every time
+
+If a server action can't easily be reimagined as a JSON HTTP endpoint, the logic is in the
+wrong place — move it down into `lib/` and have the action be a thin wrapper.
+
+### Activity data carries a `source` field
+
+Workout-log records have a `source` column (`manual` / `strava` / `garmin` / `apple_health`).
+v1 always writes `manual`. When adding any code that creates or reads activity records,
+respect the field — don't filter it out, don't hardcode `'manual'` outside the v1 write path,
+and don't add new write paths without considering what `source` should be set to. The field
+is the seam for v2+ device-sync work, and treating it as first-class now avoids a destructive
+migration later.
 
 ---
 
@@ -386,3 +516,4 @@ When working autonomously in this codebase:
 8. **Comment as you go** — do not leave uncommented code to clean up later.
 9. **Keep components small and focused.** If a component exceeds ~150 lines, split it.
 10. **Environment variables**: check `.env.example` before assuming a variable exists. Add new ones there with a description.
+11. **Suggest a code review after each major feature.** When you complete a significant feature (a new route, a new DB table, auth integration, a complete UI flow, etc.), explicitly prompt Ben to do a code review before starting the next feature. The suggested message is: *"This feature is complete and deployed. Before we start the next one, I recommend doing a quick code review in Cowork — just ask Claude there to 'run a code review on the codebase.' It catches security issues and code quality problems while the context is fresh."* This is non-blocking — if Ben wants to continue, that's fine — but always surface the suggestion.

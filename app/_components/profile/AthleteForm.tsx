@@ -21,8 +21,10 @@ const ULTRA_COUNT_OPTS = ["0", "1-3", "4-10", "10+"];
 const SEX_OPTS = ["Male", "Female", "Other", "Prefer not to say"];
 const SLEEP_OPTS = ["5", "6", "7", "8", "9+"];
 const TRAIN_DAYS = ["M", "Tu", "W", "Th", "F", "Sa", "Su"];
-const LONG_DAY_OPTS = ["Sat", "Sun", "Other"];
-const QUALITY_DAY_OPTS = ["Tue", "Wed", "Thu", "Mixed"];
+// Long-run + quality day sets are the full week now so the user can
+// mark any day they're flexible about. Multi-select.
+const LONG_DAY_OPTS = TRAIN_DAYS;
+const QUALITY_DAY_OPTS = TRAIN_DAYS;
 const STRENGTH_FREQ_OPTS = ["None", "1×", "2×", "3×"];
 const TIME_OF_DAY_OPTS = ["Morning", "Lunch", "Evening", "No preference"];
 const JOB_OPTS = ["Sedentary office", "Standing", "Physical", "Shift work"];
@@ -32,7 +34,13 @@ const GYM_LABELS: Record<GymAccess, string> = {
   limited: "Limited",
   none: "None",
 };
-const EQUIP_OPTS = ["Treadmill", "Indoor trainer", "Weights", "Pool", "None"];
+const EQUIP_OPTS = [
+  "Treadmill",
+  "Indoor bike trainer",
+  "Weights",
+  "Pool",
+  "None",
+];
 const TERRAIN_ACCESS_OPTS = [
   "Trails nearby",
   "Hills nearby",
@@ -66,7 +74,14 @@ export function AthleteForm({ profile }: Props) {
       ? String(profile.weekly_volume_km)
       : profile?.weekly_volume ?? "",
   );
-  const [weeklyHours, setWeeklyHours] = useState(
+  // Two distinct fields: how much the athlete *currently* trains vs how
+  // much they're *available* to train. Previously a single weeklyHours.
+  const [weeklyHoursCurrent, setWeeklyHoursCurrent] = useState(
+    profile?.weekly_hours_current != null
+      ? String(profile.weekly_hours_current)
+      : "",
+  );
+  const [weeklyHoursAvailable, setWeeklyHoursAvailable] = useState(
     profile?.weekly_hours != null ? String(profile.weekly_hours) : "",
   );
   const [longestRunDistance, setLongestRunDistance] = useState(
@@ -122,8 +137,23 @@ export function AthleteForm({ profile }: Props) {
   const [trainingDays, setTrainingDays] = useState<string[]>(
     profile?.training_days ?? [],
   );
-  const [longRunDay, setLongRunDay] = useState(profile?.long_run_day ?? "");
-  const [qualityDay, setQualityDay] = useState(profile?.quality_day ?? "");
+  // Multi-select arrays. Seed from the array column when present, else
+  // fall back to the legacy single-value column wrapped in a 1-element
+  // array so older profiles still surface a selection.
+  const [longRunDays, setLongRunDays] = useState<string[]>(
+    profile?.long_run_days && profile.long_run_days.length > 0
+      ? profile.long_run_days
+      : profile?.long_run_day
+        ? [profile.long_run_day]
+        : [],
+  );
+  const [qualityDays, setQualityDays] = useState<string[]>(
+    profile?.quality_days && profile.quality_days.length > 0
+      ? profile.quality_days
+      : profile?.quality_day
+        ? [profile.quality_day]
+        : [],
+  );
   const [strengthFreq, setStrengthFreq] = useState(
     profile?.strength_freq ?? "",
   );
@@ -174,7 +204,12 @@ export function AthleteForm({ profile }: Props) {
       unitSystem,
       fitnessRating,
       weeklyVolumeKm: weeklyVolumeKm ? Number(weeklyVolumeKm) : null,
-      weeklyHours: weeklyHours ? Number(weeklyHours) : null,
+      weeklyHoursCurrent: weeklyHoursCurrent
+        ? Number(weeklyHoursCurrent)
+        : null,
+      weeklyHoursAvailable: weeklyHoursAvailable
+        ? Number(weeklyHoursAvailable)
+        : null,
       longestRunDistance: longestRunDistance ? Number(longestRunDistance) : null,
       longestRunDate: longestRunDate || null,
       yearsRunning: yearsRunning ? Number(yearsRunning) : null,
@@ -192,8 +227,8 @@ export function AthleteForm({ profile }: Props) {
       sleepHours: sleepHours ? Number(sleepHours.replace("+", "")) : null,
       stressBaseline,
       trainingDays,
-      longRunDay,
-      qualityDay,
+      longRunDays,
+      qualityDays,
       strengthFreq,
       timeOfDay,
       jobType,
@@ -225,7 +260,8 @@ export function AthleteForm({ profile }: Props) {
     unitSystem,
     fitnessRating,
     weeklyVolumeKm,
-    weeklyHours,
+    weeklyHoursCurrent,
+    weeklyHoursAvailable,
     longestRunDistance,
     longestRunDate,
     yearsRunning,
@@ -243,8 +279,8 @@ export function AthleteForm({ profile }: Props) {
     sleepHours,
     stressBaseline,
     trainingDays,
-    longRunDay,
-    qualityDay,
+    longRunDays,
+    qualityDays,
     strengthFreq,
     timeOfDay,
     jobType,
@@ -324,16 +360,25 @@ export function AthleteForm({ profile }: Props) {
                     disabled={isPending}
                   />
                 </FieldBlock>
-                <FieldBlock label="WEEKLY TIME">
+                <FieldBlock label="CURRENT WEEKLY TIME">
                   <SuffixInput
-                    value={weeklyHours}
-                    onChange={setWeeklyHours}
+                    value={weeklyHoursCurrent}
+                    onChange={setWeeklyHoursCurrent}
                     suffix="hrs"
                     numeric
                     disabled={isPending}
                   />
                 </FieldBlock>
               </div>
+              <FieldBlock label="WEEKLY HOURS AVAILABLE">
+                <SuffixInput
+                  value={weeklyHoursAvailable}
+                  onChange={setWeeklyHoursAvailable}
+                  suffix="hrs"
+                  numeric
+                  disabled={isPending}
+                />
+              </FieldBlock>
               <div className="grid grid-cols-2 gap-2.5">
                 <FieldBlock label="LONGEST RUN · LAST MONTH">
                   <SuffixInput
@@ -549,23 +594,35 @@ export function AthleteForm({ profile }: Props) {
                   ))}
                 </div>
               </FieldBlock>
-              <FieldBlock label="LONG RUN DAY">
-                <SegmentedControl
-                  options={LONG_DAY_OPTS}
-                  value={longRunDay || null}
-                  onChange={(v) => setLongRunDay(v)}
-                  size="sm"
-                  disabled={isPending}
-                />
+              <FieldBlock label="LONG RUN DAYS · multi-select">
+                <div className="flex flex-wrap gap-1.5">
+                  {LONG_DAY_OPTS.map((d) => (
+                    <Chip
+                      key={d}
+                      multi
+                      active={longRunDays.includes(d)}
+                      onClick={() => toggle(d, longRunDays, setLongRunDays)}
+                      disabled={isPending}
+                    >
+                      {d}
+                    </Chip>
+                  ))}
+                </div>
               </FieldBlock>
-              <FieldBlock label="QUALITY DAY">
-                <SegmentedControl
-                  options={QUALITY_DAY_OPTS}
-                  value={qualityDay || null}
-                  onChange={(v) => setQualityDay(v)}
-                  size="sm"
-                  disabled={isPending}
-                />
+              <FieldBlock label="QUALITY DAYS · multi-select">
+                <div className="flex flex-wrap gap-1.5">
+                  {QUALITY_DAY_OPTS.map((d) => (
+                    <Chip
+                      key={d}
+                      multi
+                      active={qualityDays.includes(d)}
+                      onClick={() => toggle(d, qualityDays, setQualityDays)}
+                      disabled={isPending}
+                    >
+                      {d}
+                    </Chip>
+                  ))}
+                </div>
               </FieldBlock>
               <FieldBlock label="STRENGTH PER WEEK">
                 <SegmentedControl

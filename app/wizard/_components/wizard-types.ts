@@ -18,8 +18,10 @@ export const SEX_OPTS = [
 ] as const;
 export const SLEEP_OPTS = ["5", "6", "7", "8", "9"] as const;
 export const TRAIN_DAYS = ["M", "Tu", "W", "Th", "F", "Sa", "Su"] as const;
-export const LONG_DAY_OPTS = ["Sat", "Sun", "Other"] as const;
-export const QUALITY_DAY_OPTS = ["Tue", "Wed", "Thu", "Mixed"] as const;
+// Long-run and quality day chip sets reuse the full week so the user
+// can flag any day they're flexible about. Multi-select.
+export const LONG_DAY_OPTS = TRAIN_DAYS;
+export const QUALITY_DAY_OPTS = TRAIN_DAYS;
 export const STRENGTH_FREQ_OPTS = ["None", "1×", "2×", "3×"] as const;
 export const GYM_OPTS = ["full", "limited", "none"] as const;
 export const GYM_LABELS: Record<(typeof GYM_OPTS)[number], string> = {
@@ -29,7 +31,7 @@ export const GYM_LABELS: Record<(typeof GYM_OPTS)[number], string> = {
 };
 export const EQUIP_OPTS = [
   "Treadmill",
-  "Indoor trainer",
+  "Indoor bike trainer",
   "Weights",
   "Pool",
   "None",
@@ -94,7 +96,8 @@ export const EMPTY_PAYLOAD: WizardPayload = {
   otherRaces: [],
   fitnessRating: 3,
   weeklyVolumeKm: null,
-  weeklyHours: null,
+  weeklyHoursCurrent: null,
+  weeklyHoursAvailable: null,
   longestRunDistance: null,
   longestRunDate: null,
   yearsRunning: null,
@@ -111,8 +114,8 @@ export const EMPTY_PAYLOAD: WizardPayload = {
   sleepHours: null,
   stressBaseline: 3,
   trainingDays: [],
-  longRunDay: "",
-  qualityDay: "",
+  longRunDays: [],
+  qualityDays: [],
   strengthFreq: "",
   gymAccess: null,
   equipment: [],

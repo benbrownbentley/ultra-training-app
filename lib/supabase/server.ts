@@ -61,7 +61,7 @@ interface WorkoutRow {
 const RACE_COLUMNS =
   "id, name, distance, date, elevation_gain, terrain, target_time, intent, priority, elevation_loss, cutoff_time, climate, course_profile, support";
 const PROFILE_COLUMNS =
-  "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, cross_training, other_commitments, sleep_stress, fitness_rating, weekly_volume_km, longest_run_date, years_running, years_ultras, ultras_completed, longest_race_distance, longest_race_name, longest_race_date, previous_endurance, age, body_weight, sex, chronic_conditions, sleep_hours, stress_baseline, training_days, long_run_day, quality_day, strength_freq, time_of_day, job_type, outdoor_terrain, cross_training_enjoys, max_hr, resting_hr, lactate_threshold_hr, vo2_max, training_preferences, theme, daily_reminder, regen_complete_notify, weekly_summary";
+  "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, weekly_hours_current, cross_training, other_commitments, sleep_stress, fitness_rating, weekly_volume_km, longest_run_date, years_running, years_ultras, ultras_completed, longest_race_distance, longest_race_name, longest_race_date, previous_endurance, age, body_weight, sex, chronic_conditions, sleep_hours, stress_baseline, training_days, long_run_day, quality_day, long_run_days, quality_days, strength_freq, time_of_day, job_type, outdoor_terrain, cross_training_enjoys, max_hr, resting_hr, lactate_threshold_hr, vo2_max, training_preferences, theme, daily_reminder, regen_complete_notify, weekly_summary";
 
 export async function getPlan(): Promise<Plan | null> {
   const supabase = await createClient();

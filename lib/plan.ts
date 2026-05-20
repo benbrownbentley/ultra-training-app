@@ -54,7 +54,10 @@ export interface AthleteProfile {
   experience: string | null;
   gym_access: GymAccess | null;
   equipment: string | null;
+  // Semantically: hours per week the athlete is *available* to train.
+  // The "currently training" counterpart is `weekly_hours_current`.
   weekly_hours: number | null;
+  weekly_hours_current?: number | null;
   cross_training: string | null;
   other_commitments: string | null;
   sleep_stress: string | null;
@@ -77,8 +80,12 @@ export interface AthleteProfile {
   sleep_hours?: number | null;
   stress_baseline?: number | null;
   training_days?: string[] | null;
+  // Legacy single-value columns; new code reads/writes the *_days
+  // arrays. Kept so older rows still surface in the prompt.
   long_run_day?: string | null;
   quality_day?: string | null;
+  long_run_days?: string[] | null;
+  quality_days?: string[] | null;
   strength_freq?: string | null;
   time_of_day?: string | null;
   job_type?: string | null;

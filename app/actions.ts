@@ -48,7 +48,11 @@ export interface WizardPayload {
   // Fitness baseline
   fitnessRating: number;
   weeklyVolumeKm: number | null;
-  weeklyHours: number | null;
+  // Two distinct hours fields. "Current" = what the athlete trains
+  // now; "Available" = what they could dedicate going forward. The
+  // wizard previously collapsed both into a single column.
+  weeklyHoursCurrent: number | null;
+  weeklyHoursAvailable: number | null;
   longestRunDistance: number | null;
   longestRunDate: string | null;
   // Experience
@@ -67,10 +71,11 @@ export interface WizardPayload {
   chronicConditions: string;
   sleepHours: number | null;
   stressBaseline: number;
-  // Schedule
+  // Schedule — long-run + quality days are multi-select arrays so the
+  // user can flag any day they're flexible about.
   trainingDays: string[];
-  longRunDay: string;
-  qualityDay: string;
+  longRunDays: string[];
+  qualityDays: string[];
   strengthFreq: string;
   // Equipment
   gymAccess: GymAccess | null;
@@ -464,7 +469,8 @@ export interface AthleteFormPayload {
   // Fitness baseline
   fitnessRating: number | null;
   weeklyVolumeKm: number | null;
-  weeklyHours: number | null;
+  weeklyHoursCurrent: number | null;
+  weeklyHoursAvailable: number | null;
   longestRunDistance: number | null;
   longestRunDate: string | null;
   // Experience
@@ -486,8 +492,8 @@ export interface AthleteFormPayload {
   stressBaseline: number | null;
   // Schedule
   trainingDays: string[];
-  longRunDay: string;
-  qualityDay: string;
+  longRunDays: string[];
+  qualityDays: string[];
   strengthFreq: string;
   timeOfDay: string;
   jobType: string;
@@ -528,7 +534,9 @@ export async function saveAthleteProfile(payload: AthleteFormPayload) {
     experience: blankToNull(payload.experience),
     gym_access: payload.gymAccess,
     equipment: blankToNull(payload.equipment),
-    weekly_hours: payload.weeklyHours,
+    // `weekly_hours` is the legacy column now meaning "available."
+    weekly_hours: payload.weeklyHoursAvailable,
+    weekly_hours_current: payload.weeklyHoursCurrent,
     cross_training: blankToNull(payload.crossTraining),
     other_commitments: blankToNull(payload.otherCommitments),
     sleep_stress: blankToNull(payload.sleepStress),
@@ -550,8 +558,12 @@ export async function saveAthleteProfile(payload: AthleteFormPayload) {
     sleep_hours: payload.sleepHours,
     stress_baseline: payload.stressBaseline,
     training_days: payload.trainingDays,
-    long_run_day: blankToNull(payload.longRunDay),
-    quality_day: blankToNull(payload.qualityDay),
+    // Write both shapes so legacy readers (Claude prompt fallback) still
+    // find something. New code prefers `*_days` arrays.
+    long_run_day: payload.longRunDays[0] ?? null,
+    quality_day: payload.qualityDays[0] ?? null,
+    long_run_days: payload.longRunDays,
+    quality_days: payload.qualityDays,
     strength_freq: blankToNull(payload.strengthFreq),
     time_of_day: blankToNull(payload.timeOfDay),
     job_type: blankToNull(payload.jobType),
@@ -698,7 +710,8 @@ export async function submitWizard(data: WizardPayload) {
     experience: null,
     gym_access: data.gymAccess,
     equipment: data.equipment.length ? data.equipment.join(", ") : null,
-    weekly_hours: data.weeklyHours,
+    weekly_hours: data.weeklyHoursAvailable,
+    weekly_hours_current: data.weeklyHoursCurrent,
     cross_training: data.crossTrainingEnjoys.length
       ? data.crossTrainingEnjoys.join(", ")
       : null,
@@ -722,8 +735,12 @@ export async function submitWizard(data: WizardPayload) {
     sleep_hours: data.sleepHours,
     stress_baseline: data.stressBaseline,
     training_days: data.trainingDays,
-    long_run_day: blankToNull(data.longRunDay),
-    quality_day: blankToNull(data.qualityDay),
+    // Legacy single-value columns keep the first array element so
+    // older readers still see something.
+    long_run_day: data.longRunDays[0] ?? null,
+    quality_day: data.qualityDays[0] ?? null,
+    long_run_days: data.longRunDays,
+    quality_days: data.qualityDays,
     strength_freq: blankToNull(data.strengthFreq),
     time_of_day: null,
     job_type: null,

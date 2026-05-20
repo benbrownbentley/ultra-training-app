@@ -204,8 +204,31 @@ export function formatProfile(p: AthleteProfile): string {
   if (p.experience) lines.push(`- Endurance experience: ${p.experience}`);
   if (p.gym_access) lines.push(`- Gym access: ${p.gym_access}`);
   if (p.equipment) lines.push(`- Equipment available: ${p.equipment}`);
-  if (p.weekly_hours != null)
+  // Render both "currently training" and "available" when both exist
+  // and differ; otherwise fall back to the legacy single line.
+  if (
+    p.weekly_hours_current != null &&
+    p.weekly_hours != null &&
+    p.weekly_hours_current !== p.weekly_hours
+  ) {
+    lines.push(`- Currently training: ${p.weekly_hours_current} hrs/week`);
+    lines.push(`- Available training time: ${p.weekly_hours} hrs/week`);
+  } else if (p.weekly_hours != null) {
     lines.push(`- Weekly training time available: ${p.weekly_hours} hours`);
+  } else if (p.weekly_hours_current != null) {
+    lines.push(`- Currently training: ${p.weekly_hours_current} hrs/week`);
+  }
+  // Multi-day arrays preferred over the legacy single-value columns.
+  const longDays =
+    p.long_run_days && p.long_run_days.length > 0
+      ? p.long_run_days.join(", ")
+      : p.long_run_day;
+  if (longDays) lines.push(`- Long run days: ${longDays}`);
+  const qDays =
+    p.quality_days && p.quality_days.length > 0
+      ? p.quality_days.join(", ")
+      : p.quality_day;
+  if (qDays) lines.push(`- Quality day(s): ${qDays}`);
   if (p.cross_training)
     lines.push(`- Cross-training preferences: ${p.cross_training}`);
   if (p.other_commitments)

@@ -21,7 +21,7 @@ const TABS: TabSpec[] = [
 // exist yet — they'll 404 today and stop 404'ing as those routes ship.
 export function TabBar({ active = "today" }: { active?: TabId }) {
   return (
-    <div className="grid grid-cols-4 border-t border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="sticky bottom-0 z-30 grid grid-cols-4 border-t border-zinc-200 bg-zinc-50 pb-[env(safe-area-inset-bottom)] dark:border-zinc-800 dark:bg-zinc-950">
       {TABS.map((tab) => {
         const isOn = tab.id === active;
         const color = isOn ? "#10b981" : "rgb(113 113 122)";

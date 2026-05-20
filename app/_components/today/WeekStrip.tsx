@@ -88,9 +88,11 @@ export function WeekStrip({
       </div>
       <div className="grid grid-cols-7 gap-1.5">
         {days.map((d, i) => (
-          <div
+          <Link
             key={i}
-            className={`flex flex-col items-center gap-1.5 rounded-[10px] border px-1 py-2 ${
+            href={`/?day=${d.iso}`}
+            aria-label={`Open ${d.iso}`}
+            className={`flex flex-col items-center gap-1.5 rounded-[10px] border px-1 py-2 transition active:scale-[0.97] ${
               d.isToday
                 ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/[0.08]"
                 : "border-zinc-200 dark:border-zinc-800"
@@ -132,7 +134,7 @@ export function WeekStrip({
             >
               {d.label}
             </div>
-          </div>
+          </Link>
         ))}
       </div>
       <div className="mt-2.5 flex items-center justify-between gap-2.5">

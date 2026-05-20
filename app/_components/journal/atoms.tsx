@@ -31,7 +31,7 @@ export function Chip({
         type={type}
         onClick={onClick}
         disabled={disabled}
-        className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-500 bg-emerald-500 ${padding} ${fontSize} font-semibold text-emerald-950 transition disabled:opacity-50`}
+        className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-500 bg-emerald-500 ${padding} ${fontSize} font-semibold text-emerald-950 transition active:scale-[0.97] disabled:opacity-50`}
       >
         {multi && (
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
@@ -53,7 +53,7 @@ export function Chip({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`whitespace-nowrap rounded-full border border-zinc-200 bg-transparent ${padding} ${fontSize} font-medium text-zinc-950 transition hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700`}
+      className={`whitespace-nowrap rounded-full border border-zinc-200 bg-transparent ${padding} ${fontSize} font-medium text-zinc-950 transition active:scale-[0.97] hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700`}
     >
       {children}
     </button>

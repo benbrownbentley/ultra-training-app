@@ -25,7 +25,7 @@ function formatTodayLabel(iso: string): string {
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ week?: string }>;
+  searchParams: Promise<{ week?: string; day?: string }>;
 }) {
   const [plan, profile] = await Promise.all([getPlan(), getAthleteProfile()]);
   if (!plan || plan.days.length === 0) {
@@ -34,18 +34,29 @@ export default async function Home({
 
   const params = await searchParams;
   const todayIso = getTodayISO();
-  const todayDay = plan.days.find((d) => d.date === todayIso) ?? null;
-  const tomorrowDay =
-    plan.days.find((d) => d.date === addDays(todayIso, 1)) ?? null;
+  // ?day= lets the WeekStrip pills swap the TODAY section to a different day
+  // without losing the rest of the page chrome. Falls back to actual today.
+  const selectedDayIso =
+    params.day && /^\d{4}-\d{2}-\d{2}$/.test(params.day)
+      ? params.day
+      : todayIso;
+  const selectedDay =
+    plan.days.find((d) => d.date === selectedDayIso) ?? null;
+  const selectedTomorrow =
+    plan.days.find((d) => d.date === addDays(selectedDayIso, 1)) ?? null;
   const daysToRace = daysBetween(todayIso, plan.race.date);
+  const isViewingToday = selectedDayIso === todayIso;
 
   // Week navigation — params.week is the ISO date of any day in the desired
-  // week; we normalise to its Monday so links round-trip cleanly.
+  // week; we normalise to its Monday so links round-trip cleanly. When the
+  // user is viewing a specific day, prefer that day's week.
   const currentWeekStart = weekStart(todayIso);
   const selectedWeekStart =
     params.week && /^\d{4}-\d{2}-\d{2}$/.test(params.week)
       ? weekStart(params.week)
-      : currentWeekStart;
+      : params.day && /^\d{4}-\d{2}-\d{2}$/.test(params.day)
+        ? weekStart(params.day)
+        : currentWeekStart;
   const isCurrentWeek = selectedWeekStart === currentWeekStart;
   const prevWeekStart = addDays(selectedWeekStart, -7);
   const nextWeekStart = addDays(selectedWeekStart, 7);
@@ -92,15 +103,16 @@ export default async function Home({
     <TodayPageClient
       plan={plan}
       todayIso={todayIso}
-      today={todayDay}
-      tomorrow={tomorrowDay}
+      today={selectedDay}
+      tomorrow={selectedTomorrow}
       daysToRace={daysToRace}
       weekDays={weekDays}
       isCurrentWeek={isCurrentWeek}
       prevWeekHref={`/?week=${prevWeekStart}`}
       nextWeekHref={`/?week=${nextWeekStart}`}
       resetHref="/"
-      todayLabel={formatTodayLabel(todayIso)}
+      todayLabel={formatTodayLabel(selectedDayIso)}
+      isViewingToday={isViewingToday}
       weekIndex={weekIndex}
       totalWeeks={totalWeeks}
       loggedAtById={loggedAtById}

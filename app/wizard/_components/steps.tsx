@@ -353,14 +353,24 @@ export function FitnessStepBody({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="CURRENT WEEKLY TIME">
+      <FieldBlock label="CURRENT WEEKLY TRAINING TIME">
         <SuffixField
-          value={data.weeklyHours != null ? String(data.weeklyHours) : ""}
-          onChange={(v) => set("weeklyHours", v ? Number(v) : null)}
+          value={
+            data.weeklyHoursCurrent != null
+              ? String(data.weeklyHoursCurrent)
+              : ""
+          }
+          onChange={(v) =>
+            set("weeklyHoursCurrent", v ? Number(v) : null)
+          }
           suffix="hrs"
           numeric
           disabled={disabled}
         />
+        <HelperText>
+          How many hours you&apos;re currently training each week, on
+          average.
+        </HelperText>
       </FieldBlock>
       <FieldBlock label="LONGEST RUN · LAST MONTH">
         <SuffixField
@@ -399,7 +409,7 @@ export function ExperienceStepBody({
 }) {
   return (
     <FieldStack>
-      <FieldBlock label="YEARS OF RUNNING">
+      <FieldBlock label="YEARS RUNNING REGULARLY">
         <SuffixField
           value={data.yearsRunning != null ? String(data.yearsRunning) : ""}
           onChange={(v) => set("yearsRunning", v ? Number(v) : null)}
@@ -407,6 +417,10 @@ export function ExperienceStepBody({
           numeric
           disabled={disabled}
         />
+        <HelperText>
+          Lifetime total, not counting long gaps. If you had a year+ off
+          from running, subtract that.
+        </HelperText>
       </FieldBlock>
       <FieldBlock label="YEARS OF ULTRAS">
         <SuffixField
@@ -578,22 +592,35 @@ export function ScheduleStepBody({
   set: <K extends keyof WizardPayload>(k: K, v: WizardPayload[K]) => void;
   disabled?: boolean;
 }) {
-  function toggleDay(d: string) {
-    const next = data.trainingDays.includes(d)
-      ? data.trainingDays.filter((x) => x !== d)
-      : [...data.trainingDays, d];
-    set("trainingDays", next);
+  function toggleIn(
+    list: string[],
+    key: "trainingDays" | "longRunDays" | "qualityDays",
+    d: string,
+  ) {
+    const next = list.includes(d)
+      ? list.filter((x) => x !== d)
+      : [...list, d];
+    set(key, next);
   }
   return (
     <FieldStack>
       <FieldBlock label="WEEKLY HOURS AVAILABLE">
         <SuffixField
-          value={data.weeklyHours != null ? String(data.weeklyHours) : ""}
-          onChange={(v) => set("weeklyHours", v ? Number(v) : null)}
+          value={
+            data.weeklyHoursAvailable != null
+              ? String(data.weeklyHoursAvailable)
+              : ""
+          }
+          onChange={(v) =>
+            set("weeklyHoursAvailable", v ? Number(v) : null)
+          }
           suffix="hrs"
           numeric
           disabled={disabled}
         />
+        <HelperText>
+          How much you can dedicate to training going forward.
+        </HelperText>
       </FieldBlock>
       <FieldBlock label="TYPICAL TRAINING DAYS · multi-select">
         <div className="flex flex-wrap gap-1.5">
@@ -602,7 +629,7 @@ export function ScheduleStepBody({
               key={d}
               multi
               active={data.trainingDays.includes(d)}
-              onClick={() => toggleDay(d)}
+              onClick={() => toggleIn(data.trainingDays, "trainingDays", d)}
               disabled={disabled}
             >
               {d}
@@ -610,21 +637,39 @@ export function ScheduleStepBody({
           ))}
         </div>
       </FieldBlock>
-      <FieldBlock label="LONG RUN DAY">
-        <Segmented
-          options={LONG_DAY_OPTS}
-          value={data.longRunDay || null}
-          onChange={(v) => set("longRunDay", v)}
-          disabled={disabled}
-        />
+      <FieldBlock label="LONG RUN DAYS · multi-select">
+        <div className="flex flex-wrap gap-1.5">
+          {LONG_DAY_OPTS.map((d) => (
+            <Chip
+              key={d}
+              multi
+              active={data.longRunDays.includes(d)}
+              onClick={() => toggleIn(data.longRunDays, "longRunDays", d)}
+              disabled={disabled}
+            >
+              {d}
+            </Chip>
+          ))}
+        </div>
+        <HelperText>
+          Pick the days you usually do your long run. Multi-select if
+          you&apos;re flexible.
+        </HelperText>
       </FieldBlock>
-      <FieldBlock label="QUALITY DAY">
-        <Segmented
-          options={QUALITY_DAY_OPTS}
-          value={data.qualityDay || null}
-          onChange={(v) => set("qualityDay", v)}
-          disabled={disabled}
-        />
+      <FieldBlock label="QUALITY DAYS · multi-select">
+        <div className="flex flex-wrap gap-1.5">
+          {QUALITY_DAY_OPTS.map((d) => (
+            <Chip
+              key={d}
+              multi
+              active={data.qualityDays.includes(d)}
+              onClick={() => toggleIn(data.qualityDays, "qualityDays", d)}
+              disabled={disabled}
+            >
+              {d}
+            </Chip>
+          ))}
+        </div>
         <HelperText>
           Your hardest workout of the week — tempo, threshold, intervals, or
           hills.

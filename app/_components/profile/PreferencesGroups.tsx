@@ -1,6 +1,6 @@
 "use client";
 
-import { useOptimistic, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useTheme } from "next-themes";
 import type { UnitSystem } from "@/lib/plan";
 import {
@@ -32,9 +32,12 @@ const THEME_LABELS: Record<ThemeId, string> = {
   system: "System",
 };
 
-// Owns the Profile-landing PREFERENCES block. Each row uses useOptimistic
-// so the toggle/segmented control snaps to the new value immediately,
-// and the action runs in a transition that swallows the latency.
+// useState rather than useOptimistic — the previous implementation snapped
+// back to the server value on re-renders before the transition flushed, which
+// made every toggle visually bounce. We seed local state from props once,
+// drive the UI from local state, and fire the action in a transition; the
+// page revalidates after the action so the server is the source of truth on
+// the next mount.
 export function PreferencesGroups({
   unitSystem,
   theme,
@@ -45,54 +48,48 @@ export function PreferencesGroups({
   const { setTheme: setNextTheme } = useTheme();
   const [isPending, startTransition] = useTransition();
 
-  const [optimisticUnits, setOptimisticUnits] = useOptimistic(unitSystem);
-  const [optimisticTheme, setOptimisticTheme] = useOptimistic(theme);
-  const [optimisticDaily, setOptimisticDaily] = useOptimistic(dailyReminder);
-  const [optimisticRegen, setOptimisticRegen] = useOptimistic(
-    regenCompleteNotify,
-  );
-  const [optimisticWeekly, setOptimisticWeekly] = useOptimistic(weeklySummary);
+  const [units, setUnits] = useState<UnitSystem>(unitSystem);
+  const [themeId, setThemeId] = useState<ThemeId>(theme);
+  const [daily, setDaily] = useState(dailyReminder);
+  const [regen, setRegen] = useState(regenCompleteNotify);
+  const [weekly, setWeekly] = useState(weeklySummary);
 
   function pickUnits(next: UnitSystem) {
+    setUnits(next);
     startTransition(() => {
-      setOptimisticUnits(next);
       void setUnitSystem(next);
     });
   }
 
   function pickTheme(next: ThemeId) {
-    // Apply the theme to the document immediately via next-themes so the
-    // user sees the colour swap without waiting on the server roundtrip.
+    setThemeId(next);
     setNextTheme(next);
     startTransition(() => {
-      setOptimisticTheme(next);
       void persistTheme(next);
     });
   }
 
   function flipDaily(value: boolean) {
+    setDaily(value);
     startTransition(() => {
-      setOptimisticDaily(value);
       void setNotificationPreference("daily_reminder", value);
     });
   }
   function flipRegen(value: boolean) {
+    setRegen(value);
     startTransition(() => {
-      setOptimisticRegen(value);
       void setNotificationPreference("regen_complete", value);
     });
   }
   function flipWeekly(value: boolean) {
+    setWeekly(value);
     startTransition(() => {
-      setOptimisticWeekly(value);
       void setNotificationPreference("weekly_summary", value);
     });
   }
 
-  // Map the lowercase IDs to the labels the user sees in the segmented
-  // controls; pickUnits/pickTheme translate back on click.
-  const unitValue = UNIT_LABELS[optimisticUnits];
-  const themeValue = THEME_LABELS[optimisticTheme];
+  const unitValue = UNIT_LABELS[units];
+  const themeValue = THEME_LABELS[themeId];
 
   return (
     <Group label="PREFERENCES">
@@ -122,7 +119,7 @@ export function PreferencesGroups({
       <ToggleRow
         label="Daily workout reminder"
         sub="A morning nudge for today's plan"
-        value={optimisticDaily}
+        value={daily}
         onChange={flipDaily}
         disabled={isPending}
       />
@@ -130,7 +127,7 @@ export function PreferencesGroups({
       <ToggleRow
         label="Regeneration complete"
         sub="Notify when your plan is updated"
-        value={optimisticRegen}
+        value={regen}
         onChange={flipRegen}
         disabled={isPending}
       />
@@ -138,7 +135,7 @@ export function PreferencesGroups({
       <ToggleRow
         label="Weekly summary"
         sub="Sunday recap of the week's work"
-        value={optimisticWeekly}
+        value={weekly}
         onChange={flipWeekly}
         disabled={isPending}
       />

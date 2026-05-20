@@ -119,7 +119,7 @@ export function ActionRow({
     return (
       <Link
         href={href}
-        className={`flex w-full items-center justify-between px-4 py-3.5 text-left text-[14.5px] font-medium ${colour}`}
+        className={`flex w-full items-center justify-between px-4 py-3.5 text-left text-[14.5px] font-medium transition active:scale-[0.97] ${colour}`}
       >
         {label}
       </Link>
@@ -129,7 +129,7 @@ export function ActionRow({
     <button
       type="button"
       onClick={onClick}
-      className={`flex w-full items-center justify-between px-4 py-3.5 text-left text-[14.5px] font-medium ${colour}`}
+      className={`flex w-full items-center justify-between px-4 py-3.5 text-left text-[14.5px] font-medium transition active:scale-[0.97] ${colour}`}
     >
       {label}
     </button>
@@ -193,7 +193,7 @@ export function SegmentedControl<T extends string>({
             onClick={onChange ? () => onChange(opt) : undefined}
             disabled={disabled}
             aria-pressed={active}
-            className={`rounded-full border ${padding} text-[13px] font-medium transition disabled:opacity-50 ${
+            className={`rounded-full border ${padding} text-[13px] font-medium transition active:scale-[0.97] disabled:opacity-50 ${
               active
                 ? "border-emerald-500 bg-emerald-500 text-emerald-950"
                 : "border-zinc-200 bg-transparent text-zinc-950 hover:border-zinc-300 dark:border-zinc-800 dark:text-zinc-50"

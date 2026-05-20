@@ -10,6 +10,7 @@ export function SignOutRow() {
   return (
     <ActionRow
       label={isPending ? "Signing out…" : "Sign out"}
+      tone="destructive"
       onClick={() => {
         if (isPending) return;
         startTransition(() => {

@@ -5,7 +5,6 @@ import type { ContextRow } from "@/lib/regen-context";
 import { Header } from "./Header";
 import { WorkoutCard } from "./WorkoutCard";
 import { RestCard, TomorrowPreview } from "./RestCard";
-import { AddActivityRow } from "./AddActivityRow";
 import { WeekStrip, buildWeekSummaries } from "./WeekStrip";
 import { PlanStrip } from "./PlanStrip";
 import { TabBar } from "./TabBar";
@@ -23,6 +22,9 @@ interface Props {
   nextWeekHref: string;
   resetHref: string;
   todayLabel: string;
+  // Whether the day being shown in the TODAY section is the real today, or
+  // the user has tapped a different WeekStrip pill via ?day=.
+  isViewingToday: boolean;
   weekIndex: number;
   totalWeeks: number;
   // Workouts that were logged today, mapped by workout id to their
@@ -53,6 +55,7 @@ export function TodayPageClient({
   nextWeekHref,
   resetHref,
   todayLabel,
+  isViewingToday,
   weekIndex,
   totalWeeks,
   loggedAtById,
@@ -65,12 +68,15 @@ export function TodayPageClient({
     !isRestDay && todayWorkouts.every((w) => w.status === "completed");
 
   // Section label flips to emerald + "LOGGED" suffix once everything is done.
+  // When the user is viewing a non-today day via ?day=, swap the TODAY prefix
+  // so the chrome doesn't lie about which day they're looking at.
+  const prefix = isViewingToday ? "TODAY" : "DAY";
   const sectionLabel = allLogged
-    ? `TODAY · ${todayLabel} · LOGGED`
-    : `TODAY · ${todayLabel}`;
+    ? `${prefix} · ${todayLabel} · LOGGED`
+    : `${prefix} · ${todayLabel}`;
 
   const weekSummaries = buildWeekSummaries(weekDays, todayIso);
-  const phaseLabel = `${weekIndex}/${totalWeeks} · ${daysToRace}D OUT`;
+  const phaseLabel = `WK ${weekIndex}/${totalWeeks} · ${daysToRace}D OUT`;
 
   return (
     <div className="flex min-h-svh flex-col bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
@@ -98,7 +104,6 @@ export function TodayPageClient({
                     summary={`${tomorrow.workouts[0].title} · ${tomorrow.workouts[0].details}`}
                   />
                 )}
-                <AddActivityRow />
               </div>
             ) : (
               <div className="flex flex-col gap-2.5">
@@ -109,7 +114,6 @@ export function TodayPageClient({
                     loggedAt={loggedAtById[w.id] ?? null}
                   />
                 ))}
-                <AddActivityRow />
               </div>
             )}
           </section>

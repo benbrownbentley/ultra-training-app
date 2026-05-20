@@ -1,6 +1,7 @@
 "use client";
 
 import { useTransition } from "react";
+import Link from "next/link";
 import { logWorkout } from "@/app/actions";
 import type { Workout, WorkoutKind } from "@/lib/plan";
 import { MOTIFS } from "./motifs";
@@ -47,9 +48,14 @@ export function WorkoutCard({ workout, dim, loggedAt }: Props) {
 
   return (
     <div
-      className="relative overflow-hidden rounded-[14px] border border-zinc-200 bg-white px-[18px] pb-3.5 pt-4 transition-opacity duration-200 dark:border-zinc-800 dark:bg-[#0f0f11]"
+      className="relative overflow-hidden rounded-[14px] border border-zinc-200 bg-white transition-opacity duration-200 dark:border-zinc-800 dark:bg-[#0f0f11]"
       style={{ opacity: isFaded ? 0.55 : 1 }}
     >
+      <Link
+        href={`/workout/${workout.id}`}
+        aria-label={`Open ${workout.title} details`}
+        className="block px-[18px] pb-1 pt-4 transition active:scale-[0.99]"
+      >
       <div
         aria-hidden
         className="pointer-events-none absolute inset-y-0 right-0 w-[55%]"
@@ -105,8 +111,9 @@ export function WorkoutCard({ workout, dim, loggedAt }: Props) {
           Skipped
         </div>
       )}
+      </Link>
 
-      <div className="relative mt-3.5 flex items-center gap-2.5">
+      <div className="relative flex items-center gap-2.5 px-[18px] pb-3.5 pt-2.5">
         {isLogged ? (
           <>
             <button

@@ -96,6 +96,7 @@ export function AccountClient({ email, connectedProviders }: Props) {
       <Group label="SESSION">
         <ActionRow
           label={isSigningOut ? "Signing out…" : "Sign out"}
+          tone="destructive"
           onClick={() =>
             startSignOut(() => {
               void signOut();

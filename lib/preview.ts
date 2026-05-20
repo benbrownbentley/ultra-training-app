@@ -36,10 +36,15 @@ export interface PreviewWorkout {
   position: number;
 }
 
+// Change-badge taxonomy. Used by both the Claude tool schema (claude.ts
+// imports this) and the rendering layer (atoms.tsx). Centralising the
+// enum here keeps additions in one place.
+export type ChangeType = "shifted" | "reduced" | "added" | "removed";
+
 export interface GenerationSummary {
   summary: string;
   changes: Array<{
-    type: "shifted" | "reduced" | "added" | "removed";
+    type: ChangeType;
     text: string;
   }>;
 }
@@ -57,6 +62,8 @@ export interface PreviewRow {
 // Marker for race-week so the diff can label it consistently with the rest
 // of the app (see lib/plan-derive's race-week detection).
 export interface DiffContext {
+  // Non-null in production — getPlan() requires a race and the regen
+  // page redirects to /wizard when missing. Throws below if null.
   raceDate: string | null;
   racePriority: RacePriority | null;
   todayIso: string;
@@ -101,6 +108,13 @@ function workoutSetsEqual(
 }
 
 // Renders a single DayDiff for a date with both current + preview slots.
+//
+// V1 limitation: when a day has multiple workouts (e.g., tempo +
+// strength), we only diff the first one (current[0] vs preview[0]). If
+// the second workout changes but the first stays the same, the diff
+// understates the change. Acceptable for v1 — most days are one
+// workout. v2 widens DayDiff to support arrays. Tracked in
+// PROJECT_BRIEF.md "Regeneration diff" deferrals section.
 function diffDay(
   dayIso: string,
   current: Workout[],
@@ -163,10 +177,22 @@ export function computePlanDiff({
   previewWorkouts,
   ctx,
 }: BuildArgs): WeekDiff[] {
-  // Index current and preview by date.
+  if (!ctx.raceDate) {
+    // Unreachable in production: getPlan() requires a race row and the
+    // /regen page redirects to /wizard when missing. Fail loudly if the
+    // invariant ever breaks.
+    throw new Error("computePlanDiff: ctx.raceDate is required.");
+  }
+
+  // Index current and preview by date. Both sides get sorted by position
+  // so workoutSetsEqual's slot-by-slot comparison is deterministic
+  // regardless of the upstream query's ORDER BY clause.
   const currentByDate = new Map<string, Workout[]>();
   for (const d of currentDays) {
-    currentByDate.set(d.date, d.workouts);
+    const sorted = [...d.workouts].sort(
+      (a, b) => (a.position ?? 0) - (b.position ?? 0),
+    );
+    currentByDate.set(d.date, sorted);
   }
   const previewByDate = new Map<string, PreviewWorkout[]>();
   for (const w of previewWorkouts) {
@@ -174,15 +200,13 @@ export function computePlanDiff({
     list.push(w);
     previewByDate.set(w.date, list);
   }
-  // Sort each preview day by position so the comparison is stable.
   for (const list of previewByDate.values()) {
     list.sort((a, b) => a.position - b.position);
   }
 
-  // Universe of dates spans today → race day, weekly. If no race date,
-  // span 4 weeks forward as a safe default.
+  // Universe of dates spans today → race day, weekly.
   const startMonday = weekStart(ctx.todayIso);
-  const horizonIso = ctx.raceDate ?? addDays(ctx.todayIso, 28);
+  const horizonIso = ctx.raceDate;
   const totalDays = daysBetween(startMonday, horizonIso);
   const weekCount = Math.max(1, Math.ceil(totalDays / 7) + 1);
 

@@ -2,6 +2,7 @@
 // each piece is small and the call sites all live in app/regen/.
 
 import { MotifTopo } from "@/app/_components/today/motifs";
+import type { ChangeType } from "@/lib/preview";
 
 // Big mono status line at the top of generating / result / accepted screens.
 export function StatusHeading({
@@ -56,9 +57,7 @@ export function SummaryCard({ children }: { children: React.ReactNode }) {
   );
 }
 
-type ChangeKind = "shifted" | "reduced" | "added" | "removed";
-
-const BADGE_STYLE: Record<ChangeKind, { container: string; label: string }> = {
+const BADGE_STYLE: Record<ChangeType, { container: string; label: string }> = {
   shifted: {
     container:
       "border-emerald-200 bg-emerald-50 dark:border-emerald-500/40 dark:bg-emerald-500/[0.08]",
@@ -86,7 +85,7 @@ export function ChangeBadge({
   label,
   body,
 }: {
-  kind: ChangeKind;
+  kind: ChangeType;
   label: string;
   body: string;
 }) {

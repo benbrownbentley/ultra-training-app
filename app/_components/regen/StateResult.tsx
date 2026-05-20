@@ -3,7 +3,7 @@
 import { Section } from "@/app/_components/workout/Section";
 import { TabBar } from "@/app/_components/today/TabBar";
 import { ArrowRight } from "@/app/_components/today/icons";
-import type { WeekDiff } from "@/lib/preview";
+import type { ChangeType, WeekDiff } from "@/lib/preview";
 import type { ContextRow } from "@/lib/regen-context";
 import { RegenHeader } from "./RegenHeader";
 import {
@@ -18,7 +18,7 @@ import {
 interface Props {
   summary: string;
   changes: Array<{
-    type: "shifted" | "reduced" | "added" | "removed";
+    type: ChangeType;
     text: string;
   }>;
   changedWeeks: WeekDiff[];

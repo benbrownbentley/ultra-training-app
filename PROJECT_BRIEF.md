@@ -571,6 +571,14 @@ index, not the source of truth).
 - Month/calendar view toggle (`WEEK / MONTH` switcher) — **v2**
 - Drag-and-drop manual edits with "Rebalance" CTA — **v2**
 
+### Regeneration diff
+- Multi-workout-per-day diffs — **v2**. The current `DayDiff` model only
+  surfaces the first workout's change per day; days with two workouts
+  (e.g., tempo + strength) understate changes when only the secondary
+  workout shifts. Acceptable v1 limitation since most days are one
+  workout. Widen the `DayDiff` shape to support arrays when this
+  bites in practice.
+
 ### Journal tab
 - "Save as note instead?" affordance on Regenerate sheet cancel — **v2**
 

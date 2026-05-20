@@ -99,6 +99,7 @@ export async function getPlan(): Promise<Plan | null> {
       title: row.title,
       details: row.details,
       status: row.status,
+      position: row.position,
     });
     byDate.set(row.date, list);
   }
@@ -238,26 +239,6 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
 
 const PREVIEW_COLUMNS =
   "id, user_id, workouts, notes, generation_summary, status, created_at";
-
-/**
- * Returns the user's most recent pending preview, or null. Powers the
- * regen sheet's "in flight" detection and the /regen fallback path when
- * the URL is missing an explicit id.
- */
-export async function getLatestPendingPreview(): Promise<
-  import("@/lib/preview").PreviewRow | null
-> {
-  const supabase = await createClient();
-  const { data, error } = await supabase
-    .from("plan_previews")
-    .select(PREVIEW_COLUMNS)
-    .eq("status", "pending")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as import("@/lib/preview").PreviewRow | null) ?? null;
-}
 
 /**
  * Single-row preview fetch by id. RLS makes cross-user reads return null

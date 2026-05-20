@@ -3,39 +3,33 @@ import {
   getAthleteProfile,
   getPlan,
   getPreviewById,
-  getLatestPendingPreview,
 } from "@/lib/supabase/server";
-import { daysBetween, getTodayISO, weekStart } from "@/lib/utils";
-import { addDays } from "@/lib/utils";
+import { addDays, daysBetween, getTodayISO, weekStart } from "@/lib/utils";
 import {
   computePlanDiff,
   isMinorChange,
   summariseDiff,
   type GenerationSummary,
-  type PreviewRow,
 } from "@/lib/preview";
 import { buildContextRows } from "@/lib/regen-context";
 import { RegenPageClient } from "@/app/_components/regen/RegenPageClient";
 
 export const dynamic = "force-dynamic";
 
-// /regen renders the preview-then-accept screen. Reads a specific preview
-// when ?preview=<id> is supplied, otherwise falls back to the user's
-// latest pending preview. Sends users home if there's nothing pending.
+// /regen renders the preview-then-accept screen. The URL is the source of
+// truth: ?preview=<id> identifies which pending preview to show. Missing
+// or invalid → bounce home (the user almost certainly arrived by mistake
+// or from a stale link).
 export default async function RegenPage({
   searchParams,
 }: {
   searchParams: Promise<{ preview?: string }>;
 }) {
   const { preview: previewParam } = await searchParams;
-
-  let preview: PreviewRow | null = null;
-  if (previewParam && /^\d+$/.test(previewParam)) {
-    preview = await getPreviewById(Number(previewParam));
+  if (!previewParam || !/^\d+$/.test(previewParam)) {
+    redirect("/");
   }
-  if (!preview) {
-    preview = await getLatestPendingPreview();
-  }
+  const preview = await getPreviewById(Number(previewParam));
   if (!preview || preview.status !== "pending") {
     redirect("/");
   }
@@ -95,6 +89,7 @@ export default async function RegenPage({
       unchangedTrailing={unchangedTrailing}
       contextRows={contextRows}
       regenSparseTip={regenSparseTip}
+      previousNotes={preview.notes ?? ""}
     />
   );
 }

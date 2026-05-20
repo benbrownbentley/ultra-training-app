@@ -21,6 +21,9 @@ interface Props {
   unchangedTrailing: number;
   contextRows: ContextRow[];
   regenSparseTip: boolean;
+  // Notes the user typed for THIS preview. Pre-populates the textarea
+  // when they tap "Regenerate again" so they don't have to retype.
+  previousNotes: string;
 }
 
 // Orchestrates the four transient states (result/minor → generating →
@@ -35,6 +38,7 @@ export function RegenPageClient({
   unchangedTrailing,
   contextRows,
   regenSparseTip,
+  previousNotes,
 }: Props) {
   const router = useRouter();
   const [phase, setPhase] = useState<"diff" | "accepted" | "error" | "generating">(
@@ -45,6 +49,9 @@ export function RegenPageClient({
     "accept" | "discard" | "regenerate" | null
   >(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // StateMinor's diff is collapsed by default — this toggles the
+  // per-week view inline without changing the URL.
+  const [diffExpanded, setDiffExpanded] = useState(false);
   const [, startTransition] = useTransition();
 
   const handleAccept = useCallback(() => {
@@ -139,7 +146,8 @@ export function RegenPageClient({
       {isMinor ? (
         <StateMinor
           {...stateProps}
-          onExpandDiff={() => router.push("?expand=1")}
+          expanded={diffExpanded}
+          onExpandDiff={() => setDiffExpanded(true)}
         />
       ) : (
         <StateResult {...stateProps} unchangedTrailing={unchangedTrailing} />
@@ -149,6 +157,7 @@ export function RegenPageClient({
         onClose={() => setSheetOpen(false)}
         contextRows={contextRows}
         showSparseTip={regenSparseTip}
+        initialNotes={previousNotes}
       />
     </>
   );

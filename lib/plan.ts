@@ -7,6 +7,10 @@ export interface Workout {
   title: string;
   details: string;
   status: WorkoutStatus;
+  // Order within the day (0 = primary, 1 = secondary, …). Sourced from
+  // the `workouts.position` column so diff comparisons can stabilise
+  // multi-workout days deterministically.
+  position: number;
 }
 
 export interface Day {

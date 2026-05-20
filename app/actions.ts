@@ -151,13 +151,14 @@ export async function previewPlan(
 
   // Mark any older pending preview as discarded before creating a new
   // one. Done before the Claude call so a fast-clicking user can't end up
-  // with two pending rows even briefly.
-  const { error: oldErr } = await supabaseAdmin
-    .from("plan_previews")
-    .update({ status: "discarded", decided_at: new Date().toISOString() })
-    .eq("user_id", user.id)
-    .eq("status", "pending");
-  if (oldErr) throw oldErr;
+  // with two pending rows even briefly. If the Claude call fails after
+  // this point, the user has no pending preview to fall back on — they
+  // have to trigger a fresh regen from scratch. Acceptable trade-off
+  // because (a) the previous preview's diff was likely stale by the time
+  // they re-clicked, and (b) the unique partial index
+  // plan_previews_one_pending_per_user is the authoritative enforcement;
+  // this in-app discard is just defense.
+  await discardAllPendingPreviews(user.id);
 
   const result = await generateTrainingPlan({
     race,
@@ -169,22 +170,46 @@ export async function previewPlan(
   });
 
   const futureOnly = result.workouts.filter((w) => w.date >= today);
+  const insertRow = {
+    user_id: user.id,
+    workouts: futureOnly,
+    notes: blankToNull(notes ?? ""),
+    generation_summary: result.summary,
+    status: "pending" as const,
+  };
 
-  const { data, error } = await supabaseAdmin
+  // Try the insert. If a concurrent request snuck a pending row in
+  // first, the partial unique index throws a 23505 unique violation —
+  // catch it, re-discard, retry once. Anything else propagates.
+  let attempt = await supabaseAdmin
     .from("plan_previews")
-    .insert({
-      user_id: user.id,
-      workouts: futureOnly,
-      notes: blankToNull(notes ?? ""),
-      generation_summary: result.summary,
-      status: "pending",
-    })
+    .insert(insertRow)
     .select("id")
     .single();
-  if (error) throw error;
+  if (attempt.error && (attempt.error as { code?: string }).code === "23505") {
+    await discardAllPendingPreviews(user.id);
+    attempt = await supabaseAdmin
+      .from("plan_previews")
+      .insert(insertRow)
+      .select("id")
+      .single();
+  }
+  if (attempt.error) throw attempt.error;
+  if (!attempt.data) throw new Error("Failed to create preview.");
 
-  revalidatePath("/regen");
-  return { previewId: data.id };
+  return { previewId: attempt.data.id };
+}
+
+// Internal helper — marks every pending preview for a user as
+// discarded. Used by previewPlan both as the initial cleanup step and
+// inside the unique-violation retry loop.
+async function discardAllPendingPreviews(userId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from("plan_previews")
+    .update({ status: "discarded", decided_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .eq("status", "pending");
+  if (error) throw error;
 }
 
 /**
@@ -208,31 +233,15 @@ export async function commitPlan(previewId: number): Promise<void> {
   if (preview.status !== "pending")
     throw new Error("Preview is no longer pending.");
 
-  // Defensive: never trust a row's workouts as anything but its declared
-  // shape, and re-filter to future dates in case server time drifted.
-  const workouts = (
-    preview.workouts as Array<{
-      date: string;
-      kind: string;
-      title: string;
-      details: string;
-      position: number;
-    }>
-  )
-    .filter((w) => w.date >= today)
-    .map((w) => ({ ...w, user_id: user.id }));
-
-  const { error: delErr } = await supabaseAdmin
-    .from("workouts")
-    .delete()
-    .eq("user_id", user.id)
-    .gte("date", today);
-  if (delErr) throw delErr;
-
-  const { error: insErr } = await supabaseAdmin
-    .from("workouts")
-    .insert(workouts);
-  if (insErr) throw insErr;
+  // Delete + bulk insert run inside one Postgres transaction via the
+  // commit_plan_preview RPC. If the insert fails, the delete rolls back
+  // and the user keeps their existing plan instead of an empty one.
+  const { error: rpcErr } = await supabaseAdmin.rpc("commit_plan_preview", {
+    p_user_id: user.id,
+    p_today: today,
+    p_workouts: preview.workouts,
+  });
+  if (rpcErr) throw rpcErr;
 
   // Mark the preview as accepted before the journal flip — if the flip
   // fails for any reason, the next regen still sees the previous "NEW"
@@ -254,7 +263,6 @@ export async function commitPlan(previewId: number): Promise<void> {
   revalidatePath("/");
   revalidatePath("/plan");
   revalidatePath("/journal");
-  revalidatePath("/regen");
 }
 
 /**
@@ -271,7 +279,6 @@ export async function discardPreview(previewId: number): Promise<void> {
     .eq("user_id", user.id)
     .eq("status", "pending");
   if (error) throw error;
-  revalidatePath("/regen");
 }
 
 // Renders the type-specific `details` JSON into bullet lines for the
@@ -701,52 +708,35 @@ export async function submitWizard(data: WizardPayload) {
 
   // Initial plan generation bypasses the preview pipeline — there's no
   // existing plan to diff against, so we commit directly.
+  //
+  // Re-fetch race + profile from the database rather than hand-rolling
+  // the shape. Cheap, and it keeps the wizard's Claude payload identical
+  // to previewPlan's — schema changes break in one place (the type
+  // definitions in lib/plan.ts), not two.
   const today = getTodayISO();
-  const aRace = raceRows.find((r) => r.priority === "A") ?? raceRows[0];
-  if (!aRace) throw new Error("No race configured.");
+  const [{ race }, profile] = await Promise.all([
+    getRaceAndHistory(today),
+    getAthleteProfile(),
+  ]);
+  if (!race) throw new Error("No race configured.");
+  if (!profile) throw new Error("No athlete profile configured.");
+
   const result = await generateTrainingPlan({
-    race: {
-      name: aRace.name,
-      distance: aRace.distance,
-      date: aRace.date,
-      elevation_gain: aRace.elevation_gain,
-      terrain: aRace.terrain,
-      target_time: aRace.target_time,
-      intent: aRace.intent,
-    },
-    profile: {
-      unit_system: data.unitSystem,
-      weekly_volume: profileRow.weekly_volume,
-      longest_run_distance: profileRow.longest_run_distance,
-      easy_pace: profileRow.easy_pace,
-      injury_notes: profileRow.injury_notes,
-      experience: profileRow.experience,
-      gym_access: profileRow.gym_access,
-      equipment: profileRow.equipment,
-      weekly_hours: profileRow.weekly_hours,
-      cross_training: profileRow.cross_training,
-      other_commitments: profileRow.other_commitments,
-      sleep_stress: profileRow.sleep_stress,
-    },
+    race,
+    profile,
     startDate: today,
     history: [],
     journalEntries: [],
   });
 
-  const workouts = result.workouts
-    .filter((w) => w.date >= today)
-    .map((w) => ({ ...w, user_id: user.id }));
-
-  const { error: wDelErr } = await supabaseAdmin
-    .from("workouts")
-    .delete()
-    .eq("user_id", user.id)
-    .gte("date", today);
-  if (wDelErr) throw wDelErr;
-  const { error: wInsErr } = await supabaseAdmin
-    .from("workouts")
-    .insert(workouts);
-  if (wInsErr) throw wInsErr;
+  // Commit via the same RPC the preview→commit path uses, so the initial
+  // generation also gets atomic delete+insert semantics.
+  const { error: rpcErr } = await supabaseAdmin.rpc("commit_plan_preview", {
+    p_user_id: user.id,
+    p_today: today,
+    p_workouts: result.workouts,
+  });
+  if (rpcErr) throw rpcErr;
 
   revalidatePath("/");
 }

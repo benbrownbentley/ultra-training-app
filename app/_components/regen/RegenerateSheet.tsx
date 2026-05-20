@@ -36,6 +36,9 @@ interface Props {
   // Set true when the user has very little new data since the last regen
   // (sparse context). Surfaces the "add notes for a meaningful change" tip.
   showSparseTip?: boolean;
+  // Seed value for the textarea. Used by "Regenerate again" on /regen so
+  // the user keeps the notes they typed for the previous attempt.
+  initialNotes?: string;
 }
 
 const PLACEHOLDER = `e.g. "I'm feeling great — push the volume a bit", or "Achilles is still flaring — keep it light."`;
@@ -48,6 +51,7 @@ export function RegenerateSheet({
   onClose,
   contextRows,
   showSparseTip,
+  initialNotes,
 }: Props) {
   const isClient = useIsClient();
   if (!open || !isClient) return null;
@@ -56,6 +60,7 @@ export function RegenerateSheet({
       onClose={onClose}
       contextRows={contextRows}
       showSparseTip={showSparseTip}
+      initialNotes={initialNotes}
     />,
     document.body,
   );
@@ -65,8 +70,9 @@ function SheetBody({
   onClose,
   contextRows,
   showSparseTip,
+  initialNotes,
 }: Omit<Props, "open">) {
-  const [notes, setNotes] = useState("");
+  const [notes, setNotes] = useState(initialNotes ?? "");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);

@@ -9,14 +9,17 @@ import { RegenHeader } from "./RegenHeader";
 import {
   BasedOnRow,
   ChangeBadge,
+  DayDiffRow,
   StatusHeading,
   SummaryCard,
+  WeekSectionHeader,
 } from "./atoms";
+import type { ChangeType } from "@/lib/preview";
 
 interface Props {
   summary: string;
   changes: Array<{
-    type: "shifted" | "reduced" | "added" | "removed";
+    type: ChangeType;
     text: string;
   }>;
   changedWeeks: WeekDiff[];
@@ -25,6 +28,9 @@ interface Props {
   onRegenerateAgain: () => void;
   onDiscard: () => void;
   onExpandDiff: () => void;
+  // True once the user has tapped "View N small adjustments". Controlled
+  // by RegenPageClient so the page can collapse it back on phase change.
+  expanded: boolean;
   isPending: boolean;
   pendingAction: "accept" | "discard" | "regenerate" | null;
 }
@@ -41,6 +47,7 @@ export function StateMinor({
   onRegenerateAgain,
   onDiscard,
   onExpandDiff,
+  expanded,
   isPending,
   pendingAction,
 }: Props) {
@@ -79,18 +86,36 @@ export function StateMinor({
           )}
 
           <Section label="WEEK BY WEEK">
-            <button
-              type="button"
-              onClick={onExpandDiff}
-              disabled={isPending}
-              className="flex w-full items-center justify-between rounded-[10px] border border-dashed border-zinc-200 bg-transparent px-4 py-3.5 text-left text-[13px] font-medium text-zinc-950 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50"
-            >
-              <span>
-                View {totalChangedDays} small adjustment
-                {totalChangedDays === 1 ? "" : "s"}
-              </span>
-              <span className="font-mono text-[11px] text-emerald-500">→</span>
-            </button>
+            {expanded ? (
+              <div>
+                {changedWeeks.map((week, i) => (
+                  <div key={i} className="mb-3.5">
+                    <WeekSectionHeader label={week.label} sub={week.sub} />
+                    <div>
+                      {week.days.map((d, j) => (
+                        <DayDiffRow key={j} {...d} />
+                      ))}
+                      <div className="border-t border-zinc-200 dark:border-zinc-800" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={onExpandDiff}
+                disabled={isPending}
+                className="flex w-full items-center justify-between rounded-[10px] border border-dashed border-zinc-200 bg-transparent px-4 py-3.5 text-left text-[13px] font-medium text-zinc-950 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50"
+              >
+                <span>
+                  View {totalChangedDays} small adjustment
+                  {totalChangedDays === 1 ? "" : "s"}
+                </span>
+                <span className="font-mono text-[11px] text-emerald-500">
+                  →
+                </span>
+              </button>
+            )}
           </Section>
 
           {contextRows.length > 0 && (

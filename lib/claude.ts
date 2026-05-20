@@ -51,15 +51,11 @@ export interface GeneratedWorkout {
   position: number;
 }
 
-// Coach-voice summary + change badges produced by the same tool call.
-// Stored on the preview row and rendered by the regen result screen.
-export interface GenerationSummary {
-  summary: string;
-  changes: Array<{
-    type: "shifted" | "reduced" | "added" | "removed";
-    text: string;
-  }>;
-}
+// Canonical definition of GenerationSummary + ChangeType lives in
+// lib/preview.ts (it's part of the preview data flow). Re-exported here
+// so callers depending on @/lib/claude keep working unchanged.
+export type { ChangeType, GenerationSummary } from "@/lib/preview";
+import type { GenerationSummary } from "@/lib/preview";
 
 // What generateTrainingPlan returns: the workouts plus the coach summary.
 // Previously this function returned just GeneratedWorkout[] — callers must

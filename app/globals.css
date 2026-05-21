@@ -170,3 +170,17 @@ body {
   animation: vert-fade-rotate 8s infinite;
   opacity: 0;
 }
+
+/* Hide the native number-input spinner arrows. Our numeric inputs live
+   inside compact FieldRow atoms where the spinner overlaps the em-dash
+   placeholder and reads as broken. We don't need them — users type
+   values directly, and inputMode="decimal" still surfaces the numeric
+   keyboard on mobile. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}

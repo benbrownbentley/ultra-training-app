@@ -152,7 +152,14 @@ export function FieldRow({
           style={{ letterSpacing: "-0.01em" }}
         />
         {unit && (
-          <span className="font-mono text-[12px] text-zinc-500">{unit}</span>
+          // Fixed-width suffix so the input's right edge — and therefore
+          // the em-dash placeholder — sits at the same x position across
+          // every row regardless of which unit text ("min"/"km"/"bpm")
+          // fills the suffix slot. w-8 fits the widest ("bpm") with breathing
+          // room; text-left keeps the unit hugging the input's edge.
+          <span className="inline-block w-8 text-left font-mono text-[12px] text-zinc-500">
+            {unit}
+          </span>
         )}
       </div>
     </label>

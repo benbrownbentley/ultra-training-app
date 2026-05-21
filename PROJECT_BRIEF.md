@@ -630,6 +630,15 @@ index, not the source of truth).
 - Notification delivery channel options (push / email / both / SMS) — **v2**
 - Onboarding tutorial / coachmarks for new users — **v2**
 
+### Visual polish (v2)
+- Distinct WeekStrip pill glyphs for cross-training and physio. Currently
+  both share `IconMobility`'s concentric circles (see comment in
+  `app/_components/today/icons.tsx` ~line 185). Design proposals:
+  cycling chainring / curved-arrow pair for `cross`; clinical cross /
+  single-side stretch arrow for `physio`. Update `WorkoutKindIcon` to
+  route each kind to its own glyph; keep `IconMobility` as the fallback
+  for the bare mobility kind. Acknowledged 2026-05-21.
+
 ### Practitioner / coaching (v3)
 - Practitioner role with admin access to client accounts (trainer, coach,
   physio, nutritionist — one generalised pattern)

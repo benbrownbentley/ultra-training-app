@@ -98,9 +98,44 @@ describe("parseRoutine", () => {
     expect(r[1].name).toBe("Ankle rocks");
   });
 
-  it("returns empty for malformed / single-fragment input", () => {
+  it("parses comma-separated details with a leading duration header", () => {
+    const out = parseRoutine(
+      "15 min — hip flexor, glute, calf stretching",
+    );
+    expect(out).toEqual([
+      { name: "hip flexor" },
+      { name: "glute" },
+      { name: "calf stretching" },
+    ]);
+  });
+
+  it("parses em-dash-separated details", () => {
+    const out = parseRoutine(
+      "10 min — World's greatest stretch — 90/90 hip switches — Ankle rocks",
+    );
+    expect(out).toEqual([
+      { name: "World's greatest stretch" },
+      { name: "90/90 hip switches" },
+      { name: "Ankle rocks" },
+    ]);
+  });
+
+  it("preserves spec extraction across the new separators", () => {
+    const out = parseRoutine(
+      "15 min — Couch stretch 60s/side, World's greatest stretch 3×5",
+    );
+    expect(out[0]).toEqual({ name: "Couch stretch", spec: "60s/side" });
+    expect(out[1]).toEqual({ name: "World's greatest stretch", spec: "3×5" });
+  });
+
+  it("handles a single-item routine without bailing", () => {
+    const out = parseRoutine("10 min — couch stretch");
+    expect(out).toEqual([{ name: "couch stretch" }]);
+  });
+
+  it("returns empty for empty or whitespace input", () => {
     expect(parseRoutine("").length).toBe(0);
-    expect(parseRoutine("Just one block").length).toBe(0);
+    expect(parseRoutine("   ").length).toBe(0);
   });
 });
 

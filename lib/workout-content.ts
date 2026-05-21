@@ -280,42 +280,64 @@ export function parseStrengthExercises(details: string): Exercise[] {
   return exercises;
 }
 
-// Mobility / physio routine parser. The Claude prompt tends to emit lines
-// shaped like "15 min · World's greatest stretch · 90/90 hip switches ·
-// Ankle rocks · Couch stretch · 2×5/side" — the leading "N min" is the
-// duration header (skip) and any trailing token shaped like "3×10", "30s",
-// or "2x5/side" is a spec for the preceding movement, not a separate item.
+// Mobility / physio routine parser. Claude emits free-text mobility
+// details in several shapes:
+//   "15 min · World's greatest stretch · 90/90 hip switches"
+//   "15 min — hip flexor, glute, calf stretching"
+//   "10 min — Couch stretch 30s/side, World's greatest stretch 3×5"
+//
+// We strip a leading "N min" duration header, then split on any of the
+// common separators Claude uses: middot, bullet, em-dash, comma. Each
+// fragment may carry a trailing spec ("3×10", "30s/side") which we
+// peel off so the row renders with the name on the left and spec on
+// the right.
+//
+// TODO v2: replace this parser with structured routine emission from
+// Claude. Extend submit_training_plan's tool schema to accept
+// `routine: {name: string; spec?: string}[]` per mobility workout,
+// then this parser becomes a legacy fallback for old rows only.
 
 // Matches at the END of a fragment:
 //   • "3x10" / "3×10"
 //   • "2x5/side" / "2×5 per side"
 //   • "60s" / "30s/side"
 const SPEC_RE =
-  /\s*(\d+\s*[x×]\s*\d+(?:\s*(?:s|\/side|\s+per\s+side))?|\d+\s*s(?:\/side)?)\s*$/i;
+  /\s+(\d+\s*[x×]\s*\d+(?:\s*(?:s|\/side|\s+per\s+side))?|\d+\s*s(?:\/side)?)\s*$/i;
 
-// "15 min", "20 min", "5min", etc. when it sits as the FIRST fragment
-// — we treat that as a duration header and skip it from the routine list.
-const DURATION_HEADER_RE = /^\d+\s*min\b/i;
+// "15 min — ", "20 min · ", "5min, " etc. when it sits at the very
+// start of the details. The trailing separator is consumed so we don't
+// emit an empty fragment after stripping.
+const DURATION_HEADER_RE = /^\s*\d+\s*min\s*[—·•,-]?\s*/i;
 
 export function parseRoutine(details: string): RoutineItem[] {
   if (!details || !details.trim()) return [];
-  const fragments = details
-    .split(/[·•]/)
+
+  // Strip a leading duration header so we don't emit "15 min" as a
+  // routine item — the prescription section already conveys total
+  // duration.
+  const stripped = details.replace(DURATION_HEADER_RE, "");
+
+  // Split on every separator Claude actually uses. Comma + em-dash are
+  // the most common; middot + bullet are kept for older rows. Hyphen
+  // is intentionally NOT in the class — "90/90 hip-switches" would
+  // get torn apart.
+  const fragments = stripped
+    .split(/[·•—,]/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  if (fragments.length < 2) return [];
 
-  // Drop a leading duration header so the user sees the actual moves.
-  const startIdx = DURATION_HEADER_RE.test(fragments[0]) ? 1 : 0;
+  if (fragments.length === 0) return [];
 
+  // Cap at 8 entries so a misparse on a wordy prescription doesn't
+  // dump twenty fragments into the UI.
   return fragments
-    .slice(startIdx, startIdx + 8)
+    .slice(0, 8)
     .map((frag) => {
       const m = frag.match(SPEC_RE);
       if (m) {
-        const spec = m[1].trim();
-        const name = frag.slice(0, m.index).replace(/[\s,]+$/, "").trim();
-        return name ? { name, spec } : { name: frag, spec: undefined };
+        const name = frag.slice(0, m.index).trim();
+        const spec = m[1].replace(/\s+/g, "");
+        return name ? { name, spec } : { name: frag };
       }
       return { name: frag };
     })

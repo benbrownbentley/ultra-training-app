@@ -848,123 +848,12 @@ export async function deleteAccount(confirmEmail: string) {
   redirect("/sign-up");
 }
 
-// ─── Preferences ─────────────────────────────────────────────────
-
-const ThemeSchema = z.enum(["light", "dark", "system"]);
-const UnitSystemSchema = z.enum(["metric", "imperial"]);
-const NotificationKeySchema = z.enum([
-  "daily_reminder",
-  "regen_complete",
-  "weekly_summary",
-]);
-
-// Preferences actions return an explicit result instead of throwing.
-// Next.js Server Actions sanitise thrown error messages in production
-// ("An error occurred in the Server Components render…"), so returning
-// the error keeps the real cause visible to the client without leaking
-// stack traces. The client converts `{ ok: false }` into the inline
-// red error row.
-
-export type PrefResult =
-  | { ok: true }
-  | { ok: false; error: string; code?: string; hint?: string };
-
-// Upsert preference values onto the user's athlete_profile row.
-async function upsertProfileColumn(
-  userId: string,
-  patch: Record<string, unknown>,
-): Promise<PrefResult> {
-  const { error } = await supabaseAdmin
-    .from("athlete_profile")
-    .upsert({ user_id: userId, ...patch }, { onConflict: "user_id" });
-  if (error) {
-    const sbError = error as {
-      message?: string;
-      details?: string;
-      hint?: string;
-      code?: string;
-    };
-    // Keep this log — when a schema constraint fights an upsert again,
-    // the message + code is the fastest path to diagnosis.
-    console.error("[upsertProfileColumn] failed", {
-      userId,
-      cols: Object.keys(patch),
-      message: sbError.message,
-      code: sbError.code,
-      hint: sbError.hint,
-    });
-    return {
-      ok: false,
-      error: sbError.message ?? "Unknown Supabase error",
-      code: sbError.code,
-      hint: sbError.hint,
-    };
-  }
-  return { ok: true };
-}
-
-export async function setTheme(themeInput: string): Promise<PrefResult> {
-  try {
-    const theme = ThemeSchema.parse(themeInput);
-    const { user } = await requireUser();
-    // No revalidatePath — theme is applied client-side via next-themes
-    // immediately, and the Profile page re-fetches on next visit. Avoid
-    // an unnecessary server roundtrip on every toggle.
-    return await upsertProfileColumn(user.id, { theme });
-  } catch (e) {
-    console.error("[setTheme] threw", e);
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : "Unknown error",
-    };
-  }
-}
-
-export async function setUnitSystem(unitInput: string): Promise<PrefResult> {
-  try {
-    const unit_system = UnitSystemSchema.parse(unitInput);
-    const { user } = await requireUser();
-    const result = await upsertProfileColumn(user.id, { unit_system });
-    if (result.ok) {
-      // Distance/elevation/weight strings change everywhere except
-      // Profile (which re-fetches on next mount). Revalidate the
-      // surfaces that render the converted text.
-      revalidatePath("/");
-      revalidatePath("/plan");
-      revalidatePath("/journal");
-    }
-    return result;
-  } catch (e) {
-    console.error("[setUnitSystem] threw", e);
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : "Unknown error",
-    };
-  }
-}
-
-export async function setNotificationPreference(
-  keyInput: string,
-  value: boolean,
-): Promise<PrefResult> {
-  try {
-    const key = NotificationKeySchema.parse(keyInput);
-    // Map UI keys to DB columns. `regen_complete` → `regen_complete_notify`
-    // is the only renaming; the others match 1:1.
-    const column =
-      key === "regen_complete" ? "regen_complete_notify" : key;
-    const { user } = await requireUser();
-    // No revalidatePath — notification toggles are pure server-state
-    // updates; the Profile page re-fetches on next mount.
-    return await upsertProfileColumn(user.id, { [column]: value });
-  } catch (e) {
-    console.error("[setNotificationPreference] threw", e);
-    return {
-      ok: false,
-      error: e instanceof Error ? e.message : "Unknown error",
-    };
-  }
-}
+// Preferences (theme, unit_system, notification toggles) used to live
+// here as Server Actions. They moved to lib/preferences-client.ts
+// (called from the browser) in polish-5 because Server Actions
+// auto-refresh the RSC tree on every call — that cascade was the
+// source of multi-second toggle latency in Profile. Reads still
+// come from getAthleteProfile / the athlete_profile row directly.
 
 // Finalises the intake wizard: replaces race rows + athlete_profile with
 // the fresh inputs, then triggers the first plan generation. Caller is

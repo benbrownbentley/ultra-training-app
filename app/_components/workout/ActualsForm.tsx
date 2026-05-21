@@ -48,7 +48,11 @@ interface FormState {
   detail: ActualDetail | null;
 }
 
-const SAVE_DEBOUNCE_MS = 1000;
+// Short debounce so a single keystroke doesn't fire a save, but the
+// common "type a value then immediately tap back" case still
+// persists. The Save button below the form is the explicit-flush
+// escape hatch for users who don't trust the debounce.
+const SAVE_DEBOUNCE_MS = 300;
 
 function formatSavedAt(ts: number): string {
   return new Date(ts).toLocaleTimeString("en-US", {
@@ -71,6 +75,7 @@ export function ActualsForm({
   const [state, setState] = useState<FormState>(initial);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
   // Mirror status locally for the Mobility DoneToggle. logWorkout still
   // runs against the server; this just keeps the toggle responsive while
   // the revalidation lands.
@@ -81,24 +86,34 @@ export function ActualsForm({
   // immediately fire a save with the unchanged initial values.
   const dirtyRef = useRef(false);
 
-  // Debounced save. Cleared on each state change so the latest value is
-  // what eventually persists.
+  // Explicit save — bound to the visible Save button + reused by the
+  // debounced auto-save below. Marks the form clean on success so a
+  // user who taps Save then immediately taps back doesn't trigger
+  // another redundant write.
+  const flushSave = useCallback(async () => {
+    setIsSaving(true);
+    try {
+      await saveActuals(workoutId, state);
+      setSavedAt(Date.now());
+      setError(null);
+      dirtyRef.current = false;
+    } catch (e) {
+      console.error("Failed to save actuals", e);
+      setError("Couldn't save — try again.");
+    } finally {
+      setIsSaving(false);
+    }
+  }, [workoutId, state]);
+
+  // Debounced auto-save. Cleared on each state change so the latest
+  // value is what eventually persists.
   useEffect(() => {
     if (!dirtyRef.current) return;
     const handle = window.setTimeout(() => {
-      void (async () => {
-        try {
-          await saveActuals(workoutId, state);
-          setSavedAt(Date.now());
-          setError(null);
-        } catch (e) {
-          console.error("Failed to save actuals", e);
-          setError("Couldn't save — try again.");
-        }
-      })();
+      void flushSave();
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(handle);
-  }, [state, workoutId]);
+  }, [state, flushSave]);
 
   const patch = useCallback(<K extends keyof FormState>(
     key: K,
@@ -455,6 +470,22 @@ export function ActualsForm({
         isFuture={isFuture}
         bindings={bindings}
       />
+      {/* Explicit Save — auto-save runs on a 300ms debounce, but the
+          button is the user-visible escape hatch for "I typed a value
+          and want it to stick before I navigate away." Hidden on
+          future workouts where the LOG fields are disabled. */}
+      {!isFuture && (
+        <div className="flex justify-end px-4 pt-1 pb-2 sm:px-5">
+          <button
+            type="button"
+            onClick={() => void flushSave()}
+            disabled={isSaving}
+            className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-emerald-600 bg-emerald-500 px-3.5 text-[12.5px] font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_4px_12px_rgba(16,185,129,0.25)] transition active:scale-[0.97] hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isSaving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      )}
     </>
   );
 }

@@ -11,6 +11,7 @@ import { ActualsForm } from "@/app/_components/workout/ActualsForm";
 import { TabBar } from "@/app/_components/today/TabBar";
 import { extractMetrics } from "@/app/_components/workout/extract-metrics";
 import { deriveWorkoutContent } from "@/lib/workout-content";
+import { classifyWorkout, type Variant } from "@/lib/workout-variant";
 
 export const dynamic = "force-dynamic";
 
@@ -27,28 +28,22 @@ function formatEyebrowDate(iso: string): string {
     .toUpperCase();
 }
 
-type Variant = "upcoming" | "logged" | "skipped" | "missed" | "future";
-
-interface BadgeAndBanner {
-  variant: Variant;
+// Maps a Variant to the title badge + banner shown at the top of the
+// drill-down. The variant itself is computed via classifyWorkout in
+// lib/workout-variant.ts so the WorkoutCard and the drill-down agree.
+function badgeAndBanner(variant: Variant): {
   badge?: { tone: "success" | "warn" | "muted"; label: string };
-  banner?: { tone: "warn" | "muted" | "success"; label: string; body?: React.ReactNode };
-}
-
-// Derives the displayed state from raw status + relative date. Centralised
-// so the title badge, top banner, and bottom-bar actions all read from the
-// same source of truth.
-function classify(
-  status: "pending" | "completed" | "skipped",
-  dateIso: string,
-  todayIso: string,
-): BadgeAndBanner {
-  if (status === "completed") {
-    return { variant: "logged", badge: { tone: "success", label: "LOGGED" } };
+  banner?: {
+    tone: "warn" | "muted" | "success";
+    label: string;
+    body?: React.ReactNode;
+  };
+} {
+  if (variant === "logged") {
+    return { badge: { tone: "success", label: "LOGGED" } };
   }
-  if (status === "skipped") {
+  if (variant === "skipped") {
     return {
-      variant: "skipped",
       badge: { tone: "muted", label: "SKIPPED" },
       banner: {
         tone: "muted",
@@ -57,9 +52,8 @@ function classify(
       },
     };
   }
-  if (dateIso < todayIso) {
+  if (variant === "missed") {
     return {
-      variant: "missed",
       badge: { tone: "warn", label: "MISSED" },
       banner: {
         tone: "warn",
@@ -68,9 +62,8 @@ function classify(
       },
     };
   }
-  if (dateIso > todayIso) {
+  if (variant === "future") {
     return {
-      variant: "future",
       badge: { tone: "muted", label: "UPCOMING" },
       banner: {
         tone: "muted",
@@ -79,7 +72,7 @@ function classify(
       },
     };
   }
-  return { variant: "upcoming" };
+  return {};
 }
 
 export default async function WorkoutPage({
@@ -95,7 +88,8 @@ export default async function WorkoutPage({
   if (!workout) notFound();
 
   const todayIso = getTodayISO();
-  const { variant, badge, banner } = classify(workout.status, workout.date, todayIso);
+  const variant = classifyWorkout(workout.status, workout.date, todayIso);
+  const { badge, banner } = badgeAndBanner(variant);
 
   const content = deriveWorkoutContent(workout.kind, workout.title, workout.details);
   const eyebrow = `${formatEyebrowDate(workout.date)} · ${content.subLabel}`;

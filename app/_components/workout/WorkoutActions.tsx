@@ -29,13 +29,16 @@ export function WorkoutActions({ id, variant, loggedAt }: Props) {
   if (variant === "logged") {
     return (
       <div className="flex items-center justify-center gap-3 border-t border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+        {/* Quiet revert action — "Edit log" was misleading (the only
+            edit it offered was status: completed → pending). The label
+            now matches what the click actually does. */}
         <button
           type="button"
           onClick={() => setStatus("pending")}
           disabled={isPending}
-          className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-zinc-200 bg-transparent px-4 text-sm font-medium text-zinc-950 transition active:scale-[0.97] hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700"
+          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-md border border-zinc-200 bg-transparent px-3 text-[12.5px] font-medium text-zinc-600 transition active:scale-[0.97] hover:border-zinc-300 hover:text-zinc-900 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-400 dark:hover:border-zinc-700 dark:hover:text-zinc-50"
         >
-          Edit log
+          Mark as incomplete
         </button>
         <span
           className="px-1 font-mono text-[10px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"

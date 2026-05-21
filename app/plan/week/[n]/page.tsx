@@ -8,6 +8,7 @@ import { formatDistance, formatElevation } from "@/lib/units";
 import { TabBar } from "@/app/_components/today/TabBar";
 import { WorkoutCard } from "@/app/_components/today/WorkoutCard";
 import { MotifStretch } from "@/app/_components/today/motifs";
+import { classifyWorkout } from "@/lib/workout-variant";
 
 export const dynamic = "force-dynamic";
 
@@ -197,10 +198,14 @@ function DayRow({ day, todayIso }: { day: Day; todayIso: string }) {
       ) : (
         <div className="flex flex-col gap-2">
           {day.workouts.map((w) => (
-            // Full Today-style card with motif + Log done / Skip / Edit log
-            // buttons. Logging happens inline; tapping anywhere else routes
-            // to /workout/[id] through the inner Link.
-            <WorkoutCard key={w.id} workout={w} />
+            // Full Today-style card with motif and variant-aware
+            // footer (upcoming/missed/future). The card body is one
+            // big overlay link; only the buttons capture clicks.
+            <WorkoutCard
+              key={w.id}
+              workout={w}
+              variant={classifyWorkout(w.status, day.date, todayIso)}
+            />
           ))}
         </div>
       )}

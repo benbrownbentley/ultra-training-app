@@ -1,13 +1,14 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import type { UnitSystem } from "@/lib/plan";
 import {
-  setNotificationPreference,
-  setTheme as persistTheme,
-  setUnitSystem,
-} from "@/app/actions";
+  clientSetNotificationPreference,
+  clientSetTheme,
+  clientSetUnitSystem,
+} from "@/lib/preferences-client";
 import { Group, RowDivider, SegmentedRow, ToggleRow } from "./atoms";
 
 type ThemeId = "light" | "dark" | "system";
@@ -32,12 +33,13 @@ const THEME_LABELS: Record<ThemeId, string> = {
   system: "System",
 };
 
-// useState rather than useOptimistic — the previous implementation snapped
-// back to the server value on re-renders before the transition flushed, which
-// made every toggle visually bounce. We seed local state from props once,
-// drive the UI from local state, and fire the action in a transition; the
-// page revalidates after the action so the server is the source of truth on
-// the next mount.
+// Writes go straight to Supabase from the browser (see
+// lib/preferences-client.ts). Server Actions trigger a full RSC tree
+// auto-refresh after every call — that's what was producing the
+// 22-request cascade and the multi-second toggle latency. Theme
+// is handled client-side by next-themes; units need a one-shot
+// router.refresh() so the current page's unit-converted text
+// catches up; notifications don't affect any rendered surface.
 export function PreferencesGroups({
   unitSystem,
   theme,
@@ -45,9 +47,10 @@ export function PreferencesGroups({
   regenCompleteNotify,
   weeklySummary,
 }: Props) {
+  const router = useRouter();
   const { setTheme: setNextTheme } = useTheme();
-  // Toggles fire optimistically — no isPending gate. If the action
-  // fails, the catch path rolls back state and shows the inline error.
+  // Toggles fire optimistically — no isPending gate. If the write
+  // fails, local state rolls back and the inline error appears.
   const [, startTransition] = useTransition();
 
   const [units, setUnits] = useState<UnitSystem>(unitSystem);
@@ -59,16 +62,10 @@ export function PreferencesGroups({
   // diverge from server state. Cleared the next time the user pokes a row.
   const [error, setError] = useState<string | null>(null);
 
-  // Preferences actions return a result object instead of throwing, so
-  // production builds don't swallow the real error message. Failure
-  // rolls local state back AND surfaces the friendly inline message.
-  // The full server error (incl. code + hint) is logged to the console
-  // so future schema mismatches are easy to triage from devtools.
-  function describe(
+  function logFailure(
     r: { ok: false; error: string; code?: string; hint?: string },
-  ): string {
+  ) {
     console.error("[Preferences] save failed", r);
-    return "Couldn't save — try again.";
   }
 
   function pickUnits(next: UnitSystem) {
@@ -76,17 +73,17 @@ export function PreferencesGroups({
     setUnits(next);
     setError(null);
     startTransition(async () => {
-      try {
-        const r = await setUnitSystem(next);
-        if (!r.ok) {
-          setUnits(prev);
-          setError(describe(r));
-        }
-      } catch (e) {
-        console.error("Failed to save units", e);
+      const r = await clientSetUnitSystem(next);
+      if (!r.ok) {
+        logFailure(r);
         setUnits(prev);
         setError("Couldn't save — try again.");
+        return;
       }
+      // Units affect every distance/elevation/weight string in the
+      // app. One router.refresh() updates the current page's RSC; the
+      // other tabs are force-dynamic and re-fetch on next navigation.
+      router.refresh();
     });
   }
 
@@ -96,19 +93,14 @@ export function PreferencesGroups({
     setNextTheme(next);
     setError(null);
     startTransition(async () => {
-      try {
-        const r = await persistTheme(next);
-        if (!r.ok) {
-          setThemeId(prev);
-          setNextTheme(prev);
-          setError(describe(r));
-        }
-      } catch (e) {
-        console.error("Failed to save theme", e);
+      const r = await clientSetTheme(next);
+      if (!r.ok) {
+        logFailure(r);
         setThemeId(prev);
         setNextTheme(prev);
         setError("Couldn't save — try again.");
       }
+      // next-themes already swapped the document class — no refresh.
     });
   }
 
@@ -117,14 +109,9 @@ export function PreferencesGroups({
     setDaily(value);
     setError(null);
     startTransition(async () => {
-      try {
-        const r = await setNotificationPreference("daily_reminder", value);
-        if (!r.ok) {
-          setDaily(prev);
-          setError(describe(r));
-        }
-      } catch (e) {
-        console.error("Failed to save daily reminder", e);
+      const r = await clientSetNotificationPreference("daily_reminder", value);
+      if (!r.ok) {
+        logFailure(r);
         setDaily(prev);
         setError("Couldn't save — try again.");
       }
@@ -135,14 +122,9 @@ export function PreferencesGroups({
     setRegen(value);
     setError(null);
     startTransition(async () => {
-      try {
-        const r = await setNotificationPreference("regen_complete", value);
-        if (!r.ok) {
-          setRegen(prev);
-          setError(describe(r));
-        }
-      } catch (e) {
-        console.error("Failed to save regen notify", e);
+      const r = await clientSetNotificationPreference("regen_complete", value);
+      if (!r.ok) {
+        logFailure(r);
         setRegen(prev);
         setError("Couldn't save — try again.");
       }
@@ -153,14 +135,9 @@ export function PreferencesGroups({
     setWeekly(value);
     setError(null);
     startTransition(async () => {
-      try {
-        const r = await setNotificationPreference("weekly_summary", value);
-        if (!r.ok) {
-          setWeekly(prev);
-          setError(describe(r));
-        }
-      } catch (e) {
-        console.error("Failed to save weekly summary", e);
+      const r = await clientSetNotificationPreference("weekly_summary", value);
+      if (!r.ok) {
+        logFailure(r);
         setWeekly(prev);
         setError("Couldn't save — try again.");
       }

@@ -35,11 +35,16 @@ export function RegenButton({ contextRows, showSparseTip, isPending }: Props) {
         type="button"
         onClick={() => setOpen(true)}
         title="Regenerate upcoming workouts"
-        className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50/60 px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase text-emerald-700 transition active:scale-[0.97] hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/[0.08] dark:text-emerald-400 dark:hover:bg-emerald-500/[0.16]"
-        style={{ letterSpacing: "0.18em" }}
+        className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-emerald-500 bg-emerald-500 px-3 py-1.5 font-mono text-[11px] font-semibold uppercase text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_4px_12px_rgba(16,185,129,0.25)] transition active:scale-[0.95] hover:bg-emerald-400 dark:border-emerald-400 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400"
+        style={{ letterSpacing: "0.2em" }}
       >
-        <RegenIcon color="currentColor" />
         REGEN
+        {/* Lightning bolt — small action glyph that signals
+            "this triggers something" and matches the regenerate
+            semantics. */}
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+          <path d="M13 2L5 14h6l-1 8 8-12h-6l1-8z" fill="currentColor" />
+        </svg>
       </button>
       <RegenerateSheet
         open={open}

@@ -12,6 +12,7 @@ import { TabBar } from "./TabBar";
 import { RegenButton } from "./RegenButton";
 import { LoggedToastProvider } from "./LoggedToast";
 import { AddActivityRow } from "./AddActivityRow";
+import { classifyWorkout } from "@/lib/workout-variant";
 
 interface Props {
   plan: Plan;
@@ -138,6 +139,7 @@ export function TodayPageClient({
                   <WorkoutCard
                     key={w.id}
                     workout={w}
+                    variant={classifyWorkout(w.status, selectedDayIso, todayIso)}
                     loggedAt={loggedAtById[w.id] ?? null}
                   />
                 ))}

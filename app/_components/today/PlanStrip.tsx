@@ -49,14 +49,16 @@ export function PlanStrip({
   regen: ReactNode;
 }) {
   return (
-    <div className="flex h-9 items-center justify-between border-t border-b border-zinc-200 bg-zinc-50 px-4 sm:px-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <Cell {...a} />
-      <Divider />
-      <Cell {...b} />
-      <Divider />
-      <Cell {...c} />
-      <Divider />
-      {regen}
+    <div className="border-t border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mx-auto flex h-9 max-w-[480px] items-center justify-between gap-3 px-4 sm:px-5">
+        <Cell {...a} />
+        <Divider />
+        <Cell {...b} />
+        <Divider />
+        <Cell {...c} />
+        <Divider />
+        {regen}
+      </div>
     </div>
   );
 }

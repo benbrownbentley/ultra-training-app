@@ -8,5 +8,15 @@
 -- an "edit one column at a time" path, so it's the only one that
 -- actually needs the constraint.
 
-alter table athlete_profile
-  add constraint athlete_profile_user_id_key unique (user_id);
+-- DO block swallows duplicate_object so re-running the migration ledger
+-- against a database where the constraint already exists is a no-op.
+-- Safe to forward-edit this file because the constraint name matches
+-- whatever's already present.
+do $$
+begin
+  alter table athlete_profile
+    add constraint athlete_profile_user_id_key unique (user_id);
+exception
+  when duplicate_object then null;
+end
+$$;

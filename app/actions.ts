@@ -566,33 +566,54 @@ export interface RaceFormPayload {
   support: string;
 }
 
+// Server-side validation of race payloads. Doubles as inline
+// documentation of valid input ranges. The client form has lighter
+// checks; this is the authoritative gate.
+const RaceFormPayloadSchema = z.object({
+  id: z.number().int().positive().optional(),
+  priority: z.enum(["A", "B", "C", "completed"]),
+  name: z.string().min(1).max(120),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  distance: z.string().min(1).max(40),
+  elevationGain: z.number().int().min(0).max(20000).nullable(),
+  terrain: z.enum(["trail", "road", "mixed", "technical"]).nullable(),
+  targetTime: z.string().max(20),
+  intent: z.enum(["competitive", "moderate", "relaxed"]).nullable(),
+  elevationLoss: z.number().int().min(0).max(20000).nullable(),
+  cutoffTime: z.string().max(20),
+  climate: z.string().max(60),
+  courseProfile: z.string().max(120),
+  support: z.string().max(120),
+});
+
 // Inserts or updates a race row. Caller supplies an `id` to update; omit
 // for an add. We `redirect` rather than revalidate so the form route
 // returns the user to the race-calendar landing.
 export async function saveRace(payload: RaceFormPayload) {
+  const data = RaceFormPayloadSchema.parse(payload);
   const { user } = await requireUser();
   const row = {
     user_id: user.id,
-    priority: payload.priority,
-    name: payload.name.trim(),
-    date: payload.date,
-    distance: payload.distance.trim(),
-    elevation_gain: payload.elevationGain,
-    terrain: payload.terrain,
-    target_time: blankToNull(payload.targetTime),
-    intent: payload.intent,
-    elevation_loss: payload.elevationLoss,
-    cutoff_time: blankToNull(payload.cutoffTime),
-    climate: blankToNull(payload.climate),
-    course_profile: blankToNull(payload.courseProfile),
-    support: blankToNull(payload.support),
+    priority: data.priority,
+    name: data.name.trim(),
+    date: data.date,
+    distance: data.distance.trim(),
+    elevation_gain: data.elevationGain,
+    terrain: data.terrain,
+    target_time: blankToNull(data.targetTime),
+    intent: data.intent,
+    elevation_loss: data.elevationLoss,
+    cutoff_time: blankToNull(data.cutoffTime),
+    climate: blankToNull(data.climate),
+    course_profile: blankToNull(data.courseProfile),
+    support: blankToNull(data.support),
   };
 
-  if (payload.id) {
+  if (data.id) {
     const { error } = await supabaseAdmin
       .from("race")
       .update(row)
-      .eq("id", payload.id)
+      .eq("id", data.id)
       .eq("user_id", user.id);
     if (error) throw error;
   } else {
@@ -674,10 +695,61 @@ export interface AthleteFormPayload {
   sleepStress: string;
 }
 
+// Server-side validation for the athlete profile payload. The numeric
+// bounds are deliberately generous — we're rejecting obvious garbage
+// (NaN coercions, negatives where they make no sense, absurd values),
+// not arguing with the athlete about their training volume.
+const AthleteFormPayloadSchema = z.object({
+  unitSystem: z.enum(["metric", "imperial"]),
+  fitnessRating: z.number().int().min(1).max(5).nullable(),
+  weeklyVolumeKm: z.number().min(0).max(500).nullable(),
+  weeklyHoursCurrent: z.number().min(0).max(80).nullable(),
+  weeklyHoursAvailable: z.number().min(0).max(80).nullable(),
+  longestRunDistance: z.number().min(0).max(500).nullable(),
+  longestRunDate: z.string().nullable(),
+  yearsRunning: z.number().int().min(0).max(80).nullable(),
+  yearsUltras: z.number().int().min(0).max(80).nullable(),
+  ultrasCompleted: z.string().max(60),
+  longestRaceDistance: z.number().min(0).max(1000).nullable(),
+  longestRaceName: z.string().max(120),
+  longestRaceDate: z.string().max(40),
+  previousEndurance: z.array(z.string().max(60)).max(20),
+  age: z.number().int().min(1).max(120).nullable(),
+  bodyWeight: z.number().min(20).max(250).nullable(),
+  sex: z.string().max(40),
+  injuryNotes: z.string().max(2000),
+  chronicConditions: z.string().max(2000),
+  sleepHours: z.number().min(0).max(24).nullable(),
+  stressBaseline: z.number().int().min(1).max(5).nullable(),
+  trainingDays: z.array(z.string().max(8)).max(7),
+  longRunDays: z.array(z.string().max(8)).max(7),
+  qualityDays: z.array(z.string().max(8)).max(7),
+  strengthFreq: z.string().max(40),
+  timeOfDay: z.string().max(40),
+  jobType: z.string().max(60),
+  gymAccess: z.enum(["full", "limited", "none"]).nullable(),
+  equipment: z.string().max(500),
+  outdoorTerrain: z.array(z.string().max(60)).max(20),
+  crossTrainingEnjoys: z.array(z.string().max(60)).max(20),
+  maxHr: z.number().int().min(60).max(230).nullable(),
+  restingHr: z.number().int().min(30).max(110).nullable(),
+  lactateThresholdHr: z.number().int().min(60).max(230).nullable(),
+  vo2Max: z.number().min(15).max(95).nullable(),
+  trainingPreferences: z.string().max(2000),
+  // Legacy free-text fields preserved so older rows don't lose data.
+  experience: z.string().max(2000),
+  easyPace: z.string().max(40),
+  weeklyVolume: z.string().max(40),
+  crossTraining: z.string().max(500),
+  otherCommitments: z.string().max(2000),
+  sleepStress: z.string().max(2000),
+});
+
 // Single-row upsert on athlete_profile keyed by user_id. We delete +
 // insert so the row is fully replaced (avoids stale columns when
 // fields are cleared back to null by the form).
-export async function saveAthleteProfile(payload: AthleteFormPayload) {
+export async function saveAthleteProfile(rawPayload: AthleteFormPayload) {
+  const payload = AthleteFormPayloadSchema.parse(rawPayload);
   const { user } = await requireUser();
   const row = {
     user_id: user.id,
@@ -835,9 +907,10 @@ export async function setTheme(themeInput: string): Promise<PrefResult> {
   try {
     const theme = ThemeSchema.parse(themeInput);
     const { user } = await requireUser();
-    const result = await upsertProfileColumn(user.id, { theme });
-    if (result.ok) revalidatePath("/profile");
-    return result;
+    // No revalidatePath — theme is applied client-side via next-themes
+    // immediately, and the Profile page re-fetches on next visit. Avoid
+    // an unnecessary server roundtrip on every toggle.
+    return await upsertProfileColumn(user.id, { theme });
   } catch (e) {
     console.error("[setTheme] threw", e);
     return {
@@ -853,12 +926,12 @@ export async function setUnitSystem(unitInput: string): Promise<PrefResult> {
     const { user } = await requireUser();
     const result = await upsertProfileColumn(user.id, { unit_system });
     if (result.ok) {
-      // Distance/elevation/weight strings change everywhere — revalidate
-      // every surface that renders them.
+      // Distance/elevation/weight strings change everywhere except
+      // Profile (which re-fetches on next mount). Revalidate the
+      // surfaces that render the converted text.
       revalidatePath("/");
       revalidatePath("/plan");
       revalidatePath("/journal");
-      revalidatePath("/profile");
     }
     return result;
   } catch (e) {
@@ -881,9 +954,9 @@ export async function setNotificationPreference(
     const column =
       key === "regen_complete" ? "regen_complete_notify" : key;
     const { user } = await requireUser();
-    const result = await upsertProfileColumn(user.id, { [column]: value });
-    if (result.ok) revalidatePath("/profile");
-    return result;
+    // No revalidatePath — notification toggles are pure server-state
+    // updates; the Profile page re-fetches on next mount.
+    return await upsertProfileColumn(user.id, { [column]: value });
   } catch (e) {
     console.error("[setNotificationPreference] threw", e);
     return {
@@ -895,9 +968,57 @@ export async function setNotificationPreference(
 
 // Finalises the intake wizard: replaces race rows + athlete_profile with
 // the fresh inputs, then triggers the first plan generation. Caller is
+// Wizard race input schema — one for the A race and each B/C race.
+const WizardRaceSchema = z.object({
+  priority: z.enum(["A", "B", "C"]),
+  name: z.string().min(1).max(120),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  distance: z.string().min(1).max(40),
+  elevationGain: z.number().int().min(0).max(20000).nullable(),
+  terrain: z.enum(["trail", "road", "mixed", "technical"]).nullable(),
+  targetTime: z.string().max(20),
+  intent: z.enum(["competitive", "moderate", "relaxed"]).nullable(),
+});
+
+// Wizard payload schema — keep range bounds aligned with
+// AthleteFormPayloadSchema so the validation surface is identical.
+const WizardPayloadSchema = z.object({
+  unitSystem: z.enum(["metric", "imperial"]),
+  aRace: WizardRaceSchema,
+  otherRaces: z.array(WizardRaceSchema).max(10),
+  fitnessRating: z.number().int().min(1).max(5),
+  weeklyVolumeKm: z.number().min(0).max(500).nullable(),
+  weeklyHoursCurrent: z.number().min(0).max(80).nullable(),
+  weeklyHoursAvailable: z.number().min(0).max(80).nullable(),
+  longestRunDistance: z.number().min(0).max(500).nullable(),
+  longestRunDate: z.string().nullable(),
+  yearsRunning: z.number().int().min(0).max(80).nullable(),
+  yearsUltras: z.number().int().min(0).max(80).nullable(),
+  ultrasCompleted: z.string().max(60),
+  longestRaceDistance: z.number().min(0).max(1000).nullable(),
+  longestRaceName: z.string().max(120),
+  longestRaceDate: z.string().max(40),
+  age: z.number().int().min(1).max(120).nullable(),
+  sex: z.string().max(40),
+  bodyWeight: z.number().min(20).max(250).nullable(),
+  injuryNotes: z.string().max(2000),
+  chronicConditions: z.string().max(2000),
+  sleepHours: z.number().min(0).max(24).nullable(),
+  stressBaseline: z.number().int().min(1).max(5),
+  trainingDays: z.array(z.string().max(8)).max(7),
+  longRunDays: z.array(z.string().max(8)).max(7),
+  qualityDays: z.array(z.string().max(8)).max(7),
+  strengthFreq: z.string().max(40),
+  gymAccess: z.enum(["full", "limited", "none"]).nullable(),
+  equipment: z.array(z.string().max(60)).max(20),
+  outdoorTerrain: z.array(z.string().max(60)).max(20),
+  crossTrainingEnjoys: z.array(z.string().max(60)).max(20),
+});
+
 // expected to manage the post-submit UX (the wizard shows generating →
 // done states inline), so we don't redirect here.
-export async function submitWizard(data: WizardPayload) {
+export async function submitWizard(rawData: WizardPayload) {
+  const data = WizardPayloadSchema.parse(rawData);
   const { user } = await requireUser();
 
   const raceRows = [data.aRace, ...data.otherRaces].map((r) => ({

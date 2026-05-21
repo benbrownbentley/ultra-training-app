@@ -582,6 +582,17 @@ index, not the source of truth).
 ### Journal tab
 - "Save as note instead?" affordance on Regenerate sheet cancel — **v2**
 
+### Profile tab
+- **Glossary polish pass** — **v2**. Currently 2 of 17 entries (`tempo`,
+  `lower-body`) carry full copy; the other 15 ship as deliberate stubs
+  ("Detail copy on this entry is still being written"). Polish pass should:
+  (a) write real `whatItIs` / `whatItDoes` / `howToExecute` / `commonMistakes`
+  copy for the remaining stubs, and (b) decide whether to add movement-pattern
+  splits (push / pull / legs) alongside the existing body-region splits
+  (upper / lower / full). Push/pull/legs is a different taxonomy — overlaps
+  partially with the current categories — so the decision affects what the
+  plan generator can prescribe, not just the reference content.
+
 ### Workout cards / drill-down / LOG
 - Hike promoted to its own primary type if usage warrants — **v2**
 - Saved Routines (user-defined strength workout templates) — **v2**
@@ -638,6 +649,19 @@ index, not the source of truth).
   single-side stretch arrow for `physio`. Update `WorkoutKindIcon` to
   route each kind to its own glyph; keep `IconMobility` as the fallback
   for the bare mobility kind. Acknowledged 2026-05-21.
+
+### Architecture polish (v2)
+- **Structured tool output instead of text parsing.** Today Claude's
+  `submit_training_plan` tool returns workouts as `{ kind, title,
+  details: "<free text>" }` and the client parses `details` via regex
+  in `deriveWorkoutContent` to extract segments / routine items /
+  exercises / zones. Move to a structured tool schema where Claude
+  emits `{ segments: […], routine: […], exercises: […], warmup: {…} }`
+  directly. Eliminates parser fragility (case sensitivity, separator
+  variation, missing patterns), enables zod validation of plan shape
+  end-to-end, and gives the planned-vs-actual comparison in
+  `formatStrengthActuals` (lib/claude.ts) canonical planned data
+  instead of re-parsed-from-text data. Tracked 2026-05-21.
 
 ### Practitioner / coaching (v3)
 - Practitioner role with admin access to client accounts (trainer, coach,

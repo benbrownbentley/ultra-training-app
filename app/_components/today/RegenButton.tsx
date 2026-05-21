@@ -35,7 +35,7 @@ export function RegenButton({ contextRows, showSparseTip, isPending }: Props) {
         type="button"
         onClick={() => setOpen(true)}
         title="Regenerate upcoming workouts"
-        className="inline-flex items-center gap-1.5 bg-transparent p-0 font-mono text-[10.5px] font-semibold uppercase text-emerald-700 hover:text-emerald-600 dark:text-emerald-400"
+        className="inline-flex items-center gap-1.5 rounded-md border border-emerald-300 bg-emerald-50/60 px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase text-emerald-700 transition active:scale-[0.97] hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/[0.08] dark:text-emerald-400 dark:hover:bg-emerald-500/[0.16]"
         style={{ letterSpacing: "0.18em" }}
       >
         <RegenIcon color="currentColor" />

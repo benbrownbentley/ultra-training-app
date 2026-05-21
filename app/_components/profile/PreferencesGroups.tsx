@@ -46,7 +46,9 @@ export function PreferencesGroups({
   weeklySummary,
 }: Props) {
   const { setTheme: setNextTheme } = useTheme();
-  const [isPending, startTransition] = useTransition();
+  // Toggles fire optimistically — no isPending gate. If the action
+  // fails, the catch path rolls back state and shows the inline error.
+  const [, startTransition] = useTransition();
 
   const [units, setUnits] = useState<UnitSystem>(unitSystem);
   const [themeId, setThemeId] = useState<ThemeId>(theme);
@@ -83,11 +85,7 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save units", e);
         setUnits(prev);
-        setError(
-          e instanceof Error && e.message
-            ? `Save failed: ${e.message}`
-            : "Couldn't save — try again.",
-        );
+        setError("Couldn't save — try again.");
       }
     });
   }
@@ -109,11 +107,7 @@ export function PreferencesGroups({
         console.error("Failed to save theme", e);
         setThemeId(prev);
         setNextTheme(prev);
-        setError(
-          e instanceof Error && e.message
-            ? `Save failed: ${e.message}`
-            : "Couldn't save — try again.",
-        );
+        setError("Couldn't save — try again.");
       }
     });
   }
@@ -132,11 +126,7 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save daily reminder", e);
         setDaily(prev);
-        setError(
-          e instanceof Error && e.message
-            ? `Save failed: ${e.message}`
-            : "Couldn't save — try again.",
-        );
+        setError("Couldn't save — try again.");
       }
     });
   }
@@ -154,11 +144,7 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save regen notify", e);
         setRegen(prev);
-        setError(
-          e instanceof Error && e.message
-            ? `Save failed: ${e.message}`
-            : "Couldn't save — try again.",
-        );
+        setError("Couldn't save — try again.");
       }
     });
   }
@@ -176,11 +162,7 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save weekly summary", e);
         setWeekly(prev);
-        setError(
-          e instanceof Error && e.message
-            ? `Save failed: ${e.message}`
-            : "Couldn't save — try again.",
-        );
+        setError("Couldn't save — try again.");
       }
     });
   }
@@ -199,7 +181,6 @@ export function PreferencesGroups({
           if (next) pickUnits(next);
         }}
         helper="All distances, elevation, and weight throughout the app."
-        disabled={isPending}
       />
       <RowDivider />
       <SegmentedRow
@@ -210,7 +191,6 @@ export function PreferencesGroups({
           const next = THEME_OPTIONS.find((t) => THEME_LABELS[t] === label);
           if (next) pickTheme(next);
         }}
-        disabled={isPending}
       />
       <RowDivider />
       <ToggleRow
@@ -218,7 +198,6 @@ export function PreferencesGroups({
         sub="A morning nudge for today's plan"
         value={daily}
         onChange={flipDaily}
-        disabled={isPending}
       />
       <RowDivider />
       <ToggleRow
@@ -226,7 +205,6 @@ export function PreferencesGroups({
         sub="Notify when your plan is updated"
         value={regen}
         onChange={flipRegen}
-        disabled={isPending}
       />
       <RowDivider />
       <ToggleRow
@@ -234,7 +212,6 @@ export function PreferencesGroups({
         sub="Sunday recap of the week's work"
         value={weekly}
         onChange={flipWeekly}
-        disabled={isPending}
       />
       {error && (
         <div className="border-t border-zinc-200 px-4 py-2.5 dark:border-zinc-800">

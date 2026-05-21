@@ -7,6 +7,27 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /**
+ * True when `e` is a Next.js redirect "error" — the framework throws a
+ * sentinel error from `redirect()` to drive navigation. Client-side
+ * catch blocks that wrap server actions must re-throw this so the
+ * navigation actually fires; otherwise the form swallows the redirect
+ * and renders a fake "Failed to save" state on success.
+ *
+ * Uses the digest-string contract rather than importing
+ * `isRedirectError` from a Next internal path so we don't couple to
+ * framework internals.
+ */
+export function isNextRedirectError(e: unknown): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "digest" in e &&
+    typeof (e as { digest: unknown }).digest === "string" &&
+    (e as { digest: string }).digest.startsWith("NEXT_REDIRECT")
+  );
+}
+
+/**
  * Returns today's date in the athlete's training timezone (America/Vancouver)
  * as an ISO date string (YYYY-MM-DD). Used everywhere a "today" boundary is
  * needed so plan generation, logging, and rendering all agree on the same day

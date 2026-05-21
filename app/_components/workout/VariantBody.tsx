@@ -59,6 +59,12 @@ export interface ActualsBindings {
     index: number,
     patch: { done?: boolean; pain?: number; note?: string },
   ) => void;
+  // Mobility: per-routine-item done state. Same indexed-patch shape as
+  // physio above; ActualsForm seeds the array from content.routine.
+  onChangeMobilityExercise: (
+    index: number,
+    patch: { done?: boolean; note?: string },
+  ) => void;
   // Strength: per-exercise mutations keyed by exerciseName. The form
   // owns the actual_detail.sets array; these patches splice it without
   // the caller having to know the full shape.
@@ -519,9 +525,21 @@ export function MobilityBody({
       {content.routine.length > 0 && (
         <Section label="ROUTINE">
           <div className="flex flex-col gap-1.5">
-            {content.routine.map((r, i) => (
-              <RoutineRow key={i} name={r.name} spec={r.spec} />
-            ))}
+            {content.routine.map((r, i) => {
+              const done = b.detail?.exercises?.[i]?.done ?? false;
+              return (
+                <RoutineRow
+                  key={i}
+                  name={r.name}
+                  spec={r.spec}
+                  done={done}
+                  onChange={(next) =>
+                    b.onChangeMobilityExercise(i, { done: next })
+                  }
+                  disabled={isFuture}
+                />
+              );
+            })}
           </div>
         </Section>
       )}

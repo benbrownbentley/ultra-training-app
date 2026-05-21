@@ -3,6 +3,7 @@
 import { useCallback, useState, useTransition } from "react";
 import Link from "next/link";
 import { createJournalEntry } from "@/app/actions";
+import { isNextRedirectError } from "@/lib/utils";
 import {
   PHYSIO_RESTRICTIONS,
   type PhysioDetails,
@@ -83,6 +84,7 @@ export function PhysioForm() {
             regenAfter,
           });
         } catch (e) {
+          if (isNextRedirectError(e)) throw e;
           setError(e instanceof Error ? e.message : "Failed to save");
         }
       });

@@ -108,12 +108,10 @@ export function EntryCard({ entry }: Props) {
 
         {expanded && (
           <div
-            className="mt-3.5 flex items-center justify-between gap-2.5 border-t border-zinc-200 pt-3 dark:border-zinc-800"
+            className="mt-3.5 flex items-center justify-end gap-2.5 border-t border-zinc-200 pt-3 dark:border-zinc-800"
             onClick={(e) => e.stopPropagation()}
           >
-            <span className="inline-flex h-9 cursor-default items-center justify-center rounded-md border border-dashed border-zinc-200 px-3 text-[13px] font-medium text-zinc-400 dark:border-zinc-800 dark:text-zinc-600">
-              Edit (coming soon)
-            </span>
+            {/* TODO v2: edit affordance lands here */}
             <button
               type="button"
               onClick={(e) => {

@@ -148,7 +148,7 @@ export function FieldRow({
           }}
           disabled={disabled}
           placeholder="—"
-          className="w-20 rounded bg-transparent text-right font-mono text-[18px] font-medium text-zinc-950 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:cursor-not-allowed dark:text-zinc-50 dark:placeholder:text-zinc-600"
+          className="w-20 rounded bg-transparent pr-1.5 text-right font-mono text-[18px] font-medium text-zinc-950 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 focus:placeholder:text-transparent disabled:cursor-not-allowed dark:text-zinc-50 dark:placeholder:text-zinc-600 [appearance:textfield] [&::-webkit-inner-spin-button]:m-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:m-0 [&::-webkit-outer-spin-button]:appearance-none"
           style={{ letterSpacing: "-0.01em" }}
         />
         {unit && (
@@ -163,37 +163,6 @@ export function FieldRow({
         )}
       </div>
     </label>
-  );
-}
-
-// ─── Disclosure row ─────────────────────────────────────────
-// Dashed-border "+ Add …" affordance. Non-interactive placeholder for v1 —
-// surfaces the option without wiring up the editing flow yet.
-export function DisclosureRow({
-  label,
-  disabled,
-}: {
-  label: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div
-      className={`flex w-full items-center gap-2 rounded-[10px] border border-dashed border-zinc-200 px-3.5 py-2.5 text-left text-[13px] font-medium text-zinc-600 dark:border-zinc-800 dark:text-zinc-400 ${
-        disabled ? "opacity-55" : ""
-      }`}
-    >
-      <span className="inline-flex h-[18px] w-[18px] items-center justify-center rounded-full border border-zinc-200 dark:border-zinc-800">
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-          <path
-            d="M12 5v14M5 12h14"
-            stroke="#10b981"
-            strokeWidth="2"
-            strokeLinecap="round"
-          />
-        </svg>
-      </span>
-      {label}
-    </div>
   );
 }
 

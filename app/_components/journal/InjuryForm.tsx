@@ -3,6 +3,7 @@
 import { useCallback, useState, useTransition } from "react";
 import Link from "next/link";
 import { createJournalEntry } from "@/app/actions";
+import { isNextRedirectError } from "@/lib/utils";
 import {
   BODY_PARTS,
   INJURY_RESTRICTIONS,
@@ -45,6 +46,18 @@ export function InjuryForm() {
         setError("Pick a body part so Claude knows where to back off.");
         return;
       }
+      // Guard against NaN / negative / zero before the value reaches the
+      // action. zod on the server rejects them too — this just gets the
+      // user a friendlier message in the form before the round-trip.
+      let checkBackInDays: number | null = null;
+      if (checkBackIn) {
+        const days = Number(checkBackIn);
+        if (!Number.isFinite(days) || days <= 0) {
+          setError("Check-back days must be a positive number.");
+          return;
+        }
+        checkBackInDays = Math.round(days);
+      }
       setError(null);
       const details: InjuryDetails = {
         body_part: bodyPart,
@@ -53,7 +66,7 @@ export function InjuryForm() {
         pain_quality: painQuality,
         started_date: startedDate || null,
         restrictions,
-        check_back_in_days: checkBackIn ? Number(checkBackIn) : null,
+        check_back_in_days: checkBackInDays,
       };
       startTransition(async () => {
         try {
@@ -65,6 +78,7 @@ export function InjuryForm() {
             regenAfter,
           });
         } catch (e) {
+          if (isNextRedirectError(e)) throw e;
           setError(e instanceof Error ? e.message : "Failed to save");
         }
       });

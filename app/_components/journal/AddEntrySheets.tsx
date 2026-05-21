@@ -12,6 +12,7 @@ import {
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { createJournalEntry } from "@/app/actions";
+import { isNextRedirectError } from "@/lib/utils";
 import { ArrowRight } from "@/app/_components/today/icons";
 import {
   IMPACT_LABELS,
@@ -307,6 +308,7 @@ function NoteStep({
             regenAfter,
           });
         } catch (e) {
+          if (isNextRedirectError(e)) throw e;
           setError(e instanceof Error ? e.message : "Failed to save");
         }
       });
@@ -426,6 +428,7 @@ function TravelStep({
           details,
         });
       } catch (e) {
+        if (isNextRedirectError(e)) throw e;
         setError(e instanceof Error ? e.message : "Failed to save");
       }
     });

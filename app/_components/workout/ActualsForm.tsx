@@ -154,6 +154,38 @@ export function ActualsForm({
     [content.physioExercises],
   );
 
+  // Mobility per-routine-item done/note. Same index-keyed shape as
+  // physio above; seeds the array from content.routine on first edit.
+  const onChangeMobilityExercise = useCallback(
+    (index: number, patch: { done?: boolean; note?: string }) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const list = (
+          s.detail?.exercises ??
+          content.routine.map((r) => ({
+            name: r.name,
+            done: false,
+            pain: null as number | null,
+            note: null as string | null,
+          }))
+        ).slice();
+        const cur = list[index] ?? {
+          name: content.routine[index]?.name ?? "Exercise",
+          done: false,
+          pain: null,
+          note: null,
+        };
+        list[index] = {
+          ...cur,
+          done: patch.done ?? cur.done,
+          note: patch.note ?? cur.note ?? null,
+        };
+        return { ...s, detail: { ...(s.detail ?? {}), exercises: list } };
+      });
+    },
+    [content.routine],
+  );
+
   // ─── Strength handlers ─────────────────────────────────────
   // All splice actual_detail.sets / skipped_exercises / added_exercises
   // in place; the debounced save effect fires once the user stops
@@ -312,20 +344,36 @@ export function ActualsForm({
     [],
   );
 
-  // Mobility's DoneToggle drives status, not actuals. Skip the actuals
-  // debounce path — flip status via logWorkout and update local state for
-  // the toggle to reflect immediately.
+  // Mobility's DoneToggle drives status AND — for mobility — seeds every
+  // routine item's done flag so the per-item checkmarks stay in sync
+  // with the group toggle. Status flips via logWorkout; the item
+  // checkmarks ride the debounced saveActuals path.
   const onChangeDone = useCallback(
     (next: boolean) => {
       const nextStatus: WorkoutStatus = next ? "completed" : "pending";
       setLocalStatus(nextStatus);
+      if (kind === "mobility" && content.routine.length > 0) {
+        dirtyRef.current = true;
+        setState((s) => ({
+          ...s,
+          detail: {
+            ...(s.detail ?? {}),
+            exercises: content.routine.map((r) => ({
+              name: r.name,
+              done: next,
+              pain: null,
+              note: null,
+            })),
+          },
+        }));
+      }
       void logWorkout(workoutId, nextStatus).catch((e) => {
         console.error("Failed to set status", e);
         setLocalStatus(status);
         setError("Couldn't save status — try again.");
       });
     },
-    [workoutId, status],
+    [workoutId, status, kind, content.routine],
   );
 
   // Bind the form state into the ActualsBindings the variant body wants.
@@ -348,6 +396,7 @@ export function ActualsForm({
       onChangeZones,
       onChangeDone,
       onChangePhysioExercise,
+      onChangeMobilityExercise,
       onAddSet,
       onChangeSet,
       onRemoveSet,
@@ -361,6 +410,7 @@ export function ActualsForm({
       onChangeZones,
       onChangeDone,
       onChangePhysioExercise,
+      onChangeMobilityExercise,
       onAddSet,
       onChangeSet,
       onRemoveSet,

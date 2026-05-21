@@ -48,6 +48,17 @@ export async function createClient() {
   );
 }
 
+// Resolves the current user id from the session cookie. Every read
+// helper below filters by user_id explicitly even though RLS already
+// gates cross-user access — belt-and-suspenders against any future
+// policy mistake. Returns null for unauthenticated callers; helpers
+// short-circuit when null.
+async function getCurrentUserId(): Promise<string | null> {
+  const supabase = await createClient();
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
+}
+
 interface WorkoutRow {
   id: number;
   date: string;
@@ -79,6 +90,8 @@ const PROFILE_COLUMNS =
   "unit_system, weekly_volume, longest_run_distance, easy_pace, injury_notes, experience, gym_access, equipment, weekly_hours, weekly_hours_current, cross_training, other_commitments, sleep_stress, fitness_rating, weekly_volume_km, longest_run_date, years_running, years_ultras, ultras_completed, longest_race_distance, longest_race_name, longest_race_date, previous_endurance, age, body_weight, sex, chronic_conditions, sleep_hours, stress_baseline, training_days, long_run_day, quality_day, long_run_days, quality_days, strength_freq, time_of_day, job_type, outdoor_terrain, cross_training_enjoys, max_hr, resting_hr, lactate_threshold_hr, vo2_max, training_preferences, theme, daily_reminder, regen_complete_notify, weekly_summary";
 
 export async function getPlan(): Promise<Plan | null> {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const [raceResult, workoutsResult] = await Promise.all([
     // Pick the goal race: highest priority (A < B < C), then soonest. The
@@ -87,6 +100,7 @@ export async function getPlan(): Promise<Plan | null> {
     supabase
       .from("race")
       .select(RACE_COLUMNS)
+      .eq("user_id", userId)
       .neq("priority", "completed")
       .order("priority", { ascending: true })
       .order("date", { ascending: true })
@@ -95,6 +109,7 @@ export async function getPlan(): Promise<Plan | null> {
     supabase
       .from("workouts")
       .select(WORKOUT_COLUMNS)
+      .eq("user_id", userId)
       .order("date", { ascending: true })
       .order("position", { ascending: true })
       .returns<WorkoutRow[]>(),
@@ -143,10 +158,13 @@ export async function getPlan(): Promise<Plan | null> {
 // share one DB round-trip. Cache is per-request — no cross-user leak.
 export const getAthleteProfile = cache(
   async (): Promise<AthleteProfile | null> => {
+    const userId = await getCurrentUserId();
+    if (!userId) return null;
     const supabase = await createClient();
     const { data, error } = await supabase
       .from("athlete_profile")
       .select(PROFILE_COLUMNS)
+      .eq("user_id", userId)
       .order("id", { ascending: false })
       .limit(1)
       .maybeSingle<AthleteProfile>();
@@ -178,11 +196,14 @@ interface WorkoutDetail {
 export async function getWorkoutById(
   id: number,
 ): Promise<WorkoutDetail | null> {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("workouts")
     .select(WORKOUT_COLUMNS)
     .eq("id", id)
+    .eq("user_id", userId)
     .maybeSingle<WorkoutDetail>();
 
   if (error) throw error;
@@ -192,10 +213,13 @@ export async function getWorkoutById(
 // Returns the current goal race — A first, soonest if multiple, excluding
 // anything flagged completed. Used wherever the app talks about "the race".
 export async function getRace(): Promise<Race | null> {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("race")
     .select(RACE_COLUMNS)
+    .eq("user_id", userId)
     .neq("priority", "completed")
     .order("priority", { ascending: true })
     .order("date", { ascending: true })
@@ -209,10 +233,13 @@ export async function getRace(): Promise<Race | null> {
 // Returns the user's full race calendar including completed ones — the
 // Race Calendar page wants to show the full block.
 export async function listRaces(): Promise<Race[]> {
+  const userId = await getCurrentUserId();
+  if (!userId) return [];
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("race")
     .select(RACE_COLUMNS)
+    .eq("user_id", userId)
     .order("priority", { ascending: true })
     .order("date", { ascending: true });
   if (error) throw error;
@@ -221,11 +248,14 @@ export async function listRaces(): Promise<Race[]> {
 
 // Single-race fetch — used by the per-race edit form.
 export async function getRaceById(id: number): Promise<Race | null> {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("race")
     .select(RACE_COLUMNS)
     .eq("id", id)
+    .eq("user_id", userId)
     .maybeSingle<Race>();
   if (error) throw error;
   return data;
@@ -260,6 +290,8 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
   otherRaces: Race[];
   history: LoggedWorkoutRow[];
 }> {
+  const userId = await getCurrentUserId();
+  if (!userId) return { race: null, otherRaces: [], history: [] };
   const supabase = await createClient();
   const [racesResult, historyResult] = await Promise.all([
     // Fetch ALL upcoming races (not just one); we'll split A vs. others
@@ -267,6 +299,7 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
     supabase
       .from("race")
       .select(RACE_COLUMNS)
+      .eq("user_id", userId)
       .neq("priority", "completed")
       .order("priority", { ascending: true })
       .order("date", { ascending: true })
@@ -276,6 +309,7 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
       .select(
         "date, kind, title, details, status, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail",
       )
+      .eq("user_id", userId)
       .lt("date", beforeDate)
       .order("date", { ascending: true })
       .order("position", { ascending: true })
@@ -305,11 +339,14 @@ const PREVIEW_COLUMNS =
 export async function getPreviewById(
   id: number,
 ): Promise<import("@/lib/preview").PreviewRow | null> {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("plan_previews")
     .select(PREVIEW_COLUMNS)
     .eq("id", id)
+    .eq("user_id", userId)
     .maybeSingle();
   if (error) throw error;
   return (data as import("@/lib/preview").PreviewRow | null) ?? null;
@@ -325,10 +362,13 @@ export async function getPreviewById(
 export async function getLatestAcceptedSummary(): Promise<
   import("@/lib/preview").GenerationSummary | null
 > {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("plan_previews")
     .select("generation_summary")
+    .eq("user_id", userId)
     .eq("status", "accepted")
     .order("decided_at", { ascending: false })
     .limit(1)
@@ -348,10 +388,13 @@ const JOURNAL_COLUMNS =
  * context into the Claude prompt.
  */
 export async function listJournalEntries(): Promise<JournalEntry[]> {
+  const userId = await getCurrentUserId();
+  if (!userId) return [];
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("journal_entries")
     .select(JOURNAL_COLUMNS)
+    .eq("user_id", userId)
     .order("entry_date", { ascending: false })
     .order("id", { ascending: false });
   if (error) throw error;
@@ -364,11 +407,14 @@ export async function listJournalEntries(): Promise<JournalEntry[]> {
 export async function getJournalEntry(
   id: number,
 ): Promise<JournalEntry | null> {
+  const userId = await getCurrentUserId();
+  if (!userId) return null;
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("journal_entries")
     .select(JOURNAL_COLUMNS)
     .eq("id", id)
+    .eq("user_id", userId)
     .maybeSingle();
   if (error) throw error;
   return (data as JournalEntry | null) ?? null;

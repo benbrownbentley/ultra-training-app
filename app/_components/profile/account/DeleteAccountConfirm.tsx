@@ -3,6 +3,7 @@
 import { useState, useSyncExternalStore, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { deleteAccount } from "@/app/actions";
+import { isNextRedirectError } from "@/lib/utils";
 
 const noopSubscribe = () => () => {};
 function useIsClient(): boolean {
@@ -95,6 +96,7 @@ export function DeleteAccountConfirm({
                 try {
                   await deleteAccount(typed);
                 } catch (e) {
+                  if (isNextRedirectError(e)) throw e;
                   setError(
                     e instanceof Error ? e.message : "Failed to delete account",
                   );

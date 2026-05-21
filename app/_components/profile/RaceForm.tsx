@@ -4,6 +4,7 @@ import { useCallback, useState, useTransition } from "react";
 import Link from "next/link";
 import { deleteRace, saveRace, type RaceFormPayload } from "@/app/actions";
 import type { Intent, Race, RacePriority, Terrain } from "@/lib/plan";
+import { isNextRedirectError } from "@/lib/utils";
 import { Group, SegmentedControl } from "./atoms";
 import { ProfileDetailHeader } from "./DetailHeader";
 import { Chip, FormSectionLabel } from "@/app/_components/journal/atoms";
@@ -97,6 +98,11 @@ export function RaceForm({ race }: Props) {
       try {
         await saveRace(payload);
       } catch (e) {
+        // The server action calls redirect() on success — Next.js
+        // signals navigation by throwing NEXT_REDIRECT. Re-throw so
+        // the framework can catch it and actually navigate; only treat
+        // other errors as save failures.
+        if (isNextRedirectError(e)) throw e;
         setError(e instanceof Error ? e.message : "Failed to save race");
       }
     });
@@ -515,6 +521,7 @@ function DeleteRaceConfirm({
                 try {
                   await deleteRace(raceId);
                 } catch (e) {
+                  if (isNextRedirectError(e)) throw e;
                   setError(e instanceof Error ? e.message : "Failed to delete");
                 }
               });

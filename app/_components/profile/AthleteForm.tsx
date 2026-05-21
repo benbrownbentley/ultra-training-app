@@ -4,6 +4,7 @@ import { useCallback, useState, useTransition } from "react";
 import Link from "next/link";
 import { saveAthleteProfile, type AthleteFormPayload } from "@/app/actions";
 import type { AthleteProfile, GymAccess, UnitSystem } from "@/lib/plan";
+import { isNextRedirectError } from "@/lib/utils";
 import { Group, SegmentedControl } from "./atoms";
 import { ProfileDetailHeader } from "./DetailHeader";
 import { Chip, FormSectionLabel } from "@/app/_components/journal/atoms";
@@ -200,27 +201,76 @@ export function AthleteForm({ profile }: Props) {
 
   const submit = useCallback(() => {
     setError(null);
+
+    // Pre-flight: coerce strings to numbers and catch NaN before they
+    // reach the action. parseNum returns null for empty inputs and a
+    // sentinel `NaN` for unparseable junk; we reject the latter with a
+    // human-readable error.
+    function parseNum(label: string, raw: string): number | null | "INVALID" {
+      if (!raw) return null;
+      const n = Number(raw);
+      if (!Number.isFinite(n)) {
+        setError(`${label} must be a number.`);
+        return "INVALID";
+      }
+      return n;
+    }
+    const ageNum = parseNum("Age", age);
+    const bodyWeightNum = parseNum("Body weight", bodyWeight);
+    const weeklyVolumeNum = parseNum("Weekly volume", weeklyVolumeKm);
+    const weeklyHoursCurrentNum = parseNum(
+      "Weekly hours (current)",
+      weeklyHoursCurrent,
+    );
+    const weeklyHoursAvailableNum = parseNum(
+      "Weekly hours (available)",
+      weeklyHoursAvailable,
+    );
+    const longestRunNum = parseNum("Longest run", longestRunDistance);
+    const yearsRunningNum = parseNum("Years running", yearsRunning);
+    const yearsUltrasNum = parseNum("Years doing ultras", yearsUltras);
+    const longestRaceNum = parseNum("Longest race", longestRaceDistance);
+    const maxHrNum = parseNum("Max HR", maxHr);
+    const restingHrNum = parseNum("Resting HR", restingHr);
+    const ltHrNum = parseNum("Threshold HR", lactateThresholdHr);
+    const vo2Num = parseNum("VO2 max", vo2Max);
+    if (
+      [
+        ageNum,
+        bodyWeightNum,
+        weeklyVolumeNum,
+        weeklyHoursCurrentNum,
+        weeklyHoursAvailableNum,
+        longestRunNum,
+        yearsRunningNum,
+        yearsUltrasNum,
+        longestRaceNum,
+        maxHrNum,
+        restingHrNum,
+        ltHrNum,
+        vo2Num,
+      ].includes("INVALID")
+    ) {
+      return;
+    }
+
     const payload: AthleteFormPayload = {
       unitSystem,
       fitnessRating,
-      weeklyVolumeKm: weeklyVolumeKm ? Number(weeklyVolumeKm) : null,
-      weeklyHoursCurrent: weeklyHoursCurrent
-        ? Number(weeklyHoursCurrent)
-        : null,
-      weeklyHoursAvailable: weeklyHoursAvailable
-        ? Number(weeklyHoursAvailable)
-        : null,
-      longestRunDistance: longestRunDistance ? Number(longestRunDistance) : null,
+      weeklyVolumeKm: weeklyVolumeNum as number | null,
+      weeklyHoursCurrent: weeklyHoursCurrentNum as number | null,
+      weeklyHoursAvailable: weeklyHoursAvailableNum as number | null,
+      longestRunDistance: longestRunNum as number | null,
       longestRunDate: longestRunDate || null,
-      yearsRunning: yearsRunning ? Number(yearsRunning) : null,
-      yearsUltras: yearsUltras ? Number(yearsUltras) : null,
+      yearsRunning: yearsRunningNum as number | null,
+      yearsUltras: yearsUltrasNum as number | null,
       ultrasCompleted,
-      longestRaceDistance: longestRaceDistance ? Number(longestRaceDistance) : null,
+      longestRaceDistance: longestRaceNum as number | null,
       longestRaceName,
       longestRaceDate,
       previousEndurance,
-      age: age ? Number(age) : null,
-      bodyWeight: bodyWeight ? Number(bodyWeight) : null,
+      age: ageNum as number | null,
+      bodyWeight: bodyWeightNum as number | null,
       sex,
       injuryNotes,
       chronicConditions,
@@ -236,10 +286,10 @@ export function AthleteForm({ profile }: Props) {
       equipment: equipment.join(", "),
       outdoorTerrain,
       crossTrainingEnjoys,
-      maxHr: maxHr ? Number(maxHr) : null,
-      restingHr: restingHr ? Number(restingHr) : null,
-      lactateThresholdHr: lactateThresholdHr ? Number(lactateThresholdHr) : null,
-      vo2Max: vo2Max ? Number(vo2Max) : null,
+      maxHr: maxHrNum as number | null,
+      restingHr: restingHrNum as number | null,
+      lactateThresholdHr: ltHrNum as number | null,
+      vo2Max: vo2Num as number | null,
       trainingPreferences,
       // Legacy fields preserved verbatim
       experience: profile?.experience ?? "",
@@ -253,6 +303,10 @@ export function AthleteForm({ profile }: Props) {
       try {
         await saveAthleteProfile(payload);
       } catch (e) {
+        // saveAthleteProfile redirects on success — re-throw the
+        // NEXT_REDIRECT so the framework navigates instead of the
+        // catch surfacing a fake "Failed to save".
+        if (isNextRedirectError(e)) throw e;
         setError(e instanceof Error ? e.message : "Failed to save");
       }
     });

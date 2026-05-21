@@ -57,18 +57,32 @@ export function PreferencesGroups({
   // diverge from server state. Cleared the next time the user pokes a row.
   const [error, setError] = useState<string | null>(null);
 
+  // Preferences actions return a result object instead of throwing, so
+  // production builds don't swallow the real error message. Failure
+  // rolls local state back AND surfaces the friendly inline message.
+  // The full server error (incl. code + hint) is logged to the console
+  // so future schema mismatches are easy to triage from devtools.
+  function describe(
+    r: { ok: false; error: string; code?: string; hint?: string },
+  ): string {
+    console.error("[Preferences] save failed", r);
+    return "Couldn't save — try again.";
+  }
+
   function pickUnits(next: UnitSystem) {
     const prev = units;
     setUnits(next);
     setError(null);
     startTransition(async () => {
       try {
-        await setUnitSystem(next);
+        const r = await setUnitSystem(next);
+        if (!r.ok) {
+          setUnits(prev);
+          setError(describe(r));
+        }
       } catch (e) {
         console.error("Failed to save units", e);
         setUnits(prev);
-        // Temporary diagnostic: surface the server error verbatim so we
-        // can see what's actually failing without opening devtools.
         setError(
           e instanceof Error && e.message
             ? `Save failed: ${e.message}`
@@ -85,13 +99,16 @@ export function PreferencesGroups({
     setError(null);
     startTransition(async () => {
       try {
-        await persistTheme(next);
+        const r = await persistTheme(next);
+        if (!r.ok) {
+          setThemeId(prev);
+          setNextTheme(prev);
+          setError(describe(r));
+        }
       } catch (e) {
         console.error("Failed to save theme", e);
         setThemeId(prev);
         setNextTheme(prev);
-        // Temporary diagnostic: surface the server error verbatim so we
-        // can see what's actually failing without opening devtools.
         setError(
           e instanceof Error && e.message
             ? `Save failed: ${e.message}`
@@ -107,12 +124,14 @@ export function PreferencesGroups({
     setError(null);
     startTransition(async () => {
       try {
-        await setNotificationPreference("daily_reminder", value);
+        const r = await setNotificationPreference("daily_reminder", value);
+        if (!r.ok) {
+          setDaily(prev);
+          setError(describe(r));
+        }
       } catch (e) {
         console.error("Failed to save daily reminder", e);
         setDaily(prev);
-        // Temporary diagnostic: surface the server error verbatim so we
-        // can see what's actually failing without opening devtools.
         setError(
           e instanceof Error && e.message
             ? `Save failed: ${e.message}`
@@ -127,12 +146,14 @@ export function PreferencesGroups({
     setError(null);
     startTransition(async () => {
       try {
-        await setNotificationPreference("regen_complete", value);
+        const r = await setNotificationPreference("regen_complete", value);
+        if (!r.ok) {
+          setRegen(prev);
+          setError(describe(r));
+        }
       } catch (e) {
         console.error("Failed to save regen notify", e);
         setRegen(prev);
-        // Temporary diagnostic: surface the server error verbatim so we
-        // can see what's actually failing without opening devtools.
         setError(
           e instanceof Error && e.message
             ? `Save failed: ${e.message}`
@@ -147,12 +168,14 @@ export function PreferencesGroups({
     setError(null);
     startTransition(async () => {
       try {
-        await setNotificationPreference("weekly_summary", value);
+        const r = await setNotificationPreference("weekly_summary", value);
+        if (!r.ok) {
+          setWeekly(prev);
+          setError(describe(r));
+        }
       } catch (e) {
         console.error("Failed to save weekly summary", e);
         setWeekly(prev);
-        // Temporary diagnostic: surface the server error verbatim so we
-        // can see what's actually failing without opening devtools.
         setError(
           e instanceof Error && e.message
             ? `Save failed: ${e.message}`

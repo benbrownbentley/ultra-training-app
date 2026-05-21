@@ -786,74 +786,111 @@ const NotificationKeySchema = z.enum([
   "weekly_summary",
 ]);
 
-// Upsert preference values onto the user's athlete_profile row. Each
-// action validates input via zod, then writes a single column. We use
-// upsert so a brand-new user (no profile row yet — e.g. mid-wizard)
-// gets a sensible default row written under the hood.
-//
-// Verbose logging is intentional while we triage the "Couldn't save"
-// path. Strip the noisy logs once a root cause is identified.
+// Preferences actions return an explicit result instead of throwing.
+// Next.js Server Actions sanitise thrown error messages in production
+// ("An error occurred in the Server Components render…"), so returning
+// the error keeps the real cause visible to the client without leaking
+// stack traces. The client converts `{ ok: false }` into the inline
+// red error row.
+
+export type PrefResult =
+  | { ok: true }
+  | { ok: false; error: string; code?: string; hint?: string };
+
+// Upsert preference values onto the user's athlete_profile row.
 async function upsertProfileColumn(
   userId: string,
   patch: Record<string, unknown>,
-): Promise<void> {
-  const cols = Object.keys(patch);
-  console.log(
-    `[upsertProfileColumn] user=${userId} cols=${cols.join(",")}`,
-  );
+): Promise<PrefResult> {
   const { error } = await supabaseAdmin
     .from("athlete_profile")
     .upsert({ user_id: userId, ...patch }, { onConflict: "user_id" });
   if (error) {
-    console.error("[upsertProfileColumn] FAILED", {
+    const sbError = error as {
+      message?: string;
+      details?: string;
+      hint?: string;
+      code?: string;
+    };
+    // Keep this log — when a schema constraint fights an upsert again,
+    // the message + code is the fastest path to diagnosis.
+    console.error("[upsertProfileColumn] failed", {
       userId,
-      cols,
-      message: error.message,
-      details: (error as { details?: string }).details,
-      hint: (error as { hint?: string }).hint,
-      code: (error as { code?: string }).code,
+      cols: Object.keys(patch),
+      message: sbError.message,
+      code: sbError.code,
+      hint: sbError.hint,
     });
-    throw new Error(
-      `Profile preference write failed: ${error.message}${
-        (error as { hint?: string }).hint
-          ? ` (${(error as { hint?: string }).hint})`
-          : ""
-      }`,
-    );
+    return {
+      ok: false,
+      error: sbError.message ?? "Unknown Supabase error",
+      code: sbError.code,
+      hint: sbError.hint,
+    };
+  }
+  return { ok: true };
+}
+
+export async function setTheme(themeInput: string): Promise<PrefResult> {
+  try {
+    const theme = ThemeSchema.parse(themeInput);
+    const { user } = await requireUser();
+    const result = await upsertProfileColumn(user.id, { theme });
+    if (result.ok) revalidatePath("/profile");
+    return result;
+  } catch (e) {
+    console.error("[setTheme] threw", e);
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Unknown error",
+    };
   }
 }
 
-export async function setTheme(themeInput: string): Promise<void> {
-  const theme = ThemeSchema.parse(themeInput);
-  const { user } = await requireUser();
-  await upsertProfileColumn(user.id, { theme });
-  revalidatePath("/profile");
-}
-
-export async function setUnitSystem(unitInput: string): Promise<void> {
-  const unit_system = UnitSystemSchema.parse(unitInput);
-  const { user } = await requireUser();
-  await upsertProfileColumn(user.id, { unit_system });
-  // Distance/elevation/weight strings change everywhere — revalidate
-  // every surface that renders them.
-  revalidatePath("/");
-  revalidatePath("/plan");
-  revalidatePath("/journal");
-  revalidatePath("/profile");
+export async function setUnitSystem(unitInput: string): Promise<PrefResult> {
+  try {
+    const unit_system = UnitSystemSchema.parse(unitInput);
+    const { user } = await requireUser();
+    const result = await upsertProfileColumn(user.id, { unit_system });
+    if (result.ok) {
+      // Distance/elevation/weight strings change everywhere — revalidate
+      // every surface that renders them.
+      revalidatePath("/");
+      revalidatePath("/plan");
+      revalidatePath("/journal");
+      revalidatePath("/profile");
+    }
+    return result;
+  } catch (e) {
+    console.error("[setUnitSystem] threw", e);
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Unknown error",
+    };
+  }
 }
 
 export async function setNotificationPreference(
   keyInput: string,
   value: boolean,
-): Promise<void> {
-  const key = NotificationKeySchema.parse(keyInput);
-  // Map UI keys to DB columns. `regen_complete` → `regen_complete_notify`
-  // is the only renaming; the others match 1:1.
-  const column =
-    key === "regen_complete" ? "regen_complete_notify" : key;
-  const { user } = await requireUser();
-  await upsertProfileColumn(user.id, { [column]: value });
-  revalidatePath("/profile");
+): Promise<PrefResult> {
+  try {
+    const key = NotificationKeySchema.parse(keyInput);
+    // Map UI keys to DB columns. `regen_complete` → `regen_complete_notify`
+    // is the only renaming; the others match 1:1.
+    const column =
+      key === "regen_complete" ? "regen_complete_notify" : key;
+    const { user } = await requireUser();
+    const result = await upsertProfileColumn(user.id, { [column]: value });
+    if (result.ok) revalidatePath("/profile");
+    return result;
+  } catch (e) {
+    console.error("[setNotificationPreference] threw", e);
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : "Unknown error",
+    };
+  }
 }
 
 // Finalises the intake wizard: replaces race rows + athlete_profile with

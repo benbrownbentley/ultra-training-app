@@ -1394,6 +1394,8 @@ Goal: close the small UX gaps that would confuse friends/early users.
 - **Log/unlog as a single toggle** — replace the separate "Mark as done" + "Mark as incomplete" pattern with a **single checkmark that toggles state**. Both today's affordances (Today card's one-way Log button + drill-down's separate "Mark as incomplete" button) collapse into one control. The visual asymmetry between "Mark as done" and "Mark as incomplete" goes away because there's only one button. Backend already supports both directions via `logWorkout(id, "pending" | "completed")`.
 - **Password show/hide eye toggle** on sign-in + sign-up password fields. Caught 2026-05-21 during Phase 1 smoke test — standard pattern, missing today.
 - **Password strength requirements** — configure minimum length + character class rules in Supabase Auth → Settings; surface inline hints on the sign-up form so users know the policy before submitting. Caught 2026-05-21.
+- **Forgot password flow is non-functional** — the "Forgot password?" link on `/sign-in` doesn't do anything. Wire it: dedicated `/forgot-password` page with email input → call `supabase.auth.resetPasswordForEmail()` → Supabase sends a reset email → user clicks link → lands on a `/reset-password` page with a new-password form → calls `supabase.auth.updateUser({ password })`. Caught 2026-05-21 during Phase 1 smoke test. Required for v2 launch — public users will forget passwords.
+- **Email collision across providers creates duplicate accounts** (caught 2026-05-21) — a user who previously signed up via Google can also create an email/password account using the same email address. Supabase treats them as two separate auth users with separate `user_id`s, RLS scopes, and data. Two fixes needed: (a) **enable "Allow manual linking" in Supabase Auth → Providers** so identities with the same verified email get linked to one user; (b) **app-level safeguard on `/sign-up`** — before allowing email/password sign-up, check whether the email is already associated with another provider's account and surface a clear "This email is already registered via Google — sign in with Google instead" message. Without this, users will create accidental duplicate accounts and not understand why they "can't see their plan."
 
 #### Smoke-test findings (2026-05-21)
 
@@ -1421,7 +1423,14 @@ The following came out of the Phase 1 prod smoke test (wizard → plan generatio
 
 - **Server Component error during wizard plan-generation for new users** — fresh sign-up, completed wizard, hit Generate; the action threw "Claude did not call submit_training_plan. stop_reason=end_turn" (lib/claude.ts:981).
 - **Root cause:** `tool_choice: { type: "auto" }` (lib/claude.ts:1053) lets Claude decide whether to call the tool. Haiku 4.5 occasionally answers in plain text and stops. The retry-once mechanic only handles validation-failure cases where the tool *was* called, not the "no tool call at all" case.
-- **Fix:** changed `tool_choice` to `{ type: "tool", name: "submit_training_plan" }` so Claude is forced to invoke the tool. Tests pass (118/118). Pending prod verification.
+- **Fix:** changed `tool_choice` to `{ type: "tool", name: "submit_training_plan" }` so Claude is forced to invoke the tool. Tests pass (118/118). ✅ Verified on prod 2026-05-21 — second account completed the wizard and got a plan.
+
+#### Wizard consistency findings (2026-05-21, continued)
+
+- **Disabled-Continue needs a reason** — when Continue is disabled (e.g., past race date), nothing tells the user why. Surface the blocking validation inline ("Race date must be in the future"). Today's behaviour (blocking the user without explanation) is good *intent*, bad *feedback*.
+- **"Optional" labelling is inconsistent** — some optional fields show "optional", others don't. Audit every wizard field and apply one rule (either label every optional field, or label every required field — pick one and apply it everywhere).
+- **Required asterisks are inconsistent** — same audit as above; pick one convention for required fields and apply it to all of them.
+- **"Skip for now" is inconsistent** — some all-optional wizard pages offer a "Skip for now" affordance, others don't. Audit and apply one rule (e.g., any page where all fields are optional gets a Skip; pages with at least one required field don't).
 - **Reconcile the "+ ADD ACTUALS →" UX intent** — currently the link on logged cards routes to the drill-down's `ActualsForm`. Confirm this is the intended pattern (no floating popup) and document it; or replace with an inline sheet if the round-trip feels heavy.
 - **Skip → "shift or leave?" prompt** — when a user skips a workout, prompt whether to shift the remaining plan or leave it alone (no implementation in code yet).
 - **Travel journal entry** — verify whether Travel entry type is wired; add the form + route if missing (Note / Injury / Physio confirmed; Travel unverified).

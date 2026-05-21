@@ -1,18 +1,40 @@
-export type WorkoutKind = "run" | "gym" | "mobility";
+export type WorkoutKind =
+  | "run"
+  | "gym"
+  | "mobility"
+  | "hike"
+  | "cross"
+  | "physio";
 export type WorkoutStatus = "pending" | "completed" | "skipped";
 
 // Kind-specific actuals shape — sparse by design. Runs carry `zones`;
-// strength carries `sets`; physio + mobility carry `exercises`. All
-// optional so a partially-filled log doesn't force every consumer to
-// branch on shape.
+// strength carries `sets`/`skipped_exercises`/`added_exercises`; physio
+// + mobility carry `exercises`. All optional so a partially-filled log
+// doesn't force every consumer to branch on shape.
 export interface ActualDetail {
   zones?: { label: string; minutes: number }[];
+  // Strength: per-set actuals keyed by exerciseName so the renderer
+  // groups them under each planned or user-added exercise.
   sets?: {
     exerciseName: string;
     reps: number;
     weight: number;
     unit: string;
   }[];
+  // Strength: names of planned exercises the user marked skipped.
+  skipped_exercises?: string[];
+  // Strength: exercises the user added on top of the plan. Their sets
+  // live in `sets[]` above with the same `exerciseName`; this list
+  // preserves planned-side metadata so the status-badge logic can
+  // compare actuals against the user's own targets.
+  added_exercises?: {
+    name: string;
+    plannedSets: number;
+    plannedReps: number;
+    plannedWeight: number;
+    plannedUnit: string;
+  }[];
+  // Physio + Mobility — per-exercise checkbox / pain / free-text note.
   exercises?: {
     name: string;
     done: boolean;

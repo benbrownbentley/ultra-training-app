@@ -28,12 +28,12 @@ export function WorkoutActions({ id, variant, loggedAt }: Props) {
 
   if (variant === "logged") {
     return (
-      <div className="flex items-center gap-2.5 border-t border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="flex items-center justify-center gap-3 border-t border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
         <button
           type="button"
           onClick={() => setStatus("pending")}
           disabled={isPending}
-          className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-zinc-200 bg-transparent px-4 text-sm font-medium text-zinc-950 transition hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700"
+          className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-zinc-200 bg-transparent px-4 text-sm font-medium text-zinc-950 transition active:scale-[0.97] hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700"
         >
           Edit log
         </button>
@@ -66,12 +66,12 @@ export function WorkoutActions({ id, variant, loggedAt }: Props) {
       : "Mark done";
 
   return (
-    <div className="flex items-center gap-2.5 border-t border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="flex items-center justify-center gap-3 border-t border-zinc-200 bg-zinc-50 px-4 py-3 dark:border-zinc-800 dark:bg-zinc-950">
       <button
         type="button"
         onClick={() => setStatus("completed")}
         disabled={isPending}
-        className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+        className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition active:scale-[0.97] hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {primaryLabel}
         <ArrowRight color="#052e1f" size={16} />
@@ -82,7 +82,7 @@ export function WorkoutActions({ id, variant, loggedAt }: Props) {
           setStatus(variant === "skipped" ? "pending" : "skipped")
         }
         disabled={isPending}
-        className="inline-flex h-11 items-center justify-center rounded-[10px] border border-zinc-200 px-4 text-sm font-medium text-zinc-950 transition hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700"
+        className="inline-flex h-11 items-center justify-center rounded-[10px] border border-zinc-200 px-4 text-sm font-medium text-zinc-950 transition active:scale-[0.97] hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700"
       >
         {variant === "skipped" ? "Unskip" : "Mark skipped"}
       </button>

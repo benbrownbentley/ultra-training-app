@@ -253,18 +253,24 @@ export interface LoggedWorkoutRow {
  */
 export async function getRaceAndHistory(beforeDate: string): Promise<{
   race: Race | null;
+  // B/C races (and any other non-completed lower-priority races) so the
+  // plan generator can build tune-ups and avoid stacking hard sessions
+  // around them. Excludes the A race (returned in `race`) and any race
+  // marked completed.
+  otherRaces: Race[];
   history: LoggedWorkoutRow[];
 }> {
   const supabase = await createClient();
-  const [raceResult, historyResult] = await Promise.all([
+  const [racesResult, historyResult] = await Promise.all([
+    // Fetch ALL upcoming races (not just one); we'll split A vs. others
+    // in-memory below. Cheaper than a second query.
     supabase
       .from("race")
       .select(RACE_COLUMNS)
       .neq("priority", "completed")
       .order("priority", { ascending: true })
       .order("date", { ascending: true })
-      .limit(1)
-      .maybeSingle<Race>(),
+      .returns<Race[]>(),
     supabase
       .from("workouts")
       .select(
@@ -276,11 +282,15 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
       .returns<LoggedWorkoutRow[]>(),
   ]);
 
-  if (raceResult.error) throw raceResult.error;
+  if (racesResult.error) throw racesResult.error;
   if (historyResult.error) throw historyResult.error;
 
+  const races = racesResult.data ?? [];
+  const [race, ...otherRaces] = races;
+
   return {
-    race: raceResult.data,
+    race: race ?? null,
+    otherRaces,
     history: historyResult.data ?? [],
   };
 }
@@ -303,6 +313,30 @@ export async function getPreviewById(
     .maybeSingle();
   if (error) throw error;
   return (data as import("@/lib/preview").PreviewRow | null) ?? null;
+}
+
+/**
+ * Returns the generation_summary of the most recently accepted preview
+ * for the current user, or null if they have no accepted regens yet
+ * (first plan or all previous previews were discarded). Used by
+ * previewPlan to thread continuity context — "this is what you told the
+ * athlete last time" — into the next prompt.
+ */
+export async function getLatestAcceptedSummary(): Promise<
+  import("@/lib/preview").GenerationSummary | null
+> {
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("plan_previews")
+    .select("generation_summary")
+    .eq("status", "accepted")
+    .order("decided_at", { ascending: false })
+    .limit(1)
+    .maybeSingle<{
+      generation_summary: import("@/lib/preview").GenerationSummary | null;
+    }>();
+  if (error) throw error;
+  return data?.generation_summary ?? null;
 }
 
 const JOURNAL_COLUMNS =

@@ -108,17 +108,17 @@ export function ActualsForm({
     setState((s) => ({ ...s, [key]: value }));
   }, []);
 
-  // Pre-seed the physio-exercise actual_detail array on first edit so
-  // index-based patches don't have to deal with sparse undefineds.
-  const seedExercises = useCallback(() => {
-    if (state.detail?.exercises) return state.detail.exercises;
-    return content.physioExercises.map((ex) => ({
-      name: ex.name,
-      done: false,
-      pain: null,
-      note: null,
-    }));
-  }, [content.physioExercises, state.detail]);
+  // Running: zones array lives directly under actual_detail.zones.
+  const onChangeZones = useCallback(
+    (next: { label: string; minutes: number }[]) => {
+      dirtyRef.current = true;
+      setState((s) => ({
+        ...s,
+        detail: { ...(s.detail ?? {}), zones: next },
+      }));
+    },
+    [],
+  );
 
   const onChangePhysioExercise = useCallback(
     (
@@ -154,6 +154,164 @@ export function ActualsForm({
     [content.physioExercises],
   );
 
+  // ─── Strength handlers ─────────────────────────────────────
+  // All splice actual_detail.sets / skipped_exercises / added_exercises
+  // in place; the debounced save effect fires once the user stops
+  // tapping. Keys are exerciseName because the same exercise can move
+  // between collapsed planned + expanded user-added without re-keying.
+
+  const onAddSet = useCallback(
+    (exerciseName: string, unit: string) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const sets = (s.detail?.sets ?? []).slice();
+        // Seed the new set from the most recent set for this exercise,
+        // or zeros if none exist yet. Lets the user log a streak of
+        // identical sets with one tap each.
+        const last = [...sets]
+          .reverse()
+          .find((x) => x.exerciseName === exerciseName);
+        sets.push({
+          exerciseName,
+          reps: last?.reps ?? 0,
+          weight: last?.weight ?? 0,
+          unit: last?.unit ?? unit,
+        });
+        return { ...s, detail: { ...(s.detail ?? {}), sets } };
+      });
+    },
+    [],
+  );
+
+  const onChangeSet = useCallback(
+    (
+      exerciseName: string,
+      index: number,
+      patch: { reps?: number; weight?: number },
+    ) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const sets = (s.detail?.sets ?? []).slice();
+        // index is the position within this exercise's sets (not the
+        // global array), so we walk to find it.
+        let seen = 0;
+        for (let i = 0; i < sets.length; i++) {
+          if (sets[i].exerciseName !== exerciseName) continue;
+          if (seen === index) {
+            sets[i] = {
+              ...sets[i],
+              reps: patch.reps ?? sets[i].reps,
+              weight: patch.weight ?? sets[i].weight,
+            };
+            break;
+          }
+          seen++;
+        }
+        return { ...s, detail: { ...(s.detail ?? {}), sets } };
+      });
+    },
+    [],
+  );
+
+  const onRemoveSet = useCallback(
+    (exerciseName: string, index: number) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const sets = (s.detail?.sets ?? []).slice();
+        let seen = 0;
+        for (let i = 0; i < sets.length; i++) {
+          if (sets[i].exerciseName !== exerciseName) continue;
+          if (seen === index) {
+            sets.splice(i, 1);
+            break;
+          }
+          seen++;
+        }
+        return { ...s, detail: { ...(s.detail ?? {}), sets } };
+      });
+    },
+    [],
+  );
+
+  const onToggleSkipExercise = useCallback((exerciseName: string) => {
+    dirtyRef.current = true;
+    setState((s) => {
+      const cur = s.detail?.skipped_exercises ?? [];
+      const next = cur.includes(exerciseName)
+        ? cur.filter((n) => n !== exerciseName)
+        : [...cur, exerciseName];
+      return {
+        ...s,
+        detail: { ...(s.detail ?? {}), skipped_exercises: next },
+      };
+    });
+  }, []);
+
+  const onMarkDoneAtPlanned = useCallback(
+    (
+      exerciseName: string,
+      planned: { sets: number; reps: number; weight: number; unit: string },
+    ) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const sets = (s.detail?.sets ?? []).filter(
+          (x) => x.exerciseName !== exerciseName,
+        );
+        for (let i = 0; i < planned.sets; i++) {
+          sets.push({
+            exerciseName,
+            reps: planned.reps,
+            weight: planned.weight,
+            unit: planned.unit,
+          });
+        }
+        return { ...s, detail: { ...(s.detail ?? {}), sets } };
+      });
+    },
+    [],
+  );
+
+  const onAddCustomExercise = useCallback(
+    (input: {
+      name: string;
+      sets: number;
+      reps: number;
+      weight: number;
+      unit: string;
+    }) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const addedList = s.detail?.added_exercises ?? [];
+        const added = [
+          ...addedList,
+          {
+            name: input.name,
+            plannedSets: input.sets,
+            plannedReps: input.reps,
+            plannedWeight: input.weight,
+            plannedUnit: input.unit,
+          },
+        ];
+        // Seed sets[] at planned defaults so the row reads as DONE AT
+        // PLANNED immediately. User can edit/remove sets afterwards.
+        const sets = (s.detail?.sets ?? []).slice();
+        for (let i = 0; i < input.sets; i++) {
+          sets.push({
+            exerciseName: input.name,
+            reps: input.reps,
+            weight: input.weight,
+            unit: input.unit,
+          });
+        }
+        return {
+          ...s,
+          detail: { ...(s.detail ?? {}), added_exercises: added, sets },
+        };
+      });
+    },
+    [],
+  );
+
   // Mobility's DoneToggle drives status, not actuals. Skip the actuals
   // debounce path — flip status via logWorkout and update local state for
   // the toggle to reflect immediately.
@@ -187,15 +345,33 @@ export function ActualsForm({
       onChangeHr: (next) => patch("hr_avg", next),
       onChangeRpe: (next) => patch("rpe", next),
       onChangeNotes: (next) => patch("notes", next),
+      onChangeZones,
       onChangeDone,
       onChangePhysioExercise,
+      onAddSet,
+      onChangeSet,
+      onRemoveSet,
+      onToggleSkipExercise,
+      onMarkDoneAtPlanned,
+      onAddCustomExercise,
     }),
-    [state, patch, onChangeDone, onChangePhysioExercise],
+    [
+      state,
+      patch,
+      onChangeZones,
+      onChangeDone,
+      onChangePhysioExercise,
+      onAddSet,
+      onChangeSet,
+      onRemoveSet,
+      onToggleSkipExercise,
+      onMarkDoneAtPlanned,
+      onAddCustomExercise,
+    ],
   );
 
-  // Avoid an "unused" warning while leaving seedExercises ready for the
-  // strength per-set work below.
-  void seedExercises;
+  // Kind is part of the props contract but only the variant body
+  // reads it. Surface here in case future logic needs to branch.
   void kind;
 
   return (

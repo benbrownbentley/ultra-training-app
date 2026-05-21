@@ -102,6 +102,9 @@ export function addDays(iso: string, n: number): string {
 export function workoutIcon(kind: WorkoutKind): string {
   if (kind === "run") return "🏃";
   if (kind === "gym") return "🏋️";
+  if (kind === "hike") return "🥾";
+  if (kind === "cross") return "🚴";
+  if (kind === "physio") return "🩹";
   return "🧘";
 }
 

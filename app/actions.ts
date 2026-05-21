@@ -7,10 +7,13 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   createClient,
   getAthleteProfile,
+  getLatestAcceptedSummary,
   getRaceAndHistory,
   listJournalEntries,
 } from "@/lib/supabase/server";
 import { generateTrainingPlan } from "@/lib/claude";
+import type { LoggedWorkout } from "@/lib/claude";
+import { deriveWorkoutContent } from "@/lib/workout-content";
 import { blankToNull, getTodayISO } from "@/lib/utils";
 import type {
   GymAccess,
@@ -86,6 +89,31 @@ export interface WizardPayload {
   crossTrainingEnjoys: string[];
 }
 
+// Decorate the raw workouts-table history with planned per-exercise
+// targets for strength sessions so formatStrengthActuals can compare
+// against the plan (DONE AT PLANNED / WITH OVERRIDES / SHORT). Other
+// kinds pass through unchanged. Pure transform — safe to call on every
+// regen.
+function attachPlannedExercises(
+  history: LoggedWorkout[],
+): LoggedWorkout[] {
+  return history.map((w) => {
+    if (w.kind !== "gym") return w;
+    const content = deriveWorkoutContent(w.kind, w.title, w.details);
+    if (content.exercises.length === 0) return w;
+    return {
+      ...w,
+      planned_exercises: content.exercises.map((ex) => ({
+        name: ex.name,
+        sets: ex.sets,
+        reps: ex.reps,
+        weight: Number(ex.weight ?? 0),
+        unit: ex.unit ?? "kg",
+      })),
+    };
+  });
+}
+
 /**
  * Resolves the current user from the cookie-aware server client. Middleware
  * already gates protected routes, but each action still re-checks — auth
@@ -143,6 +171,18 @@ const ActualsSchema = z.object({
           }),
         )
         .optional(),
+      skipped_exercises: z.array(z.string()).optional(),
+      added_exercises: z
+        .array(
+          z.object({
+            name: z.string(),
+            plannedSets: z.number(),
+            plannedReps: z.number(),
+            plannedWeight: z.number(),
+            plannedUnit: z.string(),
+          }),
+        )
+        .optional(),
       exercises: z
         .array(
           z.object({
@@ -186,7 +226,7 @@ export async function saveActuals(
 }
 
 const CustomActivitySchema = z.object({
-  kind: z.enum(["run", "gym", "mobility"]),
+  kind: z.enum(["run", "gym", "mobility", "hike", "cross", "physio"]),
   title: z.string().min(1).max(120),
   details: z.string().min(1).max(500),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -244,11 +284,13 @@ export async function previewPlan(
   const today = getTodayISO();
   const { user } = await requireUser();
 
-  const [{ race, history }, profile, journal] = await Promise.all([
-    getRaceAndHistory(today),
-    getAthleteProfile(),
-    listJournalEntries(),
-  ]);
+  const [{ race, otherRaces, history }, profile, journal, previousSummary] =
+    await Promise.all([
+      getRaceAndHistory(today),
+      getAthleteProfile(),
+      listJournalEntries(),
+      getLatestAcceptedSummary(),
+    ]);
 
   if (!race) throw new Error("No race configured.");
   if (!profile) {
@@ -279,11 +321,13 @@ export async function previewPlan(
 
   const result = await generateTrainingPlan({
     race,
+    otherRaces,
     profile,
     startDate: today,
-    history,
+    history: attachPlannedExercises(history),
     notes: blankToNull(notes ?? ""),
     journalEntries: journalContext,
+    previousSummary,
   });
 
   const futureOnly = result.workouts.filter((w) => w.date >= today);
@@ -746,14 +790,37 @@ const NotificationKeySchema = z.enum([
 // action validates input via zod, then writes a single column. We use
 // upsert so a brand-new user (no profile row yet — e.g. mid-wizard)
 // gets a sensible default row written under the hood.
+//
+// Verbose logging is intentional while we triage the "Couldn't save"
+// path. Strip the noisy logs once a root cause is identified.
 async function upsertProfileColumn(
   userId: string,
   patch: Record<string, unknown>,
 ): Promise<void> {
+  const cols = Object.keys(patch);
+  console.log(
+    `[upsertProfileColumn] user=${userId} cols=${cols.join(",")}`,
+  );
   const { error } = await supabaseAdmin
     .from("athlete_profile")
     .upsert({ user_id: userId, ...patch }, { onConflict: "user_id" });
-  if (error) throw error;
+  if (error) {
+    console.error("[upsertProfileColumn] FAILED", {
+      userId,
+      cols,
+      message: error.message,
+      details: (error as { details?: string }).details,
+      hint: (error as { hint?: string }).hint,
+      code: (error as { code?: string }).code,
+    });
+    throw new Error(
+      `Profile preference write failed: ${error.message}${
+        (error as { hint?: string }).hint
+          ? ` (${(error as { hint?: string }).hint})`
+          : ""
+      }`,
+    );
+  }
 }
 
 export async function setTheme(themeInput: string): Promise<void> {
@@ -894,7 +961,7 @@ export async function submitWizard(data: WizardPayload) {
   // to previewPlan's — schema changes break in one place (the type
   // definitions in lib/plan.ts), not two.
   const today = getTodayISO();
-  const [{ race }, profile] = await Promise.all([
+  const [{ race, otherRaces }, profile] = await Promise.all([
     getRaceAndHistory(today),
     getAthleteProfile(),
   ]);
@@ -903,6 +970,7 @@ export async function submitWizard(data: WizardPayload) {
 
   const result = await generateTrainingPlan({
     race,
+    otherRaces,
     profile,
     startDate: today,
     history: [],

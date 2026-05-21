@@ -8,22 +8,13 @@ import {
 } from "./workout-content";
 
 describe("pickSubtype", () => {
-  it("maps gym kind to strength", () => {
-    expect(pickSubtype("gym", "Strength A")).toBe("strength");
-  });
-
-  it("routes run-kind hike titles to the hike subtype", () => {
-    expect(pickSubtype("run", "Vert Hike")).toBe("hike");
-    expect(pickSubtype("run", "Trail Hike")).toBe("hike");
-  });
-
-  it("routes mobility-kind physio titles to the physio subtype", () => {
-    expect(pickSubtype("mobility", "Physio · Hip & Glute")).toBe("physio");
-  });
-
-  it("routes cycling / swim mobility-kind workouts to cross", () => {
-    expect(pickSubtype("mobility", "Easy Spin")).toBe("cross");
-    expect(pickSubtype("mobility", "Open-water Swim")).toBe("cross");
+  it("maps each DB kind 1:1 onto the visual subtype", () => {
+    expect(pickSubtype("run")).toBe("running");
+    expect(pickSubtype("gym")).toBe("strength");
+    expect(pickSubtype("hike")).toBe("hike");
+    expect(pickSubtype("cross")).toBe("cross");
+    expect(pickSubtype("physio")).toBe("physio");
+    expect(pickSubtype("mobility")).toBe("mobility");
   });
 });
 
@@ -67,15 +58,48 @@ describe("parseStrengthExercises", () => {
 });
 
 describe("parseRoutine", () => {
-  it("splits on bullets / dots into rows", () => {
+  it("splits on the em-dot separator into rows", () => {
     const r = parseRoutine(
       "World's greatest stretch · 90/90 hip switches · Ankle rocks · Cossack squats",
     );
     expect(r.length).toBe(4);
     expect(r[0].name).toContain("greatest");
+    expect(r.every((x) => x.spec === undefined)).toBe(true);
   });
 
-  it("returns empty when only one line is present", () => {
+  it("skips a leading 'N min' duration header", () => {
+    const r = parseRoutine(
+      "15 min · World's greatest stretch · 90/90 hip switches · Ankle rocks",
+    );
+    expect(r.length).toBe(3);
+    expect(r[0].name).toContain("greatest");
+    expect(r.map((x) => x.name)).not.toContain("15 min");
+  });
+
+  it("extracts a trailing 3×10 spec from a fragment", () => {
+    const r = parseRoutine("15 min · Banded clamshell 3×10 · Glute bridge");
+    expect(r.length).toBe(2);
+    expect(r[0]).toEqual({ name: "Banded clamshell", spec: "3×10" });
+    expect(r[1]).toEqual({ name: "Glute bridge" });
+  });
+
+  it("extracts a trailing 30s/side spec", () => {
+    const r = parseRoutine("Couch stretch 30s/side · 90/90 hip switches");
+    expect(r.length).toBe(2);
+    expect(r[0]).toEqual({ name: "Couch stretch", spec: "30s/side" });
+  });
+
+  it("tolerates extra whitespace around separators", () => {
+    const r = parseRoutine(
+      "  15 min   ·   Hip flexor stretch   ·   Ankle rocks   ",
+    );
+    expect(r.length).toBe(2);
+    expect(r[0].name).toBe("Hip flexor stretch");
+    expect(r[1].name).toBe("Ankle rocks");
+  });
+
+  it("returns empty for malformed / single-fragment input", () => {
+    expect(parseRoutine("").length).toBe(0);
     expect(parseRoutine("Just one block").length).toBe(0);
   });
 });
@@ -91,10 +115,10 @@ describe("deriveWorkoutContent", () => {
 
   it("attaches a fueling reminder only to long hikes", () => {
     expect(
-      deriveWorkoutContent("run", "Trail Hike", "~4 hr hike at Z1").fueling,
+      deriveWorkoutContent("hike", "Trail Hike", "~4 hr hike at Z1").fueling,
     ).not.toBeNull();
     expect(
-      deriveWorkoutContent("run", "Recovery Hike", "2 hr easy hike").fueling,
+      deriveWorkoutContent("hike", "Recovery Hike", "2 hr easy hike").fueling,
     ).toBeNull();
   });
 

@@ -1,6 +1,6 @@
 # Vert — Endurance Training App — Project Brief
 
-_Last updated: 2026-05-19_
+_Last updated: 2026-05-20_
 
 > **Note on the name:** "Vert" is a **working name** while we build. There are
 > existing competitors using similar names, so the brand will change before
@@ -792,6 +792,234 @@ are **not v1**:
 
 ---
 
+## Decisions made 2026-05-20 (plan generation quality pass)
+
+Session goal: audit and tighten the Claude plan-generation pipeline. Three
+intertwined problems addressed in one change: the system prompt was vibes-level
+methodology, the wizard collected ~30 fields but only ~12 were reaching Claude,
+and a non-deterministic model could occasionally produce structurally broken
+plans (missing days, no race on race day) with no enforcement.
+
+### System prompt rewrite (`lib/claude.ts` SYSTEM_PROMPT)
+
+Replaced the original "progressive overload, hard/easy" prose with explicit,
+quantitative coaching rules the model can self-check against:
+
+- **Named periodization phases** — BASE (40-50% of window) / BUILD (30-40%) /
+  PEAK (10-15%) / TAPER (final 2 weeks, non-negotiable). Includes compressed-
+  window handling (<12 weeks, <6 weeks, <3 weeks taper-only).
+- **Hard quantitative rules** — 80/20 easy/hard distribution, 10% weekly volume
+  cap, long run ≤30-35% of weekly volume (≤25% of race distance for ultras),
+  48-hour spacing between hard sessions, no back-to-back hard days.
+- **Race-specificity translation** — elevation gain → vert hikes / downhill prep,
+  terrain → trail-specific runs, heat / climate prep, intent (competitive vs.
+  finish strong vs. just finish) → quality density.
+- **Injury-handling tiers** — acute / chronic flare risk / severe (recent surgery,
+  stress fracture). Each tier has explicit volume + cross-training prescriptions.
+- **Adherence-reading thresholds** — ≥80% / 50-79% / <50% completion bands with
+  defined responses. Recent skipped long runs flagged as highest-priority signal.
+- **B/C race handling** — no quality sessions in the 3 days before, no hard
+  session within 2 days after.
+- **Strength prescription by phase** — 2× in BASE+BUILD, 1× in PEAK, none in
+  taper week -1. Injury-specific overrides (Achilles → heavy slow calf raises;
+  hip/knee/IT band → glute/hip stability).
+- **Session duration accounting** (added later same session, based on user
+  testing feedback) — explicit per-exercise time budgets so Claude prescribes
+  wall-clock time, not work time. Compound lifts ~12 min each, accessory
+  ~8 min, isolation ~5 min, plus 5-8 min warm-up + 3-5 min cool-down.
+  Mobility pacing: ~60-90s per movement (15 min = 6-8 movements, 20 min =
+  8-10, 30 min = 12-15). Running/cycling/swimming wall-clock = work time.
+  Fixes a ~30-40% under-estimate observed when actually using cloud-generated
+  plans.
+- **One-shot coach voice example** for the summary field so output style is
+  anchored, not improvised.
+
+### Wizard → prompt data flow expansion (`lib/claude.ts` formatProfile)
+
+The wizard captured roughly 30 fields; the prompt only sent about 12. Audited
+and threaded the rest through:
+
+- Self-rated fitness (1-5 with human labels: "just starting out" through
+  "highly trained, competitive")
+- Years running, years doing ultras, ultras completed, longest race ever
+  (distance + name + date)
+- Sleep hours, stress baseline (1-5 with labels), chronic conditions
+- Age, sex, body weight (with unit handling)
+- Outdoor terrain access, training days available, preferred strength frequency
+- B/C races (entire `OTHER RACES` prompt section added)
+
+**Removed:** dead `easy_pace` field handling. The wizard doesn't capture an
+easy pace and the prompt was being fed an empty string. Saved as a future
+follow-up: add a 5K-time proxy question to the wizard so Claude can prescribe
+numerical paces, not just qualitative effort. Tracked in memory.
+
+### Structural plan validator (`lib/plan-validation.ts` — new module)
+
+Lightweight validator runs after Claude returns. Three hard checks + one soft
+warning:
+
+- **`missing_dates` (error)** — every date from start through race day must
+  have ≥1 workout
+- **`no_race_day_run` (error)** — race day must include at least one workout
+  of kind `run`
+- **`dates_before_start` (error)** — no workouts dated before the start date
+- **`long_run_in_taper` (warning)** — no long run in the final 7 days; logged
+  only, never throws
+
+Deliberately conservative scope. Quantitative rules (80/20, 10% volume cap,
+etc.) stay prompt-only for v1 — adding them to the validator now risks rejecting
+acceptable plans before we've seen the real failure distribution. Graduate
+softer rules from prompt-only to validated as production data accumulates.
+
+### Auto-retry-once on validation failure (`generateTrainingPlan`)
+
+When validation finds error-severity issues, the system:
+
+1. Logs the issues to the server console
+2. Replays Claude's previous tool call back to itself as conversation context
+3. Sends a `tool_result` with `is_error: true` listing what was wrong
+4. Asks Claude to re-submit via `submit_training_plan`
+5. If the retry also fails, throws (the action layer catches → error screen
+   with Retry button)
+
+Replaying the prior attempt as conversation context is the key detail — Claude
+sees its own previous answer, so the retry is a targeted fix, not a fresh
+generation. Costs one extra API call (~$0.05) on failure, absorbs most
+transient model errors silently.
+
+### Test coverage
+
+- `lib/claude.test.ts` updated — 19 tests now passing covering the expanded
+  `formatProfile`, the new `formatOtherRaces`, and a structural `buildUserPrompt`
+  check that asserts section ordering rather than relying on giant inline
+  snapshots (more resilient to prompt copy edits).
+- `lib/plan-validation.test.ts` added — 14 tests covering each error check
+  on happy + failure paths, the soft warning, the retry message builder, and
+  the ISO-date utilities (`enumerateDates`, `addDays`).
+- Full suite: 97/97 tests passing. Files touched typecheck clean (pre-existing
+  errors in `lib/plan-derive.test.ts` are unrelated incomplete fixtures).
+
+### Roadmap impact
+
+This work covers items #1 (System prompt improvements) and partially #2
+(Few-shot examples in the prompt) of the existing "Plan generation quality
+improvements" backlog. Items #3 (RAG) and #4 (fine-tuning) remain deferred.
+
+Validator + retry is new infrastructure that wasn't in the previous backlog —
+documented here as its own substantive change.
+
+---
+
+## Decisions made 2026-05-20 (adherence summary + history windowing + prior summary)
+
+Second pass on plan-generation quality, focused on what the regen prompt sees
+when there's accumulated history. Goal: stop sending the entire training cycle
+as a wall of raw workout lines and start sending high-signal pre-computed
+patterns alongside recent detail.
+
+### Adherence summary block (`computeAdherence` + `formatAdherenceSummary` in `lib/claude.ts`)
+
+Pre-computes the patterns Claude was previously expected to extract from raw
+data. Renders at the top of the `WORKOUT HISTORY` section as:
+
+- **Rolling completion rates**: last 7d / 14d / 28d / cycle-to-date, each as
+  "X/Y completed (Z%), N skipped, M unlogged"
+- **By-kind breakdown** for the last 28 days: runs / strength / mobility
+  completion ratios so Claude can spot "all 3 strength sessions skipped" type
+  patterns at a glance
+- **Most recent skipped workout** with date + kind + title (recent skipped long
+  runs are flagged as highest-priority signal in the system prompt)
+- **Skip clusters**: contiguous date ranges of ≥2 days with zero completed
+  workouts, often signalling travel or injury onset. Multi-workout days with
+  mixed status (one skipped, one completed) do NOT count as skip days
+
+### History windowing (refactored `formatHistory`)
+
+Detailed per-workout lines now limited to the last 28 days. Anything older
+gets compressed into a single rolled-up block:
+
+```
+EARLIER IN THIS CYCLE (rolled up — not shown per-workout)
+- Range: 2026-02-15 → 2026-04-19
+- 47/61 completed (77%), 10 skipped, 4 unlogged
+```
+
+Reasoning: 28 days covers ~4 weeks (one training block including a cutback),
+which is what Claude actually needs at fine resolution. Older context is
+better expressed as adherence rates than as raw lines.
+
+`formatHistory` signature changed to take `today: string` so windowing math is
+deterministic. `buildUserPrompt` now threads `args.startDate` through.
+
+### Journal `consumed` flag verified (no fix needed)
+
+`commitPlan` in `app/actions.ts` correctly flips `journal_entries.consumed`
+from `false → true` after a successful preview commit. Order: RPC commit →
+mark preview accepted → flip journal. Comment in code explains the safety
+ordering: if the flip fails, the next regen still sees "NEW" entries (safer
+than losing them).
+
+**Known small edge case** (not fixed this round): if a user creates a journal
+entry between preview generation and acceptance, that new entry gets marked
+consumed without Claude ever having seen it. Fix would be to record which
+entry IDs were passed into each preview and only flip those on commit. Low
+priority because the workflow is rare and the next regen would still consume
+the entry.
+
+### Previous coach summary as continuity context (`formatPreviousSummary`)
+
+`plan_previews` table retains `generation_summary` on accepted rows (status
+flips to `'accepted'` but the row stays). Added a new `getLatestAcceptedSummary()`
+query in `lib/supabase/server.ts` and threaded it through `previewPlan` →
+`generateTrainingPlan` → `buildUserPrompt`.
+
+Renders just before `PLAN PARAMETERS` as:
+
+```
+PREVIOUS COACH MESSAGE (what you told the athlete in the last accepted regen —
+use for continuity, but feel free to revise direction if recent context warrants):
+"You missed two of last week's runs — pulled back this week's volume..."
+- SHIFTED Sat long → Sun
+- REDUCED weekly volume −8%
+```
+
+Framed explicitly as context, not directive, so Claude can build on the prior
+direction or deliberately diverge. Skipped for the initial wizard-generated
+plan (no prior summary exists) and for users whose previews were all discarded
+rather than accepted.
+
+### What was discussed and parked
+
+**Prescribed-vs-actual deltas** (e.g., "ran 8% faster than prescribed"):
+high-signal but requires structured prescription fields on the tool schema
++ workouts table to do cleanly (parsing free-text `details` is fragile). The
+clean fix is additive — `prescribed_duration_min`, `prescribed_distance_km`,
+`prescribed_elevation_gain_m`, `prescribed_target_zone` as new optional fields
+on each workout. Saved as memory follow-up `project_structured_prescriptions.md`
+with explicit evaluation step: before building, capture 3-5 real regen prompts
+as fixtures, generate plans both with and without delta signals, and only ship
+if there's a clear plan-quality improvement. Don't build it just because it's
+clever.
+
+### Test coverage
+
+- `lib/claude.test.ts`: 34 tests passing (up from 19). New describes for
+  `computeAdherence` (windowed rates, by-kind, most-recent-skipped, skip
+  clusters), `formatAdherenceSummary`, `formatPreviousSummary`. Updated
+  `formatHistory` tests to use the new signature + adherence-block assertions.
+  Updated `buildUserPrompt` test to verify PREVIOUS COACH MESSAGE section
+  ordering.
+- Full suite: 113/113 passing. Files I touched typecheck clean.
+
+### Roadmap impact
+
+These are infrastructure improvements to the regeneration pipeline rather than
+new product surfaces. Together with the system-prompt rewrite from the earlier
+session, the regen flow now sends Claude a much sharper signal — pre-computed
+patterns + recent detail + continuity context — instead of a wall of raw history.
+
+---
+
 ## Tech stack
 
 | Layer          | Choice                    | Why                                                        |
@@ -1181,23 +1409,72 @@ Goal: feels native on phone; supports a coach/physio role.
 
 The Claude-generated training plans can be improved incrementally. Work through these in order:
 
-1. **System prompt improvements** (low effort, high ROI) — make periodization phases more
-   explicit (base building → build → peak → taper), strengthen injury-specific load management
-   rules, add clearer constraints around rest weeks and weekly volume progression. No
-   infrastructure changes needed — edit `lib/claude.ts`.
+1. ✅ **System prompt improvements** (done 2026-05-20) — periodization phases now
+   explicit (BASE / BUILD / PEAK / TAPER with % allocations and compressed-window
+   handling), quantitative rules (80/20, 10% volume cap, long-run % caps, 48-hour
+   spacing), race-specificity translation rules, injury-handling tiers,
+   adherence-reading thresholds. See "Decisions made 2026-05-20" subsection above.
 
-2. **Few-shot examples in the prompt** (low effort, high ROI) — include 1–2 examples of a
-   well-structured training week directly in the system prompt, showing Claude the exact
-   pattern, tone, and level of detail expected. Immediately improves output consistency.
+2. 🟡 **Few-shot examples in the prompt** (partial — done 2026-05-20) — one coach-voice
+   example added to the system prompt for the summary field. Worth extending later
+   with 1–2 full example training weeks if output consistency still drifts.
 
 3. **RAG database** (medium effort, v3+) — build a knowledge base of training methodology
    documents (Lydiard base building, 80/20 research, race-specific prep guides) and retrieve
    relevant content at plan-generation time. Worth exploring once real user feedback indicates
-   plans aren't specific enough.
+   plans aren't specific enough. **Note (2026-05-20):** discussed in this session and parked.
+   Copyright on published plans (Daniels, Hansons, Pfitzinger, Koop, Roche) is the key
+   blocker. Better path is a self-authored structured methodology library + template
+   scaffolds + a data flywheel from validated user plans — those become the basis for
+   either RAG or fine-tuning later, with no IP exposure.
 
 4. **Model fine-tuning** (high effort, skip for now) — requires a large labeled dataset of
    good/bad plans, is expensive to run, and gains over strong prompting are usually marginal
    for a well-scoped task. Revisit only if the above options are exhausted.
+
+5. ✅ **Structural plan validator + auto-retry-once** (added 2026-05-20) — validator
+   in `lib/plan-validation.ts` catches missing dates, missing race-day run, and
+   past-dated workouts. `generateTrainingPlan` retries once on failure by replaying
+   the prior attempt as conversation context. Costs ~$0.05 on retry, absorbs most
+   transient model errors silently. See "Decisions made 2026-05-20" subsection above.
+
+6. **Model selection eval for plan generation + regeneration** (open, added 2026-05-20)
+   — evaluate which Claude model strikes the right balance of plan quality and cost
+   for both initial generation and regeneration. Approach: test candidate models
+   (Haiku 4.5, Sonnet 4.6, Opus 4.6) against each other on a fixed set of
+   representative wizard inputs + regeneration scenarios, then have Opus 4.6 judge
+   the outputs against a **rubric** (not plan-to-plan comparison with published
+   plans). Goal: a defensible default model per call site (initial generation may
+   warrant Opus; regeneration may be fine on Sonnet or Haiku) that keeps plan
+   quality high while keeping per-user API cost sustainable.
+
+   **Why rubric, not plan-to-plan comparison:** benchmarking model outputs against
+   specific published plans (Daniels, Hansons, Pfitzinger, Koop, Roche) would
+   optimize the model toward replicating copyrighted structure — same IP exposure
+   problem that parked the RAG approach. Methodology and training principles are
+   not copyrightable; specific expressions are. So we derive a rubric from
+   public-domain methodology and free/freely-shared sources, then score against
+   the rubric.
+
+   **Rubric dimensions (initial draft, to refine):**
+   - BASE-phase weekly volume progression (≤10% week-over-week, cutback every 3–4 weeks)
+   - Long-run as % of weekly volume (target 25–35%, capped)
+   - 80/20 easy/hard polarization across the week
+   - Taper structure appropriate to race distance (3-week marathon taper, etc.)
+   - Race-specificity session placement (MP / threshold work in final 8 weeks)
+   - Spacing between hard sessions (≥48 hours)
+   - Injury-handling tier appropriateness when injury flag is set
+   - Periodization phase coverage (BASE / BUILD / PEAK / TAPER allocations)
+   - Coach voice quality on the summary field
+
+   **Sources for deriving the rubric:** Hal Higdon's free plans, David Roche's Trail
+   Runner Magazine columns, Jason Koop's koopcast blog, Steve Magness's writing,
+   academic literature on polarized training (Seiler, Stöggl). Books (Koop, Daniels,
+   Pfitzinger) are fine as inputs to Ben's own thinking when authoring the rubric —
+   they should not be quoted into the rubric or eval prompts.
+
+   **Output:** a Markdown eval report with per-model scores per dimension, total
+   cost per generation, and a recommendation per call site.
 
 ---
 

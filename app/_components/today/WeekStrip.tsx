@@ -20,10 +20,18 @@ interface DaySummary {
 const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
 
 // Picks the most "primary" workout of the day to drive the day-pill icon.
-// run > gym > mobility — runs are the spine of the plan so they win.
+// Runs and hikes are the spine of an endurance plan, so they win over
+// strength, cross, and physio. Mobility is last.
 function pickPrimary(day: Day): WorkoutKind | null {
   if (day.workouts.length === 0) return null;
-  const order: WorkoutKind[] = ["run", "gym", "mobility"];
+  const order: WorkoutKind[] = [
+    "run",
+    "hike",
+    "gym",
+    "cross",
+    "physio",
+    "mobility",
+  ];
   for (const kind of order) {
     const w = day.workouts.find((w) => w.kind === kind);
     if (w) return kind;
@@ -43,6 +51,9 @@ function summarise(day: Day): string {
   if (match) return `${match[1]} ${match[2].toLowerCase()}`;
   if (first.kind === "gym") return "strength";
   if (first.kind === "mobility") return "mobility";
+  if (first.kind === "physio") return "physio";
+  if (first.kind === "cross") return "cross";
+  if (first.kind === "hike") return "hike";
   return first.title.toLowerCase().split(" ").slice(0, 1).join(" ");
 }
 

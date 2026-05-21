@@ -129,16 +129,29 @@ function IconStrength({ color = "currentColor" }: IconProps) {
   );
 }
 
+// Concentric circles with a center dot — reads as "range of motion" /
+// "radial movement" rather than a line stroke. Distinct from IconRun's
+// zigzag at the 11px size the WeekStrip pills use.
 function IconMobility({ color = "currentColor" }: IconProps) {
   return (
     <svg width="11" height="11" viewBox="0 0 24 24">
-      <path
-        d="M4 18 C 8 12, 14 12, 20 6"
+      <circle
+        cx="12"
+        cy="12"
+        r="9"
         stroke={color}
-        strokeWidth="1.8"
+        strokeWidth="1.6"
         fill="none"
-        strokeLinecap="round"
       />
+      <circle
+        cx="12"
+        cy="12"
+        r="4.5"
+        stroke={color}
+        strokeWidth="1.6"
+        fill="none"
+      />
+      <circle cx="12" cy="12" r="1.4" fill={color} />
     </svg>
   );
 }
@@ -165,8 +178,12 @@ export function WorkoutKindIcon({
   color?: string;
 }) {
   if (!kind) return <IconRest color={color} />;
-  if (kind === "run") return <IconRun color={color} />;
+  // run and hike share the runner glyph — both are spine-of-plan endurance
+  // sessions on foot. The eyebrow text disambiguates them.
+  if (kind === "run" || kind === "hike") return <IconRun color={color} />;
   if (kind === "gym") return <IconStrength color={color} />;
+  // cross / physio / mobility all read as recovery-shaped on a glance,
+  // so they share the mobility glyph for now.
   return <IconMobility color={color} />;
 }
 

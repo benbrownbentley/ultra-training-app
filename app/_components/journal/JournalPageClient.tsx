@@ -7,7 +7,6 @@ import { JournalHeader } from "./JournalHeader";
 import { EntryCard } from "./EntryCard";
 import { Chip } from "./atoms";
 import { AddEntrySheets } from "./AddEntrySheets";
-import { MotifTopo } from "@/app/_components/today/motifs";
 
 type Filter = "all" | JournalEntryType;
 
@@ -107,11 +106,8 @@ export function JournalPageClient({ entries }: Props) {
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   return (
-    <div className="relative flex-1 overflow-hidden">
-      <div className="pointer-events-none absolute inset-0 opacity-55">
-        <MotifTopo color="#10b981" opacity={0.1} />
-      </div>
-      <div className="relative mx-auto flex h-full w-full max-w-[720px] flex-col items-center justify-center px-6 py-12 text-center">
+    <div className="flex-1 overflow-hidden">
+      <div className="mx-auto flex h-full w-full max-w-[720px] flex-col items-center justify-center px-6 py-12 text-center">
         <div
           className="font-mono text-[11px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"
           style={{ letterSpacing: "0.2em" }}

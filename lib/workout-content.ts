@@ -70,25 +70,22 @@ export interface WorkoutContent {
   } | null;
 }
 
-const HIKE_HINT_RE = /\bhike|trekking\b/i;
-const PHYSIO_HINT_RE = /\bphysio|prehab|rehab\b/i;
+// Cycling vs. swim is the one subcategory still inferred from title —
+// the DB collapses both under the "cross" kind, but the eyebrow label
+// reads better when we surface which sport. Hike / physio inference
+// was removed once the DB grew first-class kinds for them.
 const CYCLING_HINT_RE = /\bcycl(ing|e)|bike|spin\b/i;
 const SWIMMING_HINT_RE = /\bswim/i;
 
-// Map kind + title to the visual subtype that drives the variant body.
-export function pickSubtype(
-  kind: WorkoutKind,
-  title: string,
-): WorkoutSubtype {
-  if (kind === "run") {
-    if (HIKE_HINT_RE.test(title)) return "hike";
-    return "running";
-  }
+// 1:1 mapping from the DB kind to the visual subtype that drives the
+// variant body. Title text is no longer consulted — Claude / the user
+// emit the correct kind directly.
+export function pickSubtype(kind: WorkoutKind): WorkoutSubtype {
+  if (kind === "run") return "running";
   if (kind === "gym") return "strength";
-  if (PHYSIO_HINT_RE.test(title)) return "physio";
-  if (CYCLING_HINT_RE.test(title) || SWIMMING_HINT_RE.test(title)) {
-    return "cross";
-  }
+  if (kind === "hike") return "hike";
+  if (kind === "cross") return "cross";
+  if (kind === "physio") return "physio";
   return "mobility";
 }
 
@@ -283,19 +280,46 @@ export function parseStrengthExercises(details: string): Exercise[] {
   return exercises;
 }
 
-// Mobility / physio routine: split on bullets, dashes, or new lines.
+// Mobility / physio routine parser. The Claude prompt tends to emit lines
+// shaped like "15 min · World's greatest stretch · 90/90 hip switches ·
+// Ankle rocks · Couch stretch · 2×5/side" — the leading "N min" is the
+// duration header (skip) and any trailing token shaped like "3×10", "30s",
+// or "2x5/side" is a spec for the preceding movement, not a separate item.
+
+// Matches at the END of a fragment:
+//   • "3x10" / "3×10"
+//   • "2x5/side" / "2×5 per side"
+//   • "60s" / "30s/side"
+const SPEC_RE =
+  /\s*(\d+\s*[x×]\s*\d+(?:\s*(?:s|\/side|\s+per\s+side))?|\d+\s*s(?:\/side)?)\s*$/i;
+
+// "15 min", "20 min", "5min", etc. when it sits as the FIRST fragment
+// — we treat that as a duration header and skip it from the routine list.
+const DURATION_HEADER_RE = /^\d+\s*min\b/i;
+
 export function parseRoutine(details: string): RoutineItem[] {
-  const cleaned = details.replace(/\s+/g, " ");
-  const candidates = cleaned
-    .split(/[·•;]|(?:\.\s+(?=[A-Z]))/)
+  if (!details || !details.trim()) return [];
+  const fragments = details
+    .split(/[·•]/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s.length < 80);
-  if (candidates.length < 2) return [];
-  return candidates.slice(0, 8).map((line) => {
-    const m = line.match(/^(.*?)[\s,]+(\d+\s*[×x][\s\d/per\-a-z]+|\d+s)$/i);
-    if (m) return { name: m[1].trim(), spec: m[2].trim() };
-    return { name: line };
-  });
+    .filter((s) => s.length > 0);
+  if (fragments.length < 2) return [];
+
+  // Drop a leading duration header so the user sees the actual moves.
+  const startIdx = DURATION_HEADER_RE.test(fragments[0]) ? 1 : 0;
+
+  return fragments
+    .slice(startIdx, startIdx + 8)
+    .map((frag) => {
+      const m = frag.match(SPEC_RE);
+      if (m) {
+        const spec = m[1].trim();
+        const name = frag.slice(0, m.index).replace(/[\s,]+$/, "").trim();
+        return name ? { name, spec } : { name: frag, spec: undefined };
+      }
+      return { name: frag };
+    })
+    .filter((r) => r.name.length > 0 && !/^[,.\s-]+$/.test(r.name));
 }
 
 // Single entry point used by the page.
@@ -304,7 +328,7 @@ export function deriveWorkoutContent(
   title: string,
   details: string,
 ): WorkoutContent {
-  const subtype = pickSubtype(kind, title);
+  const subtype = pickSubtype(kind);
 
   const segments =
     subtype === "running" || subtype === "hike" || subtype === "cross"

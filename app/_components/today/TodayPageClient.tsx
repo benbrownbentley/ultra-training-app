@@ -130,7 +130,7 @@ export function TodayPageClient({
                     summary={`${tomorrow.workouts[0].title} · ${tomorrow.workouts[0].details}`}
                   />
                 )}
-                <AddActivityRow date={todayIso} />
+                <AddActivityRow date={selectedDayIso} />
               </div>
             ) : (
               <div className="flex flex-col gap-2.5">
@@ -141,7 +141,7 @@ export function TodayPageClient({
                     loggedAt={loggedAtById[w.id] ?? null}
                   />
                 ))}
-                <AddActivityRow date={todayIso} />
+                <AddActivityRow date={selectedDayIso} />
               </div>
             )}
           </section>

@@ -7,13 +7,12 @@
 // parent ActualsForm provides — variants that don't need a field simply
 // don't read it.
 
+import { useState } from "react";
 import type { WorkoutContent } from "@/lib/workout-content";
 import type { ActualDetail, WorkoutStatus } from "@/lib/plan";
 import { Section } from "./Section";
 import {
-  DisclosureRow,
   EffortSlider,
-  ExerciseRow,
   FieldRow,
   FuelingCallout,
   GlossaryLink,
@@ -21,11 +20,13 @@ import {
   PhysioExerciseRow,
   RoutineRow,
   SegmentRow,
-  TimeInZoneBar,
   WarmupCallout,
   WhyParagraph,
   DoneToggle,
 } from "./atoms";
+import { StrengthExerciseRow } from "./StrengthExerciseRow";
+import { AddExerciseInline } from "./AddExerciseInline";
+import { TimeInZoneForm } from "./TimeInZoneForm";
 
 type Variant = "upcoming" | "logged" | "skipped" | "missed" | "future";
 
@@ -46,6 +47,9 @@ export interface ActualsBindings {
   onChangeHr: (next: number | null) => void;
   onChangeRpe: (next: number) => void;
   onChangeNotes: (next: string) => void;
+  // Running: minutes-per-zone breakdown, captured by the TimeInZoneForm
+  // and persisted into actual_detail.zones.
+  onChangeZones: (next: { label: string; minutes: number }[]) => void;
   // Mobility's "Mark this whole routine done" toggle. Page wires this to
   // logWorkout(id, completed/pending) — distinct from saveActuals.
   onChangeDone: (next: boolean) => void;
@@ -55,6 +59,32 @@ export interface ActualsBindings {
     index: number,
     patch: { done?: boolean; pain?: number; note?: string },
   ) => void;
+  // Strength: per-exercise mutations keyed by exerciseName. The form
+  // owns the actual_detail.sets array; these patches splice it without
+  // the caller having to know the full shape.
+  onAddSet: (exerciseName: string, unit: string) => void;
+  onChangeSet: (
+    exerciseName: string,
+    index: number,
+    patch: { reps?: number; weight?: number },
+  ) => void;
+  onRemoveSet: (exerciseName: string, index: number) => void;
+  onToggleSkipExercise: (exerciseName: string) => void;
+  // Bulk-marks every set done at planned reps + weight. Replaces any
+  // existing actual sets for the named exercise.
+  onMarkDoneAtPlanned: (
+    exerciseName: string,
+    planned: { sets: number; reps: number; weight: number; unit: string },
+  ) => void;
+  // Appends a user-defined exercise with the planned defaults; seeds
+  // sets[] so the row reads as DONE AT PLANNED immediately.
+  onAddCustomExercise: (input: {
+    name: string;
+    sets: number;
+    reps: number;
+    weight: number;
+    unit: string;
+  }) => void;
 }
 
 interface CommonProps {
@@ -110,7 +140,6 @@ export function RunningBody({
   bindings: b,
 }: CommonProps) {
   const logHidden = variant === "skipped";
-  const isLogged = variant === "logged";
   const zones = b.detail?.zones ?? [];
 
   return (
@@ -166,17 +195,13 @@ export function RunningBody({
               value={b.hr_avg}
               onChange={b.onChangeHr}
               unit="bpm"
-              required
               disabled={isFuture}
             />
-            {isLogged && zones.length > 0 ? (
-              <TimeInZoneBar zones={zones} />
-            ) : (
-              <DisclosureRow
-                label="Add time-in-zone breakdown"
-                disabled={isFuture}
-              />
-            )}
+            <TimeInZoneForm
+              zones={zones.length > 0 ? zones : null}
+              onChange={b.onChangeZones}
+              disabled={isFuture}
+            />
           </div>
         </Section>
       )}
@@ -203,6 +228,16 @@ export function StrengthBody({
   bindings: b,
 }: CommonProps) {
   const isLogged = variant === "logged";
+  const detail = b.detail ?? null;
+  const allSets = detail?.sets ?? [];
+  const skippedNames = new Set(detail?.skipped_exercises ?? []);
+  const addedExercises = detail?.added_exercises ?? [];
+  const [adding, setAdding] = useState(false);
+  // Pick a sensible unit default for the inline form. Fall back to kg
+  // when no parsed exercise has one — most ultra-strength plans are
+  // metric, and the user can flip per-exercise.
+  const defaultUnit: "kg" | "lb" =
+    content.exercises.find((e) => e.unit === "lb")?.unit === "lb" ? "lb" : "kg";
 
   return (
     <>
@@ -227,29 +262,111 @@ export function StrengthBody({
               items={content.warmup.items}
             />
           )}
-          {content.exercises.length === 0 ? (
+          {content.exercises.length === 0 && addedExercises.length === 0 ? (
             <div className="rounded-[10px] border border-dashed border-zinc-200 px-3.5 py-3 text-[13px] text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
               Exercise list will appear here once your plan stores structured
-              sets and reps. For now, follow the prescription above.
+              sets and reps. For now, follow the prescription above and use
+              &ldquo;+ Add exercise&rdquo; to log what you did.
             </div>
           ) : (
-            content.exercises.map((ex, i) => <ExerciseRow key={i} {...ex} />)
+            <>
+              {content.exercises.map((ex, i) => {
+                const setsForEx = allSets.filter(
+                  (s) => s.exerciseName === ex.name,
+                );
+                return (
+                  <StrengthExerciseRow
+                    key={`planned-${i}`}
+                    planned={ex}
+                    sets={setsForEx}
+                    skipped={skippedNames.has(ex.name)}
+                    isCustom={false}
+                    onAddSet={() =>
+                      b.onAddSet(ex.name, ex.unit ?? defaultUnit)
+                    }
+                    onChangeSet={(idx, patch) =>
+                      b.onChangeSet(ex.name, idx, patch)
+                    }
+                    onRemoveSet={(idx) => b.onRemoveSet(ex.name, idx)}
+                    onToggleSkip={() => b.onToggleSkipExercise(ex.name)}
+                    onMarkDoneAtPlanned={() =>
+                      b.onMarkDoneAtPlanned(ex.name, {
+                        sets: ex.sets,
+                        reps: ex.reps,
+                        weight: Number(ex.weight ?? 0),
+                        unit: ex.unit ?? defaultUnit,
+                      })
+                    }
+                    disabled={isFuture}
+                  />
+                );
+              })}
+              {addedExercises.map((ex, i) => {
+                const setsForEx = allSets.filter(
+                  (s) => s.exerciseName === ex.name,
+                );
+                return (
+                  <StrengthExerciseRow
+                    key={`custom-${i}`}
+                    planned={{
+                      name: ex.name,
+                      sets: ex.plannedSets,
+                      reps: ex.plannedReps,
+                      weight: String(ex.plannedWeight),
+                      unit: ex.plannedUnit,
+                    }}
+                    sets={setsForEx}
+                    skipped={skippedNames.has(ex.name)}
+                    isCustom
+                    onAddSet={() => b.onAddSet(ex.name, ex.plannedUnit)}
+                    onChangeSet={(idx, patch) =>
+                      b.onChangeSet(ex.name, idx, patch)
+                    }
+                    onRemoveSet={(idx) => b.onRemoveSet(ex.name, idx)}
+                    onToggleSkip={() => b.onToggleSkipExercise(ex.name)}
+                    onMarkDoneAtPlanned={() =>
+                      b.onMarkDoneAtPlanned(ex.name, {
+                        sets: ex.plannedSets,
+                        reps: ex.plannedReps,
+                        weight: ex.plannedWeight,
+                        unit: ex.plannedUnit,
+                      })
+                    }
+                    disabled={isFuture}
+                  />
+                );
+              })}
+            </>
           )}
-          {/* Overall session actuals — duration + RPE + notes — even when
-              per-set capture isn't wired yet. Lets the user record that
-              "yes I did the session, here's how it felt". */}
-          <FieldRow
-            label="Duration"
-            value={b.duration_min}
-            onChange={b.onChangeDuration}
-            unit="min"
-            disabled={isFuture}
-          />
-          <EffortSlider
-            value={b.rpe}
-            onChange={b.onChangeRpe}
-            disabled={isFuture}
-          />
+
+          {adding ? (
+            <AddExerciseInline
+              defaultUnit={defaultUnit}
+              onSave={(input) => {
+                b.onAddCustomExercise(input);
+                setAdding(false);
+              }}
+              onCancel={() => setAdding(false)}
+              disabled={isFuture}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              disabled={isFuture}
+              className="inline-flex items-center justify-center gap-1.5 rounded-[10px] border border-dashed border-zinc-200 px-3.5 py-2.5 text-[13px] font-medium text-emerald-700 transition active:scale-[0.97] hover:border-emerald-300 disabled:opacity-50 dark:border-zinc-800 dark:text-emerald-400"
+            >
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M12 5v14M5 12h14"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                />
+              </svg>
+              Add exercise
+            </button>
+          )}
         </div>
       </Section>
 
@@ -488,7 +605,6 @@ export function HikeBody({
             value={b.duration_min}
             onChange={b.onChangeDuration}
             unit="min"
-            required
             disabled={isFuture}
           />
           <FieldRow

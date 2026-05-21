@@ -14,17 +14,16 @@ import { ArrowRight } from "./icons";
 // open=false), so all local state resets automatically when the sheet
 // re-mounts. No reset effect needed here.
 
-// Visible label / underlying DB kind for each pick. We collapse the design's
-// six subtypes (Run/Strength/Physio/Cross/Mobility/Hike) onto v1's three
-// workout kinds — the visual subtype is inferred from title heuristics in
-// deriveWorkoutContent.
-const KIND_OPTIONS: { label: string; kind: WorkoutKind; titleHint: string }[] = [
-  { label: "Run", kind: "run", titleHint: "Easy run" },
-  { label: "Strength", kind: "gym", titleHint: "Lift" },
-  { label: "Mobility", kind: "mobility", titleHint: "Mobility" },
-  { label: "Cross", kind: "mobility", titleHint: "Easy Spin" },
-  { label: "Physio", kind: "mobility", titleHint: "Physio" },
-  { label: "Hike", kind: "run", titleHint: "Trail Hike" },
+// One chip per DB kind. The label IS the canonical title — the user
+// types what they did in the details field, but the kind chip alone
+// decides which variant body renders on the drill-down.
+const KIND_OPTIONS: { label: string; kind: WorkoutKind; title: string }[] = [
+  { label: "Run", kind: "run", title: "Run" },
+  { label: "Strength", kind: "gym", title: "Strength" },
+  { label: "Hike", kind: "hike", title: "Hike" },
+  { label: "Cross", kind: "cross", title: "Cross-training" },
+  { label: "Physio", kind: "physio", title: "Physio" },
+  { label: "Mobility", kind: "mobility", title: "Mobility" },
 ];
 
 interface Props {
@@ -34,11 +33,9 @@ interface Props {
 
 export function AddActivitySheet({ date, onClose }: Props) {
   const [picked, setPicked] = useState(0);
-  const [title, setTitle] = useState("");
   const [details, setDetails] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
-  const titleId = useId();
   const detailsId = useId();
   const headingId = useId();
 
@@ -53,7 +50,6 @@ export function AddActivitySheet({ date, onClose }: Props) {
 
   const submit = useCallback(() => {
     const choice = KIND_OPTIONS[picked];
-    const finalTitle = title.trim() || choice.titleHint;
     const finalDetails = details.trim();
     if (!finalDetails) {
       setError("Add a sentence or two on what you did.");
@@ -65,7 +61,7 @@ export function AddActivitySheet({ date, onClose }: Props) {
         try {
           await addCustomActivity({
             kind: choice.kind,
-            title: finalTitle,
+            title: choice.title,
             details: finalDetails,
             date,
           });
@@ -76,7 +72,7 @@ export function AddActivitySheet({ date, onClose }: Props) {
         }
       })();
     });
-  }, [picked, title, details, date, onClose]);
+  }, [picked, details, date, onClose]);
 
   return (
     <div
@@ -136,25 +132,6 @@ export function AddActivitySheet({ date, onClose }: Props) {
               </button>
             );
           })}
-        </div>
-
-        <div className="flex flex-col gap-2">
-          <label
-            htmlFor={titleId}
-            className="font-mono text-[10px] uppercase text-zinc-500"
-            style={{ letterSpacing: "0.2em" }}
-          >
-            TITLE
-          </label>
-          <input
-            id={titleId}
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder={KIND_OPTIONS[picked].titleHint}
-            disabled={isPending}
-            className="w-full rounded-[10px] border border-zinc-200 bg-white px-3.5 py-3 text-[14px] text-zinc-950 placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-60 dark:border-zinc-800 dark:bg-[#0f0f11] dark:text-zinc-50 dark:placeholder:text-zinc-600"
-          />
         </div>
 
         <div className="flex flex-col gap-2">

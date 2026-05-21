@@ -100,5 +100,12 @@ export function kindEyebrow(kind: WorkoutKind, title: string): string {
     if (t.includes("core")) return "STRENGTH · CORE";
     return "STRENGTH";
   }
+  if (kind === "hike") return "CROSS-TRAINING · HIKE";
+  if (kind === "cross") {
+    if (/\bcycl(ing|e)|bike|spin\b/i.test(title)) return "CROSS-TRAINING · CYCLING";
+    if (/\bswim/i.test(title)) return "CROSS-TRAINING · SWIM";
+    return "CROSS-TRAINING";
+  }
+  if (kind === "physio") return "MOBILITY · PHYSIO";
   return "MOBILITY";
 }

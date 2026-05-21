@@ -8,10 +8,14 @@ import { MOTIFS } from "./motifs";
 import { ArrowRight, CheckCircle, ChevronUpRight } from "./icons";
 import { useLoggedToast } from "./LoggedToast";
 
-// Maps the database kind to the design's eyebrow label.
+// Maps the database kind to the design's eyebrow label. Mirrors the
+// six DB kinds 1:1 — visual subtype is no longer inferred from title.
 function eyebrowFor(kind: WorkoutKind): string {
   if (kind === "run") return "RUN";
   if (kind === "gym") return "STRENGTH";
+  if (kind === "hike") return "HIKE";
+  if (kind === "cross") return "CROSS";
+  if (kind === "physio") return "PHYSIO";
   return "MOBILITY";
 }
 

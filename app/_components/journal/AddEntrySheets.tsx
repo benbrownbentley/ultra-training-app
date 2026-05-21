@@ -12,7 +12,6 @@ import {
 import { useRouter } from "next/navigation";
 import { createPortal } from "react-dom";
 import { createJournalEntry } from "@/app/actions";
-import { MotifTopo } from "@/app/_components/today/motifs";
 import { ArrowRight } from "@/app/_components/today/icons";
 import {
   IMPACT_LABELS,
@@ -92,9 +91,6 @@ function SheetShell({ onClose }: { onClose: () => void }) {
     >
       <div className="absolute inset-0">
         <div className="absolute inset-0 bg-zinc-50 dark:bg-zinc-950" />
-        <div className="absolute inset-0 opacity-45">
-          <MotifTopo color="#10b981" opacity={0.09} />
-        </div>
         <button
           type="button"
           aria-label="Close"

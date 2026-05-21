@@ -98,9 +98,15 @@ export function MotifStretch({ color = "#10b981", opacity = 0.2 }: MotifProps) {
 }
 
 // Maps the app's WorkoutKind values onto the design's motif family.
-// gym → barbell ("strength"), mobility → flowing arcs, run → topographic.
+// gym → barbell ("strength"), mobility / physio / cross → flowing arcs,
+// run / hike → topographic ridges (hike inherits the trail visual
+// language). When we get bespoke motifs for cross + physio they can
+// override here without touching call sites.
 export const MOTIFS: Record<WorkoutKind, (p: MotifProps) => React.ReactElement> = {
   run: MotifTopo,
+  hike: MotifTopo,
   gym: MotifBarbell,
+  cross: MotifStretch,
+  physio: MotifStretch,
   mobility: MotifStretch,
 };

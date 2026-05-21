@@ -67,7 +67,13 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save units", e);
         setUnits(prev);
-        setError("Couldn't save — try again.");
+        // Temporary diagnostic: surface the server error verbatim so we
+        // can see what's actually failing without opening devtools.
+        setError(
+          e instanceof Error && e.message
+            ? `Save failed: ${e.message}`
+            : "Couldn't save — try again.",
+        );
       }
     });
   }
@@ -84,7 +90,13 @@ export function PreferencesGroups({
         console.error("Failed to save theme", e);
         setThemeId(prev);
         setNextTheme(prev);
-        setError("Couldn't save — try again.");
+        // Temporary diagnostic: surface the server error verbatim so we
+        // can see what's actually failing without opening devtools.
+        setError(
+          e instanceof Error && e.message
+            ? `Save failed: ${e.message}`
+            : "Couldn't save — try again.",
+        );
       }
     });
   }
@@ -99,7 +111,13 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save daily reminder", e);
         setDaily(prev);
-        setError("Couldn't save — try again.");
+        // Temporary diagnostic: surface the server error verbatim so we
+        // can see what's actually failing without opening devtools.
+        setError(
+          e instanceof Error && e.message
+            ? `Save failed: ${e.message}`
+            : "Couldn't save — try again.",
+        );
       }
     });
   }
@@ -113,7 +131,13 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save regen notify", e);
         setRegen(prev);
-        setError("Couldn't save — try again.");
+        // Temporary diagnostic: surface the server error verbatim so we
+        // can see what's actually failing without opening devtools.
+        setError(
+          e instanceof Error && e.message
+            ? `Save failed: ${e.message}`
+            : "Couldn't save — try again.",
+        );
       }
     });
   }
@@ -127,7 +151,13 @@ export function PreferencesGroups({
       } catch (e) {
         console.error("Failed to save weekly summary", e);
         setWeekly(prev);
-        setError("Couldn't save — try again.");
+        // Temporary diagnostic: surface the server error verbatim so we
+        // can see what's actually failing without opening devtools.
+        setError(
+          e instanceof Error && e.message
+            ? `Save failed: ${e.message}`
+            : "Couldn't save — try again.",
+        );
       }
     });
   }

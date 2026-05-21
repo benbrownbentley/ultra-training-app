@@ -1355,7 +1355,127 @@ These are the inputs Claude uses to generate a personalised plan.
 
 ---
 
+## Phase plan (revised 2026-05-21)
+
+**Revision context:** the first draft of the phase plan (earlier this session) was anchored to a stale "current state" snapshot that hadn't been updated since 2026-05-17. After inspecting the actual codebase, most of what was scoped into Phases 3–6 of that draft (tab navigation, Today/Plan/Journal/Profile tabs, Universal Regenerate sheet, per-variant workout drill-down, actuals capture, custom items in LOG, preview-then-accept regen, glossary surface, plan validator, system prompt rewrite) is already shipped on prod. The phase plan below is a collapsed 5-phase plan against what's actually still open.
+
+Phases 1–4 collectively constitute the v2 public-launch gate — when Phase 4 lands, sign-ups open to friends and early users. Phase 5 is the post-launch + v3 enhancement pool.
+
+Each phase ends with a deploy. Phases are strictly sequential.
+
+### Phase 1 — Close out v2 auth verification
+
+Goal: defensible "v2 auth is live and proven" state on prod. Code is in place; never click-tested end-to-end with a fresh user.
+
+- End-to-end smoke test on local: sign-up → wizard → plan → log → regenerate
+- Multi-user isolation test (two accounts, no cross-contamination)
+- Google OAuth button smoke test
+- Push to main, repeat smoke on production
+
+### Phase 2 — Data quality
+
+Goal: fix the data-layer issues that make current cards/copy feel undercooked. All three items are server-side and unblock UI improvements downstream.
+
+- **Structured plan tool output schema** — replace `submit_training_plan`'s free-text `details: string` (lib/claude.ts:255) with structured per-type fields:
+  - Running: `{ segments, warmup, cooldown }`
+  - Strength: `{ exercises: [{ name, equipment, sets, reps, weight, notes }], warmup }`
+  - Physio: `{ exercises: [{ name, equipment, sets, reps, pain_focus, notes }] }`
+  - Mobility: `{ movements: [{ name, duration_s, notes }] }`
+  - Cross-training: `{ activity, duration_min, target_zone, notes }`
+  This is what fixes mobility cards saying "hips" instead of named exercises.
+- Update `submit_training_plan` schema + add zod validation end-to-end; persist structured payload in `workouts` (JSONB column or per-type columns); retire `deriveWorkoutContent` text regex parsing; rewire `formatStrengthActuals` to use canonical planned data.
+- **`workouts.source` column** (`manual` / `strava` / `garmin` / `apple_health`), default `manual`. Schema only — future-proofs device sync.
+- **Per-workout "why" Claude-generated** — replace `STUB_WHY[subtype]` (lib/workout-content.ts:405) with per-workout `why` copy emitted by Claude in the structured tool output. Static stubs become fallback only.
+
+### Phase 3 — Remaining UX polish
+
+Goal: close the small UX gaps that would confuse friends/early users.
+
+- **Log/unlog as a single toggle** — replace the separate "Mark as done" + "Mark as incomplete" pattern with a **single checkmark that toggles state**. Both today's affordances (Today card's one-way Log button + drill-down's separate "Mark as incomplete" button) collapse into one control. The visual asymmetry between "Mark as done" and "Mark as incomplete" goes away because there's only one button. Backend already supports both directions via `logWorkout(id, "pending" | "completed")`.
+- **Password show/hide eye toggle** on sign-in + sign-up password fields. Caught 2026-05-21 during Phase 1 smoke test — standard pattern, missing today.
+- **Password strength requirements** — configure minimum length + character class rules in Supabase Auth → Settings; surface inline hints on the sign-up form so users know the policy before submitting. Caught 2026-05-21.
+
+#### Smoke-test findings (2026-05-21)
+
+The following came out of the Phase 1 prod smoke test (wizard → plan generation → Today landing). All Phase 3 polish unless flagged otherwise.
+
+- **Wizard is too wide** — the wizard breaks the mobile-first column width every other screen uses. Constrain to the same max-width as Today/Plan/Profile so the visual rhythm is consistent.
+- **Race input legibility in dark mode** — race name, race date, distance unit suffix (km/m), and time fields (hh/mm) are hard to read on a monitor in dark mode. Audit input contrast + size for dark-mode parity.
+- **"+ Add B race" / "+ Add C race" don't read as buttons** — they're tappable but visually feel like inert labels. Make them clearly interactive (border, fill, or chip-style "+" button).
+- **Day-chip checkmark shifts layout** — when toggling Typical training days or Long run day chips, the inserted checkmark grows the chip and shoves siblings right, which is jarring when picking multiple days in a row. Reserve the checkmark's space (or use an overlay) so width is stable.
+- **Strength frequency caps at 3/wk** — extend to 5/wk. Some athletes (e.g., off-season lifters, hybrid programs) want 4–5 strength sessions.
+- **"Generating your plan" flavour text** — three issues: low contrast (hard to see), rotates too fast, and successive lines visually overlap during the cross-fade. Slow the rotation, raise the contrast, and ensure the fade fully completes before the next line enters.
+- **Workout card tap target gap** — clicking the area to the right of the "Skip" text doesn't open the drill-down. The whole card body should be a tap target except for the action button hit areas.
+- **Phase indicator missing on Today header** — design spec calls for `— BUILD · W6/18` (or current phase + week) at the top of Today. Verify whether it's present, hidden by layout, or never wired; surface it prominently.
+- **Header logo/button position inconsistent across tabs** — the Vert logo (and the action buttons that replace it on certain states) was moved closer to center on Today, but the same change wasn't applied to Plan, Journal, or Profile. Unify the header position so the wordmark/buttons sit in the same spot on every tab.
+- **Today workout-card variant logic wrong** — Skip button missing on a today workout that should show the upcoming-variant pair (Log done + Skip), and after marking done the same workout surfaces "Log retrospectively" (the missed/skipped-variant amber button) instead of the logged-variant DONE + ADD ACTUALS state. Likely a date-comparison / status-routing bug in `cardVariant()` (or wherever the variant is computed) — today's pending workouts are being classified as `missed` or `skipped` after a mark-done round-trip.
+- **Skipped workout drill-down should lock log/actuals affordances** — when a workout is marked skipped, the drill-down still shows "Mark this whole routine done" plus per-exercise toggles and the actuals form. Lock those (disabled / hidden) and require the user to **Un-skip first** before logging. Otherwise the state is contradictory (skipped, but also logging actuals against it).
+- **Regen should use the wizard's atmospheric "Generating" full-screen state** — clicking Regenerate from the sheet should switch to the same atmospheric full-screen loading state the wizard uses on first plan generation. Currently the wait happens inside the sheet (or a less polished state). The `StateGenerating.tsx` component exists in `app/_components/regen/` — verify it's wired to fire while Claude is generating; if not, hook it up.
+- **"Accept new plan" button is too wide** — narrow to match the width of other similar primary CTAs (e.g., the wizard's submit, regen sheet's "Regenerate" button).
+- **Regen result actions should be reachable without scrolling** — Accept new plan / Regenerate again / Keep current plan sit at the bottom and require scrolling on long diffs. Either duplicate the action trio at the **top** of the result page, or make them **sticky-bottom** so they're always visible. (Brief already specs sticky-bottom on mobile — verify it's wired and extend to desktop.)
+- **"Keep current plan" text alignment** — appears shifted too far right relative to its action group. Re-center / align with siblings.
+- **Generating-screen flash after accepting a plan** — after clicking Accept, the atmospheric generating screen briefly mounts before the redirect to Today. Likely a state transition where the regen page re-enters the Generating state during the route change. Suppress the flash (e.g., set a `committing` flag that bypasses StateGenerating, or redirect before re-render).
+- **Auto-login after Supabase email verification** — clicking the confirmation link in the email should leave the user **signed in and routed back to where they were** (the wizard), not bounced to `/sign-in`. Today the user clicks confirm, lands on `/sign-in`, and has to re-enter credentials. Fix likely involves passing a `redirectTo` to `supabase.auth.signUp()` that points at the wizard / app root, and making sure `/auth/callback` exchanges the token-hash and sets the session cookie before the redirect.
+
+#### Phase 1 blocker (P0, caught + fixed 2026-05-21)
+
+- **Server Component error during wizard plan-generation for new users** — fresh sign-up, completed wizard, hit Generate; the action threw "Claude did not call submit_training_plan. stop_reason=end_turn" (lib/claude.ts:981).
+- **Root cause:** `tool_choice: { type: "auto" }` (lib/claude.ts:1053) lets Claude decide whether to call the tool. Haiku 4.5 occasionally answers in plain text and stops. The retry-once mechanic only handles validation-failure cases where the tool *was* called, not the "no tool call at all" case.
+- **Fix:** changed `tool_choice` to `{ type: "tool", name: "submit_training_plan" }` so Claude is forced to invoke the tool. Tests pass (118/118). Pending prod verification.
+- **Reconcile the "+ ADD ACTUALS →" UX intent** — currently the link on logged cards routes to the drill-down's `ActualsForm`. Confirm this is the intended pattern (no floating popup) and document it; or replace with an inline sheet if the round-trip feels heavy.
+- **Skip → "shift or leave?" prompt** — when a user skips a workout, prompt whether to shift the remaining plan or leave it alone (no implementation in code yet).
+- **Travel journal entry** — verify whether Travel entry type is wired; add the form + route if missing (Note / Injury / Physio confirmed; Travel unverified).
+- **Glossary content polish** — finish copy for the 15 stub entries currently shipped (decide push/pull/legs taxonomy first if it changes prescribed strength categories).
+
+### Phase 4 — Pre-launch hygiene → v2 public launch
+
+Goal: sign-up URL is shareable with friends and early users. Phase 4 done = v2 shipped.
+
+- Error-screens polish pass (athletic vocabulary across all error states, drop dev-flavored copy)
+- Onboarding polish for fresh sign-ups
+- PostHog wired in
+- Sentry added
+- Brand rename off "Vert" (vert.run conflict) — swap `lib/brand.ts` constant + find-and-replace docs
+- **Staging Supabase project + Vercel preview env vars** — current setup has one Supabase project with `Site URL` set to the prod Vercel URL, so email confirmation links always route to prod regardless of where the user signed up. Caught 2026-05-21 during Phase 1 smoke test (couldn't confirm a local sign-up). The staging environment fixes this: dev points at staging Supabase whose `Site URL` is `http://localhost:3000`; prod points at prod Supabase as today.
+- **Supabase email template polish** — confirmation email, password reset, magic link. Today's templates are generic Supabase defaults. Brand-voice these once the rename is done so the templates carry the new wordmark.
+- Playwright E2E covering wizard → plan → log → regenerate
+- Mobile-first responsive sweep of every screen
+
+### Phase 5 — Post-launch + v3 expansion
+
+Goal: build only what early-user feedback validates, then transition into the v3 era.
+
+**v2 enhancements (sequenced as feedback arrives, not strictly ordered):**
+
+- Endurance Index dashboard
+- Multi-race calendar UI surfacing A/B/C priority
+- Drag-and-drop with "Rebalance the rest of the plan?" CTA
+- Saved Routines + structured exercise preferences (swap rules)
+- External strength program toggle
+- Recurring weekly commitments
+- Few-shot full-week examples in the prompt
+- Model selection eval (Haiku / Sonnet / Opus per call site)
+- Lifestyle fields (family load, travel frequency, climate, time zone override)
+- Distinct WeekStrip pill glyphs for cross-training and physio
+
+**v3 era (native mobile + role expansion):**
+
+- Expo / React Native migration (monorepo via Turborepo, `lib/` lifts unchanged)
+- PWA install (interim while Expo is in flight)
+- Push notifications (native)
+- **Apple Sign-In via Supabase** (paired with iOS app build — Apple App Store policy requires it for any iOS app offering third-party sign-in like Google. Requires Apple Developer account at $99/yr, Services ID, Sign in with Apple key, domain verification. Reuses existing `/auth/callback`. Deliberately deferred from earlier phases since the Apple Developer fee only becomes unavoidable here.)
+- Physio user role (separate login)
+- Wearable integrations (Strava → Garmin → Apple Health)
+- Additional endurance sports (marathon, ironman, ultra cycling)
+- HRV / menstrual-cycle / surgical-history fields
+
+---
+
 ## Roadmap
+
+*The version targets below summarise what shipping each version means as a
+capability checklist. The phase plan above is the execution order. They are
+two views of the same work.*
 
 ### v1 — Personal MVP (single user, just Ben)
 Goal: a deployed app that's actually useful for one ultra marathon training cycle.
@@ -1371,20 +1491,15 @@ Goal: a deployed app that's actually useful for one ultra marathon training cycl
 - [x] **Empty state** — `app/page.tsx` redirects to `/wizard` when no plan exists
 - [x] **Week navigation** — previous / next / today buttons on the weekly strip
 - [x] **Workout drill-down** — `/workout/[id]` shows full details
-- [ ] **Modification notes** — free-text notes input that feeds into the next regeneration
-- [ ] **Injury reporting** — structured input (diagnosis, restrictions) that triggers regeneration
-- [ ] **Skip → shift or leave?** — prompt when skipping a workout
-- [ ] **Per-workout "why"** — Claude-generated explanation for each workout's purpose
-- [ ] Workout-type glossary (static)
-- [ ] Structured physio notes (diagnosis, restrictions, prescribed exercises)
-- [ ] **Race `priority` field** in the data model (`A` / `B` / `C` / `none`); UI
-      remains single-race in v1 — multi-race UI is v2 (tiny schema addition,
-      future-proofing only)
-- [ ] **Activity `source` field** (`manual` / `strava` / `garmin` / `apple_health`)
-      on workout-log records; always writes `manual` in v1, future-proofs integrations
-      (tiny schema addition, future-proofing only — the column is *populated* only
-      once v2 brings real data input; in v1 every record's source is `manual`)
-- [ ] (Stretch) Drag-and-drop workouts between days
+- [→] **Modification notes** — *moved to Phase 5 (Journal: Note entry)*
+- [→] **Injury reporting** — *moved to Phase 5 (Journal: Injury entry)*
+- [→] **Skip → shift or leave?** — *moved to Phase 6 (Drill-down rebuild)*
+- [→] **Per-workout "why"** — *moved to Phase 6 (Drill-down: WHY section)*
+- [→] Workout-type glossary (static) — *moved to Phase 6 (Drill-down: glossary link + `/profile/glossary`)*
+- [→] Structured physio notes — *moved to Phase 5 (Journal: Physio entry)*
+- [→] **Race `priority` field** in the data model — *moved to Phase 2 (Data foundations)*
+- [→] **Activity `source` field** — *moved to Phase 2 (Data foundations)*
+- [→] (Stretch) Drag-and-drop workouts between days — *moved to Phase 8 (v2 expansion)*
 
 ### v2 — Public launch
 Goal: anyone can sign up and use it.
@@ -1395,19 +1510,17 @@ Goal: anyone can sign up and use it.
 - [x] Server actions and reads scoped to the authenticated user
 - [x] v2 user_isolation migration applied to prod Supabase (2026-05-17)
 - [x] Google OAuth enabled in Supabase dashboard + Google Cloud Console redirect URI (2026-05-17)
-- [ ] End-to-end smoke test (sign-up → wizard → plan → log → regenerate) on local + production
-- [ ] Multi-user isolation test (two accounts, no cross-contamination)
-- [ ] Onboarding flow polish for new users
-- [ ] Drag-and-drop (if deferred from v1)
-- [ ] PostHog analytics wired in
-- [ ] Basic landing / marketing page — **deferred until post-feedback**.
+- [→] End-to-end smoke test — *Phase 1*
+- [→] Multi-user isolation test — *Phase 1*
+- [→] Onboarding flow polish for new users — *Phase 7*
+- [→] Drag-and-drop (deferred from v1) — *Phase 8 (post-launch)*
+- [→] PostHog analytics wired in — *Phase 7*
+- [→] Basic landing / marketing page — **deferred until post-feedback**.
       v2 launches with the sign-up page as the public entry point; Ben
       will share the sign-up URL with friends/early users to gather
-      feedback before investing in a full landing page.
-- [ ] **Endurance Index** — proprietary headline metric on the dashboard wrapping
-      CTL/ATL/TSS/TSB; current value + trend chart + "where you are vs. where you
-      need to be" A-race target comparison. Spec lives in the "Decisions made
-      2026-05-18" section above. Multiple visual mockups before final design.
+      feedback before investing in a full landing page. *Phase 8+*
+- [→] **Endurance Index** — proprietary headline metric. Spec lives in the
+      "Decisions made 2026-05-18" section above. *Phase 8 (post-launch)*
 
 ### v3 — Mobile polish + role expansion
 Goal: feels native on phone; supports a coach/physio role.
@@ -1513,7 +1626,9 @@ The Claude-generated training plans can be improved incrementally. Work through 
 
 ## Build order
 
-Every step ends with a live deploy so the loop becomes routine.
+*Superseded 2026-05-21 by the Phase plan section above. Build order 1–9 corresponds to v1 build-order shipped; everything from step 10 onward is now scoped into Phases 1–9 of the phase plan.*
+
+Shipped (kept here for reference):
 
 1. ✅ Hello World deployed on Vercel
 2. ✅ Database connection (Supabase) — race + workouts schema
@@ -1524,10 +1639,9 @@ Every step ends with a live deploy so the loop becomes routine.
 7. ✅ athlete_profile table + move hardcoded data to DB
 8. ✅ Intake wizard — multi-step form → first plan generation; empty-state routing
 9. ✅ Week navigation + workout drill-down
-10. **Modification notes + injury reporting + skip prompt** (open v1 polish)
-11. **Per-workout "why" + glossary** (open v1 polish)
-12. ⬅️ **Auth + multi-user (v2)** — code complete, in verification phase
-13. Mobile / PWA polish (v3)
+10. ✅ v2 auth scaffolding (code complete; verification = Phase 1)
+
+Forward execution: see the **Phase plan** section at the top of the Roadmap.
 
 ---
 

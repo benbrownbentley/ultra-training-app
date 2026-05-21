@@ -1050,7 +1050,16 @@ async function callClaudeOnce(
       },
     ],
     tools: [PLAN_TOOL],
-    tool_choice: { type: "auto" as const },
+    // Force Claude to call submit_training_plan. With "auto" Claude
+    // occasionally answers in plain text and stops with
+    // stop_reason=end_turn (observed 2026-05-21 during Phase 1 smoke
+    // test on Haiku 4.5). Forcing the tool eliminates that failure
+    // mode — the only thing Claude can do is emit a tool_use block
+    // matching the PLAN_TOOL schema.
+    tool_choice: {
+      type: "tool" as const,
+      name: "submit_training_plan",
+    },
     messages: [
       { role: "user" as const, content: buildUserPrompt(args) },
       ...extraMessages,

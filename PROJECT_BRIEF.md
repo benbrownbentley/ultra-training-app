@@ -757,20 +757,23 @@ response is Phase 2.1 (instrumentation + error UX) and Phase 2.5
   ~30-40% with no quality loss where it matters. Decision waits on
   real data from Phase 2.1 logging. If distribution is uniform, the
   current 500 cap is correct as-is.
-- **Long-window plan timeout edge case.** A fresh user signing up
-  with a 24-week build cycle (e.g., UTMB long ramp, marathon-to-
-  ultra progression) generates a plan that exceeds even Vercel Pro's
-  300s ceiling (~430s wall-clock estimate). Chunked generation
-  solves this by design — each chunk is a single phase, bounded by
-  phase length. Worth a smoke test against a 24-week wizard once
-  chunking lands.
-- **Vercel Pro upgrade as fallback.** $20/mo, $240/yr. Not on the
-  table today because chunking is the architecturally correct
-  answer regardless of tier. Keep as an option if chunking turns
-  out to be harder than 2-3 sessions of work, or if a weird edge
-  case emerges that chunking doesn't handle cleanly. The maxDuration
-  bumps already in the code (post-Phase-2 deploy hotfix) activate
-  automatically on Pro upgrade.
+- **Long-window plan completeness edge case.** A fresh user signing
+  up with a 24-week build cycle (e.g. UTMB long ramp, marathon-to-
+  ultra progression) is even more likely to trigger Claude's tail-
+  drop failure mode than a 14-week plan. Chunked generation solves
+  this by design — each chunk is a single phase, bounded by phase
+  length, well within Claude's coherence range. Worth a smoke test
+  against a 24-week wizard once chunking lands. (Note: prior framing
+  of this as a "Vercel Pro 300s ceiling" edge case was incorrect —
+  Vercel Hobby and Pro now both default to 300s. Wall-clock isn't
+  the bottleneck; Claude output coherence is.)
+- **Vercel Pro upgrade — likely never needed.** Original analysis
+  proposed Pro as a fallback for the 60s Hobby timeout. After web-
+  searching the docs on 2026-05-22, Hobby's max duration is 300s as
+  of Feb 2026 — same as Pro's default. Pro only buys you a higher
+  *configurable maximum* (800s vs Hobby's 300s), which we don't
+  need given chunking caps individual call wall-clock at ~60s.
+  Hobby is sufficient through public launch and beyond.
 - **Streaming responses for partial UI feedback during generation.**
   Anthropic supports streaming. Doesn't extend Vercel's wall-clock
   timeout (the function still has to complete within the limit),
@@ -1502,7 +1505,7 @@ Goal: fix the data-layer issues that make current cards/copy feel undercooked. A
 - **`workouts.source` column** (`manual` / `strava` / `garmin` / `apple_health`), default `manual`. Schema only — future-proofs device sync.
 - **Per-workout "why" Claude-generated** — replace `STUB_WHY[subtype]` (lib/workout-content.ts:405) with per-workout `why` copy emitted by Claude in the structured tool output. Static stubs become fallback only.
 
-**Phase 2 deployed 2026-05-22.** Implementation shipped; PR merged to main; migration applied to production. Discovered Phase 2 tripled output token counts (~30 → ~200 tokens/workout) which pushes full-plan generation past Vercel Hobby's 60s server-action ceiling. Decision (2026-05-22): take the time path over the money path — defer Vercel Pro upgrade, build chunked generation. See Phase 2.5 below.
+**Phase 2 deployed 2026-05-22.** Implementation shipped; PR merged to main; migration applied to production. Initial diagnosis (now corrected): we believed Phase 2 had pushed full-plan generation past Vercel Hobby's 60s server-action ceiling. **Updated 2026-05-22 (later, after web-searching Vercel docs):** Vercel Hobby's max duration is **300s as of Feb 2026** (not 60s — they raised it). The `maxDuration = 300` setting Claude Code pushed (commit `15e4074`) is honored on Hobby. The real Phase 2 failure mode is two-fold: (1) Claude consistently drops the last ~20% of workouts on a 14-week structured generation (`missing_dates` validation errors caught on retry), and (2) the regen UX has no progress feedback during the 60–90s wait — just a button spinner. Phase 2.5 (chunked generation) is still the right answer, but for plan-quality + UX reasons, not timeout reasons. See Phase 2.5 below.
 
 ### Phase 2.1 — Immediate Phase 2 follow-ups (2026-05-22)
 
@@ -1510,18 +1513,32 @@ Goal: stop the bleeding from the post-Phase-2 timeout situation without burning 
 
 - **Generation instrumentation** — add server-side `console.log` lines in `generateTrainingPlan` (lib/claude.ts) that capture, after every successful generation: per-workout `why` character-length distribution (avg / max / count over 400 / count over 480), total output tokens (from the Anthropic response `usage`), and total wall-clock duration. Read via Vercel's "Logs" tab after a few real regens. Data-driven inputs for Phase 2.5 chunk sizing and the differential-why-cap decision.
 - **Friendly generation-failure error state** — replace the Vercel default white-screen 504 with a branded retry UX on the wizard, regen sheet, and any other generation entry point. Follow the athletic-vocabulary framing already specced for regen errors (`— SIGNAL LOST`, `— REST DAY`, see Regeneration result page section). Required regardless of whether chunking lands today or next session — chunked calls still fail occasionally on network or Anthropic API hiccups.
+- **Generating-screen UX polish** (added 2026-05-22 — flagged by Ben mid-regen). The current regen `StateGenerating` (`app/_components/regen/StateGenerating.tsx`) and wizard `GeneratingState` (`app/wizard/_components/GeneratingDoneStates.tsx`) both rotate 4 status lines on a ~8 second cycle and footer-promise `USUALLY 5–15 SECONDS`. Two real problems after Phase 2 shipped:
+  - The 5–15 second estimate is now wrong. Real regens take 30–60s on Hobby; users hit the "this is broken" moment well before generation actually completes.
+  - The 4-line × 2s rotation loops visibly during a real generation, which can feel like the page froze even though the animation is alive.
+  Quick fix (~1 hour, do regardless of Phase 2.5):
+  - Honest the footer copy. Either drop the time estimate entirely or change to `USUALLY UNDER A MINUTE`. Same change in both `StateGenerating` and the wizard `GeneratingState`.
+  - Add 6–10 more rotating status lines so the cycle doesn't visibly repeat during real generation duration (12–16 lines × ~3s each ≈ a comfortable 40–50s before any repeat).
+  - Optional: small elapsed-time counter (`0:23`) bottom-right in the existing chrome. Honest signal without setting a hard expectation.
+  - Apply the same updates to both screens (`StateGenerating.tsx`, `GeneratingDoneStates.tsx`) so the wizard + regen flows match.
+  Real fix: Phase 2.5 chunking naturally delivers this. Per-phase progress (`BASE phase ✓ · BUILD phase ✓ · PEAK phase generating…`) replaces the rotating text with actual progress signal. Quick fix and Phase 2.5 are complementary, not alternatives — the elapsed counter + better copy still apply to individual phase chunks even after chunking lands.
 - **Tracked in the Build Log:** see the 2026-05-22 (later) entry for the Hobby-tier timeout situation diagnosis.
 
 ### Phase 2.5 — Chunked plan generation
 
-Goal: full plan generation fits within Vercel Hobby's 60s server-action timeout. Architectural follow-up to Phase 2 forced by the output-token explosion (~250s wall clock on a 14-week ultra plan, ~430s on a 24-week build cycle — both blow past Hobby's 60s and even Pro's 300s under the long-window case). Future-proof: the chunked architecture scales to long-window plans on any Vercel tier.
+Goal: produce complete, high-quality plans reliably AND give the user visible progress feedback during the 60–90s generation wait. Architectural follow-up to Phase 2 driven by two findings observed in production:
 
-Sequenced after Phase 2.1 lands because the logging data from Phase 2.1 informs how to size chunks (and whether differential why caps reduce the need for as many chunks).
+1. **Plan completeness at scale.** A 14-week structured-output generation in one Claude call routinely produces `missing_dates` validation errors covering the last ~20 days of the plan. Claude (Haiku 4.5) loses focus on long structured outputs and silently drops the tail. The auto-retry-once fixes other quality bugs (kind mismatches, unit-enum errors) but cannot recover from the truncation pattern. Both attempts in a regen consistently produce the same tail-drop failure.
+2. **Progress UX.** When generation starts (from the regen sheet OR the wizard), the user sees only a button spinner / rotating-text screen for 60–90s. No real progress signal. Feels frozen. The wizard's `GeneratingState` is somewhat better (rotating status lines) but its footer text says "USUALLY 5–15 SECONDS" which is now wrong post-Phase-2.
+
+**Vercel timeout is NOT the constraint here.** Vercel Hobby's max duration is 300s as of Feb 2026 (corrected after web-search 2026-05-22). Empirical evidence: a 91-second retry ran cleanly without 504. The 300s ceiling gives plenty of headroom; the failure mode is Claude quality, not function timeout.
+
+Chunking solves both findings: smaller per-call output keeps Claude in its sweet spot (preventing the tail-drop), and per-phase chunks naturally produce real progress signal (`— BASE PHASE ✓ · BUILD PHASE generating…`).
 
 **Pattern (to be detailed in a CHUNKING_SPEC.md):**
 
 - **Step 0 — Meta-plan call (fast, ~10s).** Claude receives wizard inputs + race date and returns *only* the periodization breakdown (BASE / BUILD / PEAK / TAPER week ranges). Small output → fast call. No per-workout detail yet.
-- **Step 1+ — Per-phase generation (each fits 60s).** One Claude call per phase block. Each call sees the meta-plan + previous-phase compact summaries + relevant athlete context, then emits the workouts for *just that phase*. Output is bounded by phase length (typically 3-5 weeks → ~30-45 workouts → ~6-9k tokens → ~60-90s).
+- **Step 1+ — Per-phase generation (each runs in ~20–60s).** One Claude call per phase block. Each call sees the meta-plan + previous-phase compact summaries + relevant athlete context, then emits the workouts for *just that phase*. Output is bounded by phase length (typically 3-5 weeks → ~30-45 workouts → ~6-9k tokens). Small enough that Claude reliably produces complete, well-formed structured output for every date in the phase.
 - **Orchestrator.** Wizard submission triggers Step 0; on success, immediately triggers Step 1 (BASE phase); on Step 1 success, triggers Step 2 (BUILD phase); etc. Each step is a separate server action with its own timeout budget.
 - **Wizard UX.** The "atmospheric generating" screen becomes a progressive experience — `BASE phase ✓ · BUILD phase ✓ · PEAK phase generating…`. Multi-step progress indicator turns a 5-minute wait into something that feels intentional rather than broken. Critical: each step's completion should persist so a mid-generation refresh doesn't restart from scratch.
 - **Regenerate flow.** Same pattern as wizard. The regen sheet's atmospheric loading state becomes the progressive multi-step UX.

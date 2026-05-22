@@ -1231,9 +1231,13 @@ export async function resumeGenerationJob(jobId: number): Promise<
 
 /**
  * True when the chunked-generation orchestrator should run instead of
- * the legacy single-call path. Off by default; flipped via the
- * `PLAN_CHUNKING_ENABLED` env var. Documented in .env.example.
+ * the legacy single-call path. **On by default** as of the Phase 2.5
+ * deploy. To roll back without a code change, set
+ * `PLAN_CHUNKING_ENABLED=false` in Vercel → Project → Settings →
+ * Environment Variables. The legacy single-call path stays in the
+ * codebase until Phase 2.6 cleanup, so rollback is a single flag
+ * flip — no redeploy. Documented in .env.example.
  */
 function planChunkingEnabled(): boolean {
-  return process.env.PLAN_CHUNKING_ENABLED === "true";
+  return process.env.PLAN_CHUNKING_ENABLED !== "false";
 }

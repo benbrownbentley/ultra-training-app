@@ -1,6 +1,6 @@
 # Vert — Endurance Training App — Project Brief
 
-_Last updated: 2026-05-20_
+_Last updated: 2026-05-21_
 
 > **Note on the name:** "Vert" is a **working name** while we build. There are
 > existing competitors using similar names, so the brand will change before
@@ -15,7 +15,9 @@ _Last updated: 2026-05-20_
 
 ## Current state (as of 2026-05-17)
 
-### v1 — shipped and deployed at https://ultra-training-app.vercel.app
+### v1 — shipped and deployed at https://app.benbrownbentley.com
+
+_(also reachable at `https://ultra-training-app.vercel.app` as a backup; `app.benbrownbentley.com` is the canonical demo URL going forward. DNS is hosted at Cloudflare with a `CNAME` from `app` → `cname.vercel-dns.com`; SSL cert is provisioned by Vercel via Let's Encrypt.)_
 
 - Next.js + Supabase + Anthropic API wired end-to-end
 - Supabase schema: `race`, `workouts`, `athlete_profile` tables (with workout `status` + `logged_at`, wizard-extension columns, and a `unit_system` column on `athlete_profile`)
@@ -71,6 +73,8 @@ _Last updated: 2026-05-20_
 
 - Staging environment: second Supabase project + Vercel preview env vars so destructive migrations and risky changes can be tested without touching production
 - Playwright E2E tests covering wizard → plan → log → regenerate (now harder to test manually because of auth)
+- **Favicon update** — `app/favicon.ico` is still the Next.js default. Swap to the Vert ridge-mark logo (same asset family as the Google OAuth consent-screen logo at `vert-logo-google-oauth.png`). Wordmark-free so it survives the eventual rename. Generate at standard favicon sizes (16, 32, 48, 180 for Apple touch) and wire into `app/icon.tsx` or replace the file directly. Defer until pre-public-launch polish pass.
+- **Supabase custom domain** — once on Supabase Pro ($25/mo), set up `auth.benbrownbentley.com` as Supabase's custom auth domain so the Google account picker shows our domain instead of `<project-ref>.supabase.co`. Adds polish to first-impression OAuth flow. Defer to closer to v2 public launch.
 - **Error screens polish pass** — sweep every error/empty state and replace dev-flavored copy (e.g., "check the server logs") with user-appropriate language. Inject brand personality where it fits (Vert is for athletes — the voice can have some energy). Audit list: training plan load failure, wizard submission errors, logging save failures, auth/sign-in errors, network/offline states, regen API failure. The "athletic vocabulary" framing already specced for regen errors (`— SIGNAL LOST`, `— REST DAY` etc., see "Regeneration result page" section) is the voice to extend everywhere.
 
 ---
@@ -661,7 +665,118 @@ index, not the source of truth).
   variation, missing patterns), enables zod validation of plan shape
   end-to-end, and gives the planned-vs-actual comparison in
   `formatStrengthActuals` (lib/claude.ts) canonical planned data
-  instead of re-parsed-from-text data. Tracked 2026-05-21.
+  instead of re-parsed-from-text data. Tracked 2026-05-21. **Design
+  spec drafted 2026-05-22 in `PHASE_2_SPEC.md`** — this is the active
+  work for Phase 2.
+
+### Phase 2 follow-on items (Phase 5+, deferred from spec §8)
+- **Prescribed-vs-actual deltas** — once `planned_detail` exists,
+  computing "ran 8% faster than prescribed" deltas becomes a thin
+  formatter on top of `planned_detail` vs. `actual_detail`. Evaluate
+  plan-quality impact before building (3–5 real regen fixtures,
+  with-and-without deltas, judge whether next-plan quality improves).
+  See also `project_structured_prescriptions.md` in memory.
+- **GIN index on `planned_detail`** — only if a real query pattern
+  emerges that needs to filter inside the JSONB (e.g., "all workouts
+  that include hill repeats"). Don't pre-optimize.
+- **Per-type column promotion** — if any one structured shape becomes
+  load-bearing for queries, promote it from JSONB to a dedicated
+  column. Default position: stay on JSONB.
+- **Historical backfill of `planned_detail`** — converting legacy
+  `details:string` rows to structured `planned_detail` retroactively.
+  Only relevant if we want to analyse historical plans uniformly. Not
+  blocking Phase 2.
+- **`workouts.source` activation** — the column lands in Phase 2 but
+  no app behavior reads it. Connecting Strava / Garmin / Apple Health
+  is v3+ work; the v2 UI doesn't change.
+
+### Phase 2 code review follow-ups (deferred 2026-05-22 — fix post-deploy)
+*Captured during the 2026-05-22 pre-commit code review. Each is a
+quality / UX polish item, not a correctness issue. Re-evaluate after
+the Phase 2 deploy + first regen — the right answer for a couple of
+these may change once we see real structured cards rendering.*
+- **Drill-down PRESCRIPTION section is redundant for structured rows**
+  (`app/workout/[id]/page.tsx`). Currently shows a one-line summary
+  derived from `planned_detail` above the structured sections that
+  render the same data in richer form. For *legacy* backfilled rows
+  the PRESCRIPTION section IS the useful surface (it shows the
+  original prescription text); for structured rows it's noise. Fix:
+  `{content.isLegacy && content.legacyNotes.trim().length > 0 && <Section label="PRESCRIPTION">…</Section>}`.
+  Will become more visible once real structured cards land — re-judge
+  then. This is the same redundancy visible in the 2026-05-22
+  pre-deploy screenshots Ben shared.
+- **Two near-duplicate summariser functions.** `summarisePlannedDetail`
+  (private, in `lib/claude.ts`, used for the Claude prompt history
+  block) and `summarisePlannedDetailForDiff` (exported, in
+  `lib/preview.ts`, used by WorkoutCard / WeekStrip / drill-down /
+  diff). Similar logic, different output. Could drift. Suggest
+  extracting one shared summariser into `lib/planned-detail.ts` (which
+  already exists as a type-guards module) with optional
+  "verbose" / "concise" modes, then deleting the second copy.
+- **PLAN_TOOL JSON Schema shape has no direct test.** The validator's
+  zod schema in `lib/plan-validation.ts` mirrors the JSON Schema
+  declared in `lib/claude.ts` PLAN_TOOL, but no test asserts the
+  JSON Schema itself is shaped correctly. If PLAN_TOOL ever diverges
+  from the zod schema, only a real prod API call would catch it.
+  Suggest ~10 lines asserting `PLAN_TOOL.input_schema.properties.workouts.items.required`
+  includes `why` and `planned_detail`, plus each `oneOf` branch carries
+  its `kind` literal.
+- **`extract-metrics.ts` has `void kind`** to suppress an unused-
+  parameter warning. Either rename to `_kind` (TS convention for
+  intentionally unused) or drop the parameter from the public
+  signature since `planned_detail.kind` now carries the same info.
+- **Migration backfill WHERE clause is technically redundant.**
+  `update workouts set planned_detail = jsonb_build_object('notes', details) where planned_detail is null`
+  — at that point in the migration `planned_detail` was just added
+  with no default, so every row is NULL. Defensive code, costs nothing,
+  leave as-is unless we touch the migration for another reason.
+- **`commit_plan_preview` RPC hardcodes `source = 'manual'`.** Correct
+  for Phase 2 since device-sync activation is deferred. Worth a TODO
+  comment in the RPC body: when device sync arrives, the preview
+  JSONB blob will need to carry `source` and the RPC will need to
+  read `w->>'source'`. Otherwise easy to miss in v3+.
+
+### Phase 2 timeout-architecture deferrals (2026-05-22)
+*Threads from the post-deploy timeout discussion. The immediate
+response is Phase 2.1 (instrumentation + error UX) and Phase 2.5
+(chunked generation). These items sit beyond that, mostly v3+.*
+- **Background-job architecture for plan generation.** Move plan
+  generation off the request-response cycle entirely — wizard
+  submission writes a job to a queue (Inngest, QStash, Trigger.dev,
+  or Vercel Functions with `waitUntil`), the queue worker handles
+  the Claude calls, the UI polls or subscribes for completion. True
+  fix for the "5-minute wait blocks the request" problem and the
+  natural endpoint of the chunking work. v3+ scope — chunking buys
+  us the breathing room to defer this.
+- **Differential `why` length caps by workout kind.** Current spec
+  caps `why` at 500 chars uniformly (PHASE_2_SPEC.md §9.2). If
+  Phase 2.1 logging shows a bimodal distribution (Claude writes long
+  why for quality sessions, short why for mobility / easy / recovery),
+  differential caps make sense — e.g., 500 for quality + long runs,
+  200 for easy / recovery, 100 for mobility. Could cut output tokens
+  ~30-40% with no quality loss where it matters. Decision waits on
+  real data from Phase 2.1 logging. If distribution is uniform, the
+  current 500 cap is correct as-is.
+- **Long-window plan timeout edge case.** A fresh user signing up
+  with a 24-week build cycle (e.g., UTMB long ramp, marathon-to-
+  ultra progression) generates a plan that exceeds even Vercel Pro's
+  300s ceiling (~430s wall-clock estimate). Chunked generation
+  solves this by design — each chunk is a single phase, bounded by
+  phase length. Worth a smoke test against a 24-week wizard once
+  chunking lands.
+- **Vercel Pro upgrade as fallback.** $20/mo, $240/yr. Not on the
+  table today because chunking is the architecturally correct
+  answer regardless of tier. Keep as an option if chunking turns
+  out to be harder than 2-3 sessions of work, or if a weird edge
+  case emerges that chunking doesn't handle cleanly. The maxDuration
+  bumps already in the code (post-Phase-2 deploy hotfix) activate
+  automatically on Pro upgrade.
+- **Streaming responses for partial UI feedback during generation.**
+  Anthropic supports streaming. Doesn't extend Vercel's wall-clock
+  timeout (the function still has to complete within the limit),
+  but could be combined with chunking to surface "writing week 3
+  of BUILD…" granular progress beyond the per-phase progress.
+  Cosmetic UX polish, not load-bearing.
 
 ### Practitioner / coaching (v3)
 - Practitioner role with admin access to client accounts (trainer, coach,
@@ -1387,6 +1502,33 @@ Goal: fix the data-layer issues that make current cards/copy feel undercooked. A
 - **`workouts.source` column** (`manual` / `strava` / `garmin` / `apple_health`), default `manual`. Schema only — future-proofs device sync.
 - **Per-workout "why" Claude-generated** — replace `STUB_WHY[subtype]` (lib/workout-content.ts:405) with per-workout `why` copy emitted by Claude in the structured tool output. Static stubs become fallback only.
 
+**Phase 2 deployed 2026-05-22.** Implementation shipped; PR merged to main; migration applied to production. Discovered Phase 2 tripled output token counts (~30 → ~200 tokens/workout) which pushes full-plan generation past Vercel Hobby's 60s server-action ceiling. Decision (2026-05-22): take the time path over the money path — defer Vercel Pro upgrade, build chunked generation. See Phase 2.5 below.
+
+### Phase 2.1 — Immediate Phase 2 follow-ups (2026-05-22)
+
+Goal: stop the bleeding from the post-Phase-2 timeout situation without burning engineering time on the bigger architectural fix yet. Ships in a single small PR alongside or before Phase 2.5.
+
+- **Generation instrumentation** — add server-side `console.log` lines in `generateTrainingPlan` (lib/claude.ts) that capture, after every successful generation: per-workout `why` character-length distribution (avg / max / count over 400 / count over 480), total output tokens (from the Anthropic response `usage`), and total wall-clock duration. Read via Vercel's "Logs" tab after a few real regens. Data-driven inputs for Phase 2.5 chunk sizing and the differential-why-cap decision.
+- **Friendly generation-failure error state** — replace the Vercel default white-screen 504 with a branded retry UX on the wizard, regen sheet, and any other generation entry point. Follow the athletic-vocabulary framing already specced for regen errors (`— SIGNAL LOST`, `— REST DAY`, see Regeneration result page section). Required regardless of whether chunking lands today or next session — chunked calls still fail occasionally on network or Anthropic API hiccups.
+- **Tracked in the Build Log:** see the 2026-05-22 (later) entry for the Hobby-tier timeout situation diagnosis.
+
+### Phase 2.5 — Chunked plan generation
+
+Goal: full plan generation fits within Vercel Hobby's 60s server-action timeout. Architectural follow-up to Phase 2 forced by the output-token explosion (~250s wall clock on a 14-week ultra plan, ~430s on a 24-week build cycle — both blow past Hobby's 60s and even Pro's 300s under the long-window case). Future-proof: the chunked architecture scales to long-window plans on any Vercel tier.
+
+Sequenced after Phase 2.1 lands because the logging data from Phase 2.1 informs how to size chunks (and whether differential why caps reduce the need for as many chunks).
+
+**Pattern (to be detailed in a CHUNKING_SPEC.md):**
+
+- **Step 0 — Meta-plan call (fast, ~10s).** Claude receives wizard inputs + race date and returns *only* the periodization breakdown (BASE / BUILD / PEAK / TAPER week ranges). Small output → fast call. No per-workout detail yet.
+- **Step 1+ — Per-phase generation (each fits 60s).** One Claude call per phase block. Each call sees the meta-plan + previous-phase compact summaries + relevant athlete context, then emits the workouts for *just that phase*. Output is bounded by phase length (typically 3-5 weeks → ~30-45 workouts → ~6-9k tokens → ~60-90s).
+- **Orchestrator.** Wizard submission triggers Step 0; on success, immediately triggers Step 1 (BASE phase); on Step 1 success, triggers Step 2 (BUILD phase); etc. Each step is a separate server action with its own timeout budget.
+- **Wizard UX.** The "atmospheric generating" screen becomes a progressive experience — `BASE phase ✓ · BUILD phase ✓ · PEAK phase generating…`. Multi-step progress indicator turns a 5-minute wait into something that feels intentional rather than broken. Critical: each step's completion should persist so a mid-generation refresh doesn't restart from scratch.
+- **Regenerate flow.** Same pattern as wizard. The regen sheet's atmospheric loading state becomes the progressive multi-step UX.
+- **Failure handling.** If any step fails after Phase 2.5 retries internally, the user sees the friendly error state from Phase 2.1 with a "Resume generation" button that picks up from the last successful step. Don't restart the whole pipeline.
+
+Spec will be written in a dedicated session after Phase 2.1 logging data lands. Likely implementation: 2-3 focused Claude Code sessions.
+
 ### Phase 3 — Remaining UX polish
 
 Goal: close the small UX gaps that would confuse friends/early users.
@@ -1435,6 +1577,9 @@ The following came out of the Phase 1 prod smoke test (wizard → plan generatio
 - **Skip → "shift or leave?" prompt** — when a user skips a workout, prompt whether to shift the remaining plan or leave it alone (no implementation in code yet).
 - **Travel journal entry** — verify whether Travel entry type is wired; add the form + route if missing (Note / Injury / Physio confirmed; Travel unverified).
 - **Glossary content polish** — finish copy for the 15 stub entries currently shipped (decide push/pull/legs taxonomy first if it changes prescribed strength categories).
+- **Self-rated fitness field is too easy to miss** (flagged 2026-05-22) — when running through the wizard, Ben repeatedly skips past the self-rated fitness question because it visually reads like a line break / spacer rather than an input. Treatment options: increase the field's vertical prominence (larger label, more whitespace above), add a clearer header/section break, or restyle the 1–5 selector so it reads as an interactive control rather than inline text. This field is important — it directly informs Claude's prescription, so missing it degrades plan quality.
+- **Training-time fields need scope clarification** (flagged 2026-05-22) — "Current weekly training time" and "Weekly hours available" should both make clear they're inclusive of *all* activity: mobility, running, gym/strength, cross-training, everything. Without that clarifier, users may report only their running hours, which understates load and skews Claude's prescription. Add helper copy under each field (e.g., "Include mobility, runs, gym, cross-training — everything you train").
+- **Workout "why" copy mentions Claude by name** (flagged 2026-05-22) — the per-workout rationale strings currently reference "Claude" (e.g., "Claude prescribed this because…"). The product shouldn't surface the underlying model to users. Rewrite to first-person plural or product voice — "we built this session to…", "this workout targets…", or "the plan calls for this because…". Audit the prompt that generates the rationale (likely in `lib/claude.ts`) plus any UI copy that wraps it, and add a brand-voice rule so future prompt edits don't reintroduce "Claude".
 
 ### Phase 4 — Pre-launch hygiene → v2 public launch
 

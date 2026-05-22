@@ -341,6 +341,6 @@ When starting in Claude Design, attach or link:
 - `PROJECT_BRIEF.md` (full product context)
 - `AGENTS.md` (tech constraints + the `frontend_aesthetics` section)
 - Optionally: a screenshot of the current shipped home screen
-  (`https://ultra-training-app.vercel.app`) so Claude Design has a "before" to react to
+  (`https://app.benbrownbentley.com`) so Claude Design has a "before" to react to
 - Optionally: 2–3 mood-board images that match the trail/field-notebook aesthetic
   (a topographic map, a Patagonia catalogue page, a UltraSignup race page)

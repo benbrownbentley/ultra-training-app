@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 100 100" fill="none">
+  <!-- Ridge mark -->
+  <path d="M25 48 L36 30 L45 38 L57 22 L68 34 L78 28" stroke="#10b981" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="57" cy="22" r="3.4" fill="#10b981"/>
+  <!-- VERT wordmark -->
+  <text x="50" y="78" font-family="DejaVu Sans Mono, monospace" font-weight="700" font-size="16" letter-spacing="1.5" fill="#10b981" text-anchor="middle">VERT</text>
+</svg>

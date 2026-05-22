@@ -1529,6 +1529,59 @@ Sequenced after Phase 2.1 lands because the logging data from Phase 2.1 informs 
 
 Spec will be written in a dedicated session after Phase 2.1 logging data lands. Likely implementation: 2-3 focused Claude Code sessions.
 
+**Phase 2.5 deployed 2026-05-22.** Implementation shipped via `phase-2-5-chunked-generation` branch. `PLAN_CHUNKING_ENABLED` defaults to on. Migration `plan_generation_jobs` applied. First production regen: ~4 minutes wall-clock, plan covered every date through race day cleanly (tail-drop bug definitively fixed). **One regression surfaced:** the orchestrator runs all phases synchronously inside `previewPlan` / `submitWizard`, so the sheet button shows "Regenerating…" for the full pipeline duration. The `GeneratingPhaseState` progress UI never renders because no jobId is returned mid-pipeline for it to poll. Phase 2.5.1 below is the architectural fix.
+
+### Phase 2.5.1 — Kickoff + advance refactor (UX fix)
+
+Goal: deliver the per-phase progress UX that Phase 2.5 specced but couldn't actually render because of the synchronous-orchestrator design flaw. After Phase 2.5.1, the regen sheet closes within ~10–15 seconds of clicking Regenerate (right after the meta-plan call), the user lands on `/regen?job=<id>` with `GeneratingPhaseState` rendering, and per-phase progress updates as each phase lands. Plan quality and reliability stay identical to Phase 2.5 — this is a UX refactor, not a generation-logic change.
+
+**Root cause of the regression:** the spec described the orchestrator as "spawn meta-plan, then loop through phases" but didn't separate the action that *returns the jobId fast* from the action that *runs the phase loop*. The implementation faithfully ran the whole loop inside the action — correct per spec, wrong per intent. The client never gets a jobId until the entire pipeline finishes, so polling can't drive progress.
+
+**The fix — three server actions, client-orchestrated loop:**
+
+- **`kickoffGeneration(args)`** — wraps the existing meta-plan + job-insert step. Returns `{ ok: true, jobId } | PlanGenFailure` after ~10–15 seconds.
+- **`advanceJob(jobId)`** — new action. Looks at the job row, identifies the next pending phase, runs `generatePhase` for that phase, updates the job row with the new phase + workouts appended, returns the updated job state. If this was the last phase, the same call also runs the final assembled-plan validator and the `commit_plan_preview` RPC. Wall-clock ~20–60s per call.
+- **`getGenerationJobStatus(jobId)`** — already exists. Cheap poll. Stays as-is.
+
+**Client orchestration on `/regen?job=<id>`:**
+
+1. Page mounts → calls `getGenerationJobStatus(jobId)` to read current state.
+2. If `status === "pending"` and there's a next pending phase → fires `advanceJob(jobId)`.
+3. When `advanceJob` returns, re-renders progress UI based on `completed_phases`. If more phases remain, immediately fires `advanceJob` again.
+4. When `status === "complete"`, routes to the preview (or commits if wizard).
+5. When `status === "failed"`, renders error state with Resume CTA that re-fires the loop.
+
+**Action returns from `previewPlan` and `submitWizard` change:** instead of awaiting `runGenerationPipeline`, they now await only `kickoffGeneration`. On success they return `{ ok: true, jobId }`. The caller (sheet / wizard) closes its loading state and routes to `/regen?job=<id>` or the wizard's `GeneratingPhaseState` (both render the same `GeneratingPhaseState` component, just inside different layout shells).
+
+**Refactor scope inside `lib/plan-generation-orchestrator.ts`:**
+
+- Extract three helpers from the current `runGenerationPipeline` / `runPhasesAndCommit` body: `runKickoff(args)` (meta-plan + insert + return jobId), `runOnePhase(args, jobId, phaseToRun)` (single `generatePhase` + update row), `runFinalize(args, jobId)` (final validate + commit). Each is small and testable.
+- The current `runGenerationPipeline` stays for now (legacy path / tests) but is no longer called from `previewPlan` / `submitWizard`.
+- Cancel-prior-pending-job logic moves into `runKickoff`.
+- `resumeGenerationJob(jobId)` becomes essentially the same as kicking off `advanceJob(jobId)` from the failed phase forward.
+
+**Implementation order (one PR, probably 1 focused session):**
+
+1. Extract `runKickoff` / `runOnePhase` / `runFinalize` helpers from existing orchestrator code. Keep the old `runPhasesAndCommit` reachable for tests but not from the action layer.
+2. Add `advanceJob(jobId)` server action in `app/actions.ts`. Internally: SELECT job, pick next pending phase, call `runOnePhase` OR `runFinalize` as appropriate, return updated status.
+3. Update `previewPlan` and `submitWizard` to call only `runKickoff` (renaming the action variable / return shape as needed). They now return after ~10-15s instead of after ~4min.
+4. Update `RegenerateSheet`: on `kickoffGeneration` success → `onClose()` + `router.push('/regen?job=' + jobId)` immediately.
+5. Update `WizardClient`: on `submitWizard` success → transition to `GeneratingPhaseState` immediately, passing `jobId`.
+6. Update `GeneratingPhaseState` to drive the advance loop client-side. Use `useEffect` + `useTransition` to fire `advanceJob` calls sequentially. Render progress from the returned job state.
+7. Update `/regen/page.tsx`'s `?job=<id>` branch to render `GeneratingPhaseState` (it likely already does post-Phase-2.5 — verify and tighten).
+8. Tests: extend orchestrator specs to cover the three new helpers separately. Mock Claude calls. Test the client-side advance loop with a smoke test that fires several `advanceJob` calls in sequence and verifies the final state.
+9. Manual smoke on local: wizard run → sheet closes in ~15s → progress page shows BASE phase running → progress updates as phases complete → done state. Then a regen following the same path. Then a forced phase failure → friendly error state → Resume picks up.
+
+**What this fix does NOT change:**
+
+- The Claude calls themselves (`generateMetaPlan`, `generatePhase`) — unchanged.
+- The `plan_generation_jobs` table schema — unchanged.
+- The validator behavior — unchanged.
+- The legacy `generateTrainingPlan` function — still around for the feature flag's legacy branch.
+- The `[plan-gen-metrics]` log lines — keep emitting per phase, just now from the `advanceJob` calls instead of inside the orchestrator's loop.
+
+**Operational deploy:** code-only refactor. No new migration. No env var changes. Feature flag `PLAN_CHUNKING_ENABLED` still controls chunking on/off; this work is inside the chunking branch.
+
 ### Phase 2.6 — Chunked-generation cleanup (deferred)
 
 Sequenced ~4 weeks after Phase 2.5 lands and the `PLAN_CHUNKING_ENABLED` flag has been on in prod without incident. One small PR:
@@ -1548,6 +1601,7 @@ Goal: close the small UX gaps that would confuse friends/early users.
 - **Password strength requirements** — configure minimum length + character class rules in Supabase Auth → Settings; surface inline hints on the sign-up form so users know the policy before submitting. Caught 2026-05-21.
 - **Forgot password flow is non-functional** — the "Forgot password?" link on `/sign-in` doesn't do anything. Wire it: dedicated `/forgot-password` page with email input → call `supabase.auth.resetPasswordForEmail()` → Supabase sends a reset email → user clicks link → lands on a `/reset-password` page with a new-password form → calls `supabase.auth.updateUser({ password })`. Caught 2026-05-21 during Phase 1 smoke test. Required for v2 launch — public users will forget passwords.
 - **Email collision across providers creates duplicate accounts** (caught 2026-05-21) — a user who previously signed up via Google can also create an email/password account using the same email address. Supabase treats them as two separate auth users with separate `user_id`s, RLS scopes, and data. Two fixes needed: (a) **enable "Allow manual linking" in Supabase Auth → Providers** so identities with the same verified email get linked to one user; (b) **app-level safeguard on `/sign-up`** — before allowing email/password sign-up, check whether the email is already associated with another provider's account and surface a clear "This email is already registered via Google — sign in with Google instead" message. Without this, users will create accidental duplicate accounts and not understand why they "can't see their plan."
+- **Week-numbering off-by-one fencepost bug** (caught 2026-05-22 after Phase 2.5 ship). The first regenerated plan rendered race day with an eyebrow like `WK 13/14`, but no week 14 actually contains workouts — the math overcounts the total by one when the race date doesn't fall on the last day of a calendar week. Location: `lib/plan-derive.ts:128` `blockEndExclusive = addDays(weekStart(raceIso), 7)`. This rounds up to the Monday *after* race week, then `totalWeeks = ceil(totalDays / 7)` adds an empty phantom week. Fix: change to `blockEndExclusive = addDays(raceIso, 1)` so the block ends exactly on race day, and totalWeeks reflects only weeks that actually contain workouts. Verify nothing downstream relies on the old behavior — `buildPlanWeeks` is also used by the Plan tab, the WeekStrip header, and the workout drill-down eyebrow.
 
 #### Smoke-test findings (2026-05-21)
 

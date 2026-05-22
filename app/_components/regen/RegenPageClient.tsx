@@ -99,17 +99,22 @@ export function RegenPageClient({
   const handleTryAgain = useCallback(() => {
     // From the error state, fire a fresh previewPlan with no notes. This
     // matches the design's "Try again" CTA — no extra typing required.
+    // Generation failures now return a typed envelope; thrown errors
+    // come from network-level issues (504 HTML, dropped connection) and
+    // fall through to the same error UX.
     setPhase("generating");
     setErrorMessage(null);
     startTransition(async () => {
       try {
-        const { previewId: newId } = await previewPlan();
-        router.push(`/regen?preview=${newId}`);
+        const r = await previewPlan();
+        if (!r.ok) {
+          router.push(`/regen?error=${r.code}&req=${r.requestId}`);
+          return;
+        }
+        router.push(`/regen?preview=${r.previewId}`);
       } catch (e) {
-        setErrorMessage(
-          e instanceof Error ? e.message : "Failed to regenerate plan",
-        );
-        setPhase("error");
+        console.error("[RegenPageClient] previewPlan threw", e);
+        router.push(`/regen?error=generation_timeout`);
       }
     });
   }, [router]);

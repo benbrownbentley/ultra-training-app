@@ -4,6 +4,10 @@ import Link from "next/link";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { ArrowRight } from "@/app/_components/today/icons";
 import { TabBar } from "@/app/_components/today/TabBar";
+import {
+  PLAN_GEN_ERROR_COPY,
+  type PlanGenErrorCode,
+} from "@/lib/plan-gen-result";
 import { RegenHeader } from "./RegenHeader";
 import { StatusHeading } from "./atoms";
 
@@ -12,10 +16,30 @@ interface Props {
   // re-opening the regen sheet so the user can adjust notes.
   onTryAgain: () => void;
   requestId?: string;
+  // Free-text override for the message body. Used by the in-page
+  // accept/discard error path where the failure isn't a generation
+  // failure (e.g. RPC error). Generation failures should pass `code`
+  // instead so copy comes from the shared lookup table.
   message?: string;
+  // Phase 2.1 generation-failure code. When provided, drives the
+  // eyebrow/title/body copy from PLAN_GEN_ERROR_COPY so the wizard +
+  // regen surfaces stay in sync.
+  code?: PlanGenErrorCode;
 }
 
-export function StateError({ onTryAgain, requestId, message }: Props) {
+export function StateError({ onTryAgain, requestId, message, code }: Props) {
+  // When `code` is provided, the shared error-copy table wins. Falls
+  // back to the original "rest day" framing for the non-generation
+  // failure path (accept / discard).
+  const copy = code
+    ? PLAN_GEN_ERROR_COPY[code]
+    : {
+        eyebrow: "REGENERATION · REST DAY",
+        title: "Looks like our servers are having a rest day.",
+        body:
+          message ??
+          "Your plan is safe and unchanged. Give us a minute — we'll be back at it shortly.",
+      };
   return (
     <div className="relative flex min-h-svh w-full flex-col overflow-hidden bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
       <div
@@ -43,17 +67,16 @@ export function StateError({ onTryAgain, requestId, message }: Props) {
           </span>
         </div>
 
-        <StatusHeading label="REGENERATION · REST DAY" />
+        <StatusHeading label={copy.eyebrow} />
 
         <h2
           className="mt-3.5 max-w-[360px] text-[26px] font-medium leading-tight text-zinc-950 dark:text-zinc-50"
           style={{ letterSpacing: "-0.02em" }}
         >
-          Looks like our servers are having a rest day.
+          {copy.title}
         </h2>
         <p className="mt-3 max-w-[360px] text-[14.5px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-          {message ??
-            "Your plan is safe and unchanged. Give us a minute — we'll be back at it shortly."}
+          {copy.body}
         </p>
 
         <div className="mt-7 flex w-full items-center gap-2.5">

@@ -103,13 +103,28 @@ function SheetBody({
     setError(null);
     startTransition(async () => {
       try {
-        const { previewId } = await previewPlan(notes);
+        const r = await previewPlan(notes);
+        if (!r.ok) {
+          // Branded full-screen error — closes the sheet and lets
+          // /regen?error=<code> render the StateError variant the user
+          // can retry from. Stable across timeout, validation,
+          // anthropic, and unknown codes per lib/plan-gen-result.ts.
+          onClose();
+          router.push(`/regen?error=${r.code}&req=${r.requestId}`);
+          return;
+        }
         onClose();
         // Hand off to the regen result screen — it owns the accept/discard
         // UX from here. Router.push so the sheet's parent state stays clean.
-        router.push(`/regen?preview=${previewId}`);
+        router.push(`/regen?preview=${r.previewId}`);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to regenerate plan");
+        // Network-level failure (504 HTML response, dropped connection)
+        // — the server action's typed envelope never reached us. Treat
+        // identically to a returned generation_timeout so the UX path
+        // is the same.
+        console.error("[RegenerateSheet] previewPlan threw", e);
+        onClose();
+        router.push(`/regen?error=generation_timeout`);
       }
     });
   }, [notes, onClose, router]);

@@ -3,6 +3,10 @@
 import { useRouter } from "next/navigation";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { VertLogo, ArrowRight } from "@/app/_components/today/icons";
+import {
+  PLAN_GEN_ERROR_COPY,
+  type PlanGenErrorCode,
+} from "@/lib/plan-gen-result";
 
 const STATUS_LINES = [
   "Reading your inputs…",
@@ -74,6 +78,100 @@ export function GeneratingState() {
         >
           USUALLY 5–15 SECONDS
         </p>
+      </div>
+    </div>
+  );
+}
+
+interface ErrorProps {
+  code: PlanGenErrorCode;
+  requestId?: string;
+  onTryAgain: () => void;
+  // Optional secondary action — surfaces an "Edit setup" link on the
+  // wizard so the user can adjust inputs that affect plan size (e.g.
+  // compress the date window) before retrying. Omit on surfaces where
+  // there's nothing to edit.
+  onEditSetup?: () => void;
+}
+
+// Branded error screen shown when wizard generation fails — Vercel
+// timeout, validation exhaustion, Anthropic error, or unknown. Uses
+// the same atmospheric topo+radial-fade frame as GeneratingState +
+// DoneState so the transition feels like part of the same flow, not a
+// dropped-into-a-generic-error-page jolt. Voice + copy come from
+// PLAN_GEN_ERROR_COPY so the wizard + regen surfaces stay in sync.
+export function GeneratingErrorState({
+  code,
+  requestId,
+  onTryAgain,
+  onEditSetup,
+}: ErrorProps) {
+  const copy = PLAN_GEN_ERROR_COPY[code];
+  return (
+    <div className="relative flex min-h-svh w-full flex-col overflow-hidden bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
+      <div className="absolute inset-0">
+        <MotifTopo color="#a1a1aa" opacity={0.13} />
+      </div>
+      <div
+        className="absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(ellipse at center, transparent 0%, rgba(250,250,250,0.9) 80%)",
+        }}
+      />
+      <div
+        className="absolute inset-0 hidden dark:block"
+        style={{
+          background:
+            "radial-gradient(ellipse at center, transparent 0%, rgba(9,9,11,0.9) 80%)",
+        }}
+      />
+      <div className="absolute inset-0 flex flex-col items-center justify-center px-6 py-10 text-center">
+        <div className="mb-6">
+          <VertLogo size="lg" accent="#a1a1aa" textColor="currentColor" />
+        </div>
+        <div
+          className="font-mono text-[12px] font-semibold uppercase text-zinc-500"
+          style={{ letterSpacing: "0.22em" }}
+        >
+          — {copy.eyebrow}
+        </div>
+        <h1
+          className="m-0 mt-3.5 max-w-[360px] text-[26px] font-medium leading-tight text-zinc-950 dark:text-zinc-50"
+          style={{ letterSpacing: "-0.02em" }}
+        >
+          {copy.title}
+        </h1>
+        <p className="m-0 mt-3 max-w-[360px] text-[14.5px] leading-relaxed text-zinc-600 dark:text-zinc-400">
+          {copy.body}
+        </p>
+        <div className="mt-7 flex w-full max-w-[340px] flex-col items-center gap-2.5">
+          <button
+            type="button"
+            onClick={onTryAgain}
+            className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400"
+          >
+            Try again
+            <ArrowRight color="#052e1f" size={16} />
+          </button>
+          {onEditSetup && (
+            <button
+              type="button"
+              onClick={onEditSetup}
+              className="inline-flex h-11 items-center justify-center px-3 text-sm font-medium text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-50"
+            >
+              Edit setup
+            </button>
+          )}
+        </div>
+        {requestId && (
+          <p
+            className="mt-7 font-mono text-[10.5px] uppercase text-zinc-400 dark:text-zinc-600"
+            style={{ letterSpacing: "0.18em" }}
+          >
+            ERROR · WIZARD · REQ #{requestId.toUpperCase()}
+          </p>
+        )}
       </div>
     </div>
   );

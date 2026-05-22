@@ -16,6 +16,7 @@ import {
   validateGeneratedPlan,
 } from "@/lib/plan-validation";
 import { isLegacyPlannedDetail } from "@/lib/planned-detail";
+import { buildPlanGenMetrics } from "@/lib/plan-gen-metrics";
 
 const client = new Anthropic();
 
@@ -75,6 +76,11 @@ export interface GeneratePlanArgs {
   // (or deliberately diverge from) the prior direction. null on the
   // initial wizard plan and on any user with no accepted regens yet.
   previousSummary?: GenerationSummary | null;
+  // Phase 2.1 instrumentation: true when generation was triggered from
+  // the wizard (first plan), false for any regen path. Used only for
+  // the [plan-gen-metrics] log line so wizard vs. regen distributions
+  // can be separated when reviewing logs.
+  isWizard?: boolean;
 }
 
 export interface GeneratedWorkout {
@@ -1347,8 +1353,16 @@ async function callClaudeOnce(
 export async function generateTrainingPlan(
   args: GeneratePlanArgs,
 ): Promise<PlanGenerationResult> {
+  const startedAt = Date.now();
+  // Token accumulators — summed across the first attempt and (if it
+  // fires) the retry so the metrics line reflects total API spend.
+  let tokensIn = 0;
+  let tokensOut = 0;
+
   // First attempt.
   const firstMessage = await callClaudeOnce(args);
+  tokensIn += firstMessage.usage.input_tokens;
+  tokensOut += firstMessage.usage.output_tokens;
   const firstResult = parsePlanFromMessage(firstMessage);
 
   const firstIssues = validateGeneratedPlan({
@@ -1358,9 +1372,17 @@ export async function generateTrainingPlan(
   });
   const firstErrors = errorsOnly(firstIssues);
 
-  // Happy path: no errors. Log any soft warnings and return.
+  // Happy path: no errors. Log warnings + metrics and return.
   if (firstErrors.length === 0) {
     logWarnings(firstIssues);
+    logMetrics({
+      workouts: firstResult.workouts,
+      tokensIn,
+      tokensOut,
+      durationMs: Date.now() - startedAt,
+      isWizard: args.isWizard ?? false,
+      retried: false,
+    });
     return stripRaw(firstResult);
   }
 
@@ -1403,6 +1425,8 @@ export async function generateTrainingPlan(
   ];
 
   const secondMessage = await callClaudeOnce(args, retryMessages);
+  tokensIn += secondMessage.usage.input_tokens;
+  tokensOut += secondMessage.usage.output_tokens;
   const secondResult = parsePlanFromMessage(secondMessage);
 
   const secondIssues = validateGeneratedPlan({
@@ -1413,16 +1437,54 @@ export async function generateTrainingPlan(
   const secondErrors = errorsOnly(secondIssues);
 
   if (secondErrors.length > 0) {
-    // Retry also failed. Surface a clear error — the action layer will
-    // catch this and render the error screen with a Retry button.
+    // Retry also failed. Log the failure path's metrics so we still
+    // capture token cost + duration before throwing — operationally
+    // useful when diagnosing repeated failures. Then throw so the
+    // action layer can render the error screen with a Retry button.
     const codes = secondErrors.map((e) => e.code).join(", ");
+    console.warn(
+      "[generateTrainingPlan] retry also failed validation — throwing. Issues:",
+      secondErrors,
+    );
     throw new Error(
       `Plan failed validation after retry (issues: ${codes}). See server logs for details.`,
     );
   }
 
+  console.info("[generateTrainingPlan] retry succeeded.");
   logWarnings(secondIssues);
+  logMetrics({
+    workouts: secondResult.workouts,
+    tokensIn,
+    tokensOut,
+    durationMs: Date.now() - startedAt,
+    isWizard: args.isWizard ?? false,
+    retried: true,
+  });
   return stripRaw(secondResult);
+}
+
+// Emits the structured [plan-gen-metrics] log line on successful
+// generation. Vercel's log viewer picks up the prefix; downstream
+// scripts (jq, eyeballing) parse the JSON payload. Keep the shape
+// stable — see lib/plan-gen-metrics.ts.
+function logMetrics(args: {
+  workouts: GeneratedWorkout[];
+  tokensIn: number;
+  tokensOut: number;
+  durationMs: number;
+  isWizard: boolean;
+  retried: boolean;
+}): void {
+  const metrics = buildPlanGenMetrics({
+    tokensIn: args.tokensIn,
+    tokensOut: args.tokensOut,
+    durationMs: args.durationMs,
+    whys: args.workouts.map((w) => w.why ?? ""),
+    isWizard: args.isWizard,
+    retried: args.retried,
+  });
+  console.log(`[plan-gen-metrics] ${JSON.stringify(metrics)}`);
 }
 
 // Strip the internal _raw field before returning to callers. Keeps the

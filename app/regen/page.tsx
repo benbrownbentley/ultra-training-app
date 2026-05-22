@@ -13,6 +13,8 @@ import {
 } from "@/lib/preview";
 import { buildContextRows } from "@/lib/regen-context";
 import { RegenPageClient } from "@/app/_components/regen/RegenPageClient";
+import { RegenErrorPage } from "@/app/_components/regen/RegenErrorPage";
+import type { PlanGenErrorCode } from "@/lib/plan-gen-result";
 
 export const dynamic = "force-dynamic";
 // "Regenerate again" calls previewPlan from this page. Phase 2's
@@ -20,16 +22,38 @@ export const dynamic = "force-dynamic";
 // ultra plan finishes inside the Vercel function window.
 export const maxDuration = 300;
 
+const KNOWN_ERROR_CODES: PlanGenErrorCode[] = [
+  "generation_timeout",
+  "validation_failed",
+  "anthropic_error",
+  "unknown",
+];
+
 // /regen renders the preview-then-accept screen. The URL is the source of
-// truth: ?preview=<id> identifies which pending preview to show. Missing
-// or invalid → bounce home (the user almost certainly arrived by mistake
-// or from a stale link).
+// truth: ?preview=<id> identifies which pending preview to show; or
+// ?error=<code> renders the branded retry state when previewPlan
+// failed. Missing or invalid → bounce home (the user almost certainly
+// arrived by mistake or from a stale link).
 export default async function RegenPage({
   searchParams,
 }: {
-  searchParams: Promise<{ preview?: string }>;
+  searchParams: Promise<{ preview?: string; error?: string; req?: string }>;
 }) {
-  const { preview: previewParam } = await searchParams;
+  const {
+    preview: previewParam,
+    error: errorParam,
+    req: reqParam,
+  } = await searchParams;
+
+  // Generation-failure branch. Falls back to the `unknown` code if a
+  // stray query param doesn't match the typed set — keeps the page
+  // robust against link tampering.
+  if (errorParam) {
+    const code = (KNOWN_ERROR_CODES.find((c) => c === errorParam) ??
+      "unknown") as PlanGenErrorCode;
+    return <RegenErrorPage code={code} requestId={reqParam} />;
+  }
+
   if (!previewParam || !/^\d+$/.test(previewParam)) {
     redirect("/");
   }

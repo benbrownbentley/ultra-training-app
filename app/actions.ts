@@ -12,6 +12,11 @@ import {
   listJournalEntries,
 } from "@/lib/supabase/server";
 import { generateTrainingPlan } from "@/lib/claude";
+import {
+  classifyGenerationError,
+  makeRequestId,
+  type PlanGenFailure,
+} from "@/lib/plan-gen-result";
 import { blankToNull, getTodayISO } from "@/lib/utils";
 import type {
   GymAccess,
@@ -251,15 +256,17 @@ export async function addCustomActivity(input: {
 /**
  * Phase 1 of the regenerate flow: generate a candidate plan and stash it
  * in plan_previews. Does NOT touch the live workouts or journal — the
- * commit phase handles that. Returns the new preview id so the caller can
- * route to /regen?preview=<id>.
+ * commit phase handles that. Returns a typed envelope — on success,
+ * `{ ok: true, previewId }`; on failure, `{ ok: false, code, requestId }`
+ * so the UI can render the branded retry state instead of letting the
+ * Vercel 504 reach the user. See lib/plan-gen-result.ts.
  *
  * Discards any existing pending preview for this user first so at most
  * one is ever in flight (acceptance criterion #4 — no accumulation).
  */
 export async function previewPlan(
   notes?: string,
-): Promise<{ previewId: number }> {
+): Promise<{ ok: true; previewId: number } | PlanGenFailure> {
   const today = getTodayISO();
   const { user } = await requireUser();
 
@@ -298,19 +305,33 @@ export async function previewPlan(
   // this in-app discard is just defense.
   await discardAllPendingPreviews(user.id);
 
-  const result = await generateTrainingPlan({
-    race,
-    otherRaces,
-    profile,
-    startDate: today,
-    // history rows already carry planned_detail directly out of
-    // getRaceAndHistory — formatStrengthActuals reads the structured
-    // payload, no per-row decoration needed.
-    history,
-    notes: blankToNull(notes ?? ""),
-    journalEntries: journalContext,
-    previousSummary,
-  });
+  // Catch generation failures and convert to the typed envelope. Lets
+  // the client UI distinguish timeout / validation / anthropic /
+  // unknown and render the appropriate branded state. Everything else
+  // (auth, Supabase IO) still throws — those are bugs, not expected
+  // failure modes.
+  let result;
+  try {
+    result = await generateTrainingPlan({
+      race,
+      otherRaces,
+      profile,
+      startDate: today,
+      // history rows already carry planned_detail directly out of
+      // getRaceAndHistory — formatStrengthActuals reads the structured
+      // payload, no per-row decoration needed.
+      history,
+      notes: blankToNull(notes ?? ""),
+      journalEntries: journalContext,
+      previousSummary,
+      isWizard: false,
+    });
+  } catch (err) {
+    const code = classifyGenerationError(err);
+    const requestId = makeRequestId();
+    console.error(`[previewPlan] generation failed (code=${code}, req=${requestId})`, err);
+    return { ok: false, code, requestId };
+  }
 
   const futureOnly = result.workouts.filter((w) => w.date >= today);
   const insertRow = {
@@ -340,7 +361,7 @@ export async function previewPlan(
   if (attempt.error) throw attempt.error;
   if (!attempt.data) throw new Error("Failed to create preview.");
 
-  return { previewId: attempt.data.id };
+  return { ok: true, previewId: attempt.data.id };
 }
 
 // Internal helper — marks every pending preview for a user as
@@ -510,9 +531,14 @@ export async function createJournalEntry(args: CreateJournalArgs) {
 
   if (args.regenAfter) {
     // Generate a preview, then route the user to the regen preview screen
-    // so they can review the diff before the plan actually changes.
-    const { previewId } = await previewPlan();
-    redirect(`/regen?preview=${previewId}`);
+    // so they can review the diff before the plan actually changes. On
+    // generation failure, route to /regen?error=<code> so the user sees
+    // the branded retry state instead of a bare server error.
+    const r = await previewPlan();
+    if (!r.ok) {
+      redirect(`/regen?error=${r.code}&req=${r.requestId}`);
+    }
+    redirect(`/regen?preview=${r.previewId}`);
   } else {
     redirect("/journal");
   }
@@ -887,8 +913,12 @@ const WizardPayloadSchema = z.object({
 });
 
 // expected to manage the post-submit UX (the wizard shows generating →
-// done states inline), so we don't redirect here.
-export async function submitWizard(rawData: WizardPayload) {
+// done states inline), so we don't redirect here. Returns a typed
+// envelope on generation failure so the wizard can render the
+// branded error state instead of the Vercel default 504.
+export async function submitWizard(
+  rawData: WizardPayload,
+): Promise<{ ok: true } | PlanGenFailure> {
   const data = WizardPayloadSchema.parse(rawData);
   const { user } = await requireUser();
 
@@ -997,14 +1027,27 @@ export async function submitWizard(rawData: WizardPayload) {
   if (!race) throw new Error("No race configured.");
   if (!profile) throw new Error("No athlete profile configured.");
 
-  const result = await generateTrainingPlan({
-    race,
-    otherRaces,
-    profile,
-    startDate: today,
-    history: [],
-    journalEntries: [],
-  });
+  // Wrap the Claude call in a typed envelope so the wizard can render
+  // the branded error state instead of letting a Vercel 504 reach the
+  // user. Anthropic / validation / timeout errors all collapse into
+  // PlanGenFailure with a stable code.
+  let result;
+  try {
+    result = await generateTrainingPlan({
+      race,
+      otherRaces,
+      profile,
+      startDate: today,
+      history: [],
+      journalEntries: [],
+      isWizard: true,
+    });
+  } catch (err) {
+    const code = classifyGenerationError(err);
+    const requestId = makeRequestId();
+    console.error(`[submitWizard] generation failed (code=${code}, req=${requestId})`, err);
+    return { ok: false, code, requestId };
+  }
 
   // Commit via the same RPC the preview→commit path uses, so the initial
   // generation also gets atomic delete+insert semantics.
@@ -1016,4 +1059,5 @@ export async function submitWizard(rawData: WizardPayload) {
   if (rpcErr) throw rpcErr;
 
   revalidatePath("/");
+  return { ok: true };
 }

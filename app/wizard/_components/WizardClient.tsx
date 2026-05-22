@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { submitWizard } from "@/app/actions";
+import type { PlanGenErrorCode } from "@/lib/plan-gen-result";
 import { WelcomeStep } from "./WelcomeStep";
 import { WizardChrome } from "./WizardChrome";
 import {
@@ -17,7 +18,11 @@ import {
   ScheduleStepBody,
 } from "./steps";
 import { HelperText } from "./form-bits";
-import { DoneState, GeneratingState } from "./GeneratingDoneStates";
+import {
+  DoneState,
+  GeneratingErrorState,
+  GeneratingState,
+} from "./GeneratingDoneStates";
 import {
   EMPTY_PAYLOAD,
   type WizardPayload,
@@ -34,6 +39,7 @@ type StepId =
   | "schedule"
   | "equipment"
   | "generating"
+  | "generating-error"
   | "done";
 
 const NUMBERED_FLOW: StepId[] = [
@@ -52,6 +58,13 @@ export function WizardClient() {
   const [step, setStep] = useState<StepId>("welcome");
   const [data, setData] = useState<WizardPayload>(EMPTY_PAYLOAD);
   const [error, setError] = useState<string | null>(null);
+  // Captured from the typed envelope returned by submitWizard on
+  // generation failure. Drives the copy + debug footer on the
+  // GeneratingErrorState screen.
+  const [generationError, setGenerationError] = useState<{
+    code: PlanGenErrorCode;
+    requestId?: string;
+  } | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function set<K extends keyof WizardPayload>(key: K, value: WizardPayload[K]) {
@@ -84,14 +97,28 @@ export function WizardClient() {
 
   function submit() {
     setError(null);
+    setGenerationError(null);
     setStep("generating");
     startTransition(async () => {
       try {
-        await submitWizard(data);
+        const r = await submitWizard(data);
+        if (!r.ok) {
+          // Generation failed in a way the server could classify —
+          // surface the branded error screen so the user has a single
+          // primary Try-Again CTA. Wizard inputs are preserved in
+          // client state so a retry doesn't lose typed answers.
+          setGenerationError({ code: r.code, requestId: r.requestId });
+          setStep("generating-error");
+          return;
+        }
         setStep("done");
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to generate plan");
-        setStep("equipment");
+        // Network-level failure — the server action's typed envelope
+        // never landed (typical Vercel 504 HTML response). Treat as a
+        // generation_timeout so the user sees the same branded UX.
+        console.error("[WizardClient] submitWizard threw", e);
+        setGenerationError({ code: "generation_timeout" });
+        setStep("generating-error");
       }
     });
   }
@@ -107,6 +134,19 @@ export function WizardClient() {
   }
   if (step === "generating") {
     return <GeneratingState />;
+  }
+  if (step === "generating-error") {
+    return (
+      <GeneratingErrorState
+        code={generationError?.code ?? "unknown"}
+        requestId={generationError?.requestId}
+        onTryAgain={submit}
+        onEditSetup={() => {
+          setGenerationError(null);
+          setStep("races");
+        }}
+      />
+    );
   }
   if (step === "done") {
     return <DoneState />;

@@ -6,7 +6,15 @@
 // The diff format is shaped to feed StateResult/StateMinor directly: a
 // per-week list with DayDiff rows the design already knows how to render.
 
-import type { Day, RacePriority, Workout, WorkoutKind } from "@/lib/plan";
+import type {
+  Day,
+  PlannedDetail,
+  PlannedDetailStored,
+  RacePriority,
+  Workout,
+  WorkoutKind,
+} from "@/lib/plan";
+import { isLegacyPlannedDetail } from "@/lib/planned-detail";
 import { addDays, daysBetween, weekStart } from "@/lib/utils";
 
 export type DiffKind = "unchanged" | "changed" | "added" | "removed";
@@ -32,8 +40,12 @@ export interface PreviewWorkout {
   date: string;
   kind: WorkoutKind;
   title: string;
-  details: string;
   position: number;
+  // Phase 2: structured planned payload + per-workout `why`. The
+  // commit_plan_preview RPC writes both columns; the diff renderer
+  // reads `planned_detail` to summarise each row.
+  planned_detail: PlannedDetail;
+  why: string;
 }
 
 // Change-badge taxonomy. Used by both the Claude tool schema (claude.ts
@@ -89,13 +101,51 @@ function shortDate(iso: string): string {
     .toUpperCase();
 }
 
-function workoutSummary(w: PreviewWorkout | Workout): string {
-  return w.details;
+// One-line summary of a workout used in the diff display. Reads
+// directly from the structured planned_detail (post-Phase-2 source of
+// truth). Legacy backfilled rows surface their notes; current-plan
+// rows usually carry full structured payloads.
+export function summarisePlannedDetailForDiff(
+  pd: PlannedDetailStored,
+): string {
+  if (pd == null) return "";
+  if (isLegacyPlannedDetail(pd)) return pd.notes;
+  if (pd.kind === "run") {
+    const bits: string[] = [];
+    if (pd.total_distance_km != null) bits.push(`${pd.total_distance_km} km`);
+    if (pd.total_duration_min != null) bits.push(`${pd.total_duration_min} min`);
+    if (pd.target_pace) bits.push(`@ ${pd.target_pace}`);
+    if (bits.length > 0) return bits.join(" · ");
+    return pd.segments.map((s) => s.label).join(" · ");
+  }
+  if (pd.kind === "gym" || pd.kind === "physio") {
+    const dur = pd.total_duration_min != null ? `${pd.total_duration_min} min — ` : "";
+    return `${dur}${pd.exercises.map((e) => e.name).join(", ")}`;
+  }
+  if (pd.kind === "mobility") {
+    const dur = pd.total_duration_min != null ? `${pd.total_duration_min} min — ` : "";
+    return `${dur}${pd.movements.map((m) => m.name).join(", ")}`;
+  }
+  if (pd.kind === "cross") {
+    return `${pd.duration_min} min ${pd.activity}${pd.target_zone ? ` · ${pd.target_zone}` : ""}`;
+  }
+  // hike
+  const bits: string[] = [`${pd.duration_min} min`];
+  if (pd.elevation_gain_m != null) bits.push(`+${pd.elevation_gain_m}m`);
+  if (pd.target_zone) bits.push(pd.target_zone);
+  return bits.join(" · ");
 }
 
-// Compares two workout sets at the same date. Equality requires identical
-// counts plus matching title+details per slot (order-sensitive — Claude
-// returns positions in a stable order).
+function workoutSummary(w: PreviewWorkout | Workout): string {
+  return summarisePlannedDetailForDiff(w.planned_detail);
+}
+
+// Compares two workout sets at the same date. Equality requires
+// identical counts plus matching title + summary text + kind per slot
+// (order-sensitive — Claude returns positions in a stable order).
+// Summary text is derived from the structured payload, so a regenerated
+// run with new segment shape but identical totals is conservatively
+// flagged as `changed`.
 function workoutSetsEqual(
   current: Workout[],
   preview: PreviewWorkout[],
@@ -103,7 +153,13 @@ function workoutSetsEqual(
   if (current.length !== preview.length) return false;
   return current.every((w, i) => {
     const p = preview[i];
-    return p && p.title === w.title && p.details === w.details && p.kind === w.kind;
+    return (
+      p &&
+      p.title === w.title &&
+      p.kind === w.kind &&
+      summarisePlannedDetailForDiff(p.planned_detail) ===
+        summarisePlannedDetailForDiff(w.planned_detail)
+    );
   });
 }
 

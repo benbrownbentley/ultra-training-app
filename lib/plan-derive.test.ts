@@ -23,16 +23,58 @@ function makeRun(
   id: number,
   date: string,
   title = "Easy",
-  details = "10 km @ 6:00/km easy",
+  opts: { distanceKm?: number; elevationM?: number } = {},
 ): Workout {
+  void date;
   return {
     id,
     kind: "run",
     title,
-    details,
+    planned_detail: {
+      kind: "run",
+      segments: [{ label: "Main set" }],
+      total_distance_km: opts.distanceKm ?? 10,
+      total_elevation_gain_m: opts.elevationM ?? null,
+    },
+    why: null,
+    source: "manual",
     status: "pending",
     position: 0,
     logged_at: null,
+    actual_duration_min: null,
+    actual_distance_km: null,
+    actual_elevation_gain_m: null,
+    actual_hr_avg: null,
+    actual_rpe: null,
+    actual_notes: null,
+    actual_detail: null,
+    is_custom: false,
+  };
+}
+
+function makeGym(id: number, title = "Strength"): Workout {
+  return {
+    id,
+    kind: "gym",
+    title,
+    planned_detail: {
+      kind: "gym",
+      exercises: [{ name: "Squat", sets: 4, reps: 6, weight: 60, unit: "kg" }],
+      total_duration_min: 45,
+    },
+    why: null,
+    source: "manual",
+    status: "pending",
+    position: 0,
+    logged_at: null,
+    actual_duration_min: null,
+    actual_distance_km: null,
+    actual_elevation_gain_m: null,
+    actual_hr_avg: null,
+    actual_rpe: null,
+    actual_notes: null,
+    actual_detail: null,
+    is_custom: false,
   };
 }
 
@@ -64,24 +106,13 @@ describe("dayPrimaryKind + daySummaryLabel", () => {
     expect(daySummaryLabel({ date: "2026-05-20", workouts: [] })).toBe("rest");
   });
   it("prefers run over gym over mobility", () => {
-    const workouts: Workout[] = [
-      {
-        id: 1,
-        kind: "gym",
-        title: "Strength",
-        details: "45 min",
-        status: "pending",
-        position: 0,
-        logged_at: null,
-      },
-      makeRun(2, "2026-05-20"),
-    ];
+    const workouts: Workout[] = [makeGym(1), makeRun(2, "2026-05-20")];
     expect(dayPrimaryKind(workouts)).toBe("run");
   });
-  it("extracts distance from details for the day label", () => {
+  it("extracts distance from planned_detail for the day label", () => {
     const day = {
       date: "2026-05-20",
-      workouts: [makeRun(1, "2026-05-20", "Easy", "12 km @ 6:00/km")],
+      workouts: [makeRun(1, "2026-05-20", "Easy", { distanceKm: 12 })],
     };
     expect(daySummaryLabel(day)).toBe("12 km");
   });
@@ -92,11 +123,13 @@ describe("weekStats", () => {
     const days = [
       {
         date: "2026-05-18",
-        workouts: [makeRun(1, "2026-05-18", "Easy", "10 km")],
+        workouts: [makeRun(1, "2026-05-18", "Easy", { distanceKm: 10 })],
       },
       {
         date: "2026-05-20",
-        workouts: [makeRun(2, "2026-05-20", "Tempo", "12 km +220m")],
+        workouts: [
+          makeRun(2, "2026-05-20", "Tempo", { distanceKm: 12, elevationM: 220 }),
+        ],
       },
     ];
     const stats = weekStats(days);
@@ -104,41 +137,19 @@ describe("weekStats", () => {
     expect(stats.vertM).toBe(220);
     expect(stats.totalWorkouts).toBe(2);
   });
-  it("treats mileage as miles when units appear in details", () => {
-    // distanceKm in lib/plan-derive specifically converts mi → km.
-    const days = [
-      {
-        date: "2026-05-18",
-        workouts: [makeRun(1, "2026-05-18", "Easy", "6 mi @ 9:30/mi easy")],
-      },
-    ];
-    const stats = weekStats(days);
-    // 6 mi ≈ 9.66 km, rounded → 10
-    expect(stats.volKm).toBe(10);
-  });
   it("flags strength + tempo as quality, easy + rest as not", () => {
     const days = [
       {
         date: "2026-05-18",
-        workouts: [makeRun(1, "2026-05-18", "Easy", "8 km")],
+        workouts: [makeRun(1, "2026-05-18", "Easy", { distanceKm: 8 })],
       },
       {
         date: "2026-05-19",
-        workouts: [makeRun(2, "2026-05-19", "Tempo Run", "12 km")],
+        workouts: [makeRun(2, "2026-05-19", "Tempo Run", { distanceKm: 12 })],
       },
       {
         date: "2026-05-20",
-        workouts: [
-          {
-            id: 3,
-            kind: "gym" as const,
-            title: "Strength A",
-            details: "45 min",
-            status: "pending" as const,
-            position: 0,
-            logged_at: null,
-          },
-        ],
+        workouts: [makeGym(3, "Strength A")],
       },
     ];
     const stats = weekStats(days);

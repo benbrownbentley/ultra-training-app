@@ -1,5 +1,6 @@
 import Link from "next/link";
-import type { Day, WorkoutKind } from "@/lib/plan";
+import type { Day, Workout, WorkoutKind } from "@/lib/plan";
+import { isLegacyPlannedDetail } from "@/lib/planned-detail";
 import { CheckMini, WorkoutKindIcon } from "./icons";
 
 interface DaySummary {
@@ -39,22 +40,38 @@ function pickPrimary(day: Day): WorkoutKind | null {
   return day.workouts[0].kind;
 }
 
-// Compact label shown under each day's icon. Tries to surface a number
-// (distance, duration) from the workout details so the strip reads at a
-// glance; falls back to the bare kind otherwise.
+// Compact label shown under each day's icon. Reads totals straight off
+// the structured planned_detail so the strip stays in sync with what
+// Claude prescribed; falls back to the bare kind when only legacy
+// notes are stored.
+function pickLabel(w: Workout): string {
+  const pd = w.planned_detail;
+  if (pd != null && !isLegacyPlannedDetail(pd)) {
+    if (pd.kind === "run") {
+      if (pd.total_distance_km != null) return `${pd.total_distance_km} km`;
+      if (pd.total_duration_min != null) return `${pd.total_duration_min} min`;
+    }
+    if (pd.kind === "hike" || pd.kind === "cross") {
+      return `${pd.duration_min} min`;
+    }
+    if (
+      (pd.kind === "gym" || pd.kind === "mobility" || pd.kind === "physio") &&
+      pd.total_duration_min != null
+    ) {
+      return `${pd.total_duration_min} min`;
+    }
+  }
+  if (w.kind === "gym") return "strength";
+  if (w.kind === "mobility") return "mobility";
+  if (w.kind === "physio") return "physio";
+  if (w.kind === "cross") return "cross";
+  if (w.kind === "hike") return "hike";
+  return w.title.toLowerCase().split(" ").slice(0, 1).join(" ");
+}
+
 function summarise(day: Day): string {
   if (day.workouts.length === 0) return "rest";
-  const first = day.workouts[0];
-  const match = first.details.match(
-    /(\d+\.?\d*)\s*(km|mi|min|hr|h)\b/i,
-  );
-  if (match) return `${match[1]} ${match[2].toLowerCase()}`;
-  if (first.kind === "gym") return "strength";
-  if (first.kind === "mobility") return "mobility";
-  if (first.kind === "physio") return "physio";
-  if (first.kind === "cross") return "cross";
-  if (first.kind === "hike") return "hike";
-  return first.title.toLowerCase().split(" ").slice(0, 1).join(" ");
+  return pickLabel(day.workouts[0]);
 }
 
 export function buildWeekSummaries(

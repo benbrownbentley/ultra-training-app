@@ -12,8 +12,6 @@ import {
   listJournalEntries,
 } from "@/lib/supabase/server";
 import { generateTrainingPlan } from "@/lib/claude";
-import type { LoggedWorkout } from "@/lib/claude";
-import { deriveWorkoutContent } from "@/lib/workout-content";
 import { blankToNull, getTodayISO } from "@/lib/utils";
 import type {
   GymAccess,
@@ -87,31 +85,6 @@ export interface WizardPayload {
   equipment: string[];
   outdoorTerrain: string[];
   crossTrainingEnjoys: string[];
-}
-
-// Decorate the raw workouts-table history with planned per-exercise
-// targets for strength sessions so formatStrengthActuals can compare
-// against the plan (DONE AT PLANNED / WITH OVERRIDES / SHORT). Other
-// kinds pass through unchanged. Pure transform — safe to call on every
-// regen.
-function attachPlannedExercises(
-  history: LoggedWorkout[],
-): LoggedWorkout[] {
-  return history.map((w) => {
-    if (w.kind !== "gym") return w;
-    const content = deriveWorkoutContent(w.kind, w.title, w.details);
-    if (content.exercises.length === 0) return w;
-    return {
-      ...w,
-      planned_exercises: content.exercises.map((ex) => ({
-        name: ex.name,
-        sets: ex.sets,
-        reps: ex.reps,
-        weight: Number(ex.weight ?? 0),
-        unit: ex.unit ?? "kg",
-      })),
-    };
-  });
 }
 
 /**
@@ -255,12 +228,18 @@ export async function addCustomActivity(input: {
   if (posErr) throw posErr;
 
   const nextPosition = (existing?.[0]?.position ?? -1) + 1;
+  // Phase 2: write the legacy `{ notes }` shape for user-added custom
+  // activities. Extending the sheet UI to capture structure (per-kind
+  // segments / exercises / etc.) is deferred per PHASE_2_SPEC.md §6
+  // step 16; the renderer treats notes-only rows as minimal cards.
   const { error } = await supabase.from("workouts").insert({
     user_id: user.id,
     date: parsed.date,
     kind: parsed.kind,
     title: parsed.title,
-    details: parsed.details,
+    planned_detail: { notes: parsed.details },
+    why: null,
+    source: "manual",
     status: "pending",
     position: nextPosition,
     is_custom: true,
@@ -324,7 +303,10 @@ export async function previewPlan(
     otherRaces,
     profile,
     startDate: today,
-    history: attachPlannedExercises(history),
+    // history rows already carry planned_detail directly out of
+    // getRaceAndHistory — formatStrengthActuals reads the structured
+    // payload, no per-row decoration needed.
+    history,
     notes: blankToNull(notes ?? ""),
     journalEntries: journalContext,
     previousSummary,

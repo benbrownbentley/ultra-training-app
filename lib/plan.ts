@@ -7,6 +7,125 @@ export type WorkoutKind =
   | "physio";
 export type WorkoutStatus = "pending" | "completed" | "skipped";
 
+// Origin of the workout record. `manual` for everything Vert emits in
+// v2; `device` is the seam for v3+ external-sync (Strava / Garmin /
+// Apple Health). Brand-specific names live one enum-expansion away if
+// the UI ever needs to differentiate. See PHASE_2_SPEC.md §3.3.
+export type WorkoutSource = "manual" | "device";
+
+// ----- Planned-side structured payload (replaces the old free-text
+// `details` column on workouts). Discriminated union on `kind` — every
+// variant carries the same `kind` value that the outer workout row
+// carries, which is the strict-discriminator pattern the validator
+// enforces. See PHASE_2_SPEC.md §3.2 / §4.2.
+
+export interface PlannedRunSegment {
+  label: string;
+  duration_min?: number | null;
+  distance_km?: number | null;
+  zone?: string | null;
+  intervals?: string | null;
+  pace?: string | null;
+  note?: string | null;
+}
+
+export interface PlannedExercise {
+  name: string;
+  equipment?: string | null;
+  sets: number;
+  reps: number;
+  weight?: number | null;
+  unit?: "kg" | "lb" | "bw" | null;
+  notes?: string | null;
+}
+
+export interface PlannedPhysioExercise extends PlannedExercise {
+  pain_focus?: string | null;
+}
+
+export interface PlannedMovement {
+  name: string;
+  duration_s?: number | null;
+  side?: "both" | "each" | "left" | "right" | null;
+  notes?: string | null;
+}
+
+export interface PlannedWarmupBlock {
+  duration_min?: number | null;
+  items: string[];
+  note?: string | null;
+}
+
+export interface PlannedDetailRun {
+  kind: "run";
+  segments: PlannedRunSegment[];
+  total_duration_min?: number | null;
+  total_distance_km?: number | null;
+  total_elevation_gain_m?: number | null;
+  target_pace?: string | null;
+}
+
+export interface PlannedDetailGym {
+  kind: "gym";
+  exercises: PlannedExercise[];
+  warmup?: PlannedWarmupBlock | null;
+  total_duration_min?: number | null;
+}
+
+export interface PlannedDetailPhysio {
+  kind: "physio";
+  exercises: PlannedPhysioExercise[];
+  total_duration_min?: number | null;
+}
+
+export interface PlannedDetailMobility {
+  kind: "mobility";
+  movements: PlannedMovement[];
+  total_duration_min?: number | null;
+}
+
+export interface PlannedDetailCross {
+  kind: "cross";
+  activity: string;
+  duration_min: number;
+  target_zone?: string | null;
+  intervals?: string | null;
+  notes?: string | null;
+}
+
+export interface PlannedDetailHike {
+  kind: "hike";
+  duration_min: number;
+  elevation_gain_m?: number | null;
+  target_zone?: string | null;
+  intervals?: string | null;
+  fueling?: string | null;
+  notes?: string | null;
+}
+
+export type PlannedDetail =
+  | PlannedDetailRun
+  | PlannedDetailGym
+  | PlannedDetailPhysio
+  | PlannedDetailMobility
+  | PlannedDetailCross
+  | PlannedDetailHike;
+
+// Legacy shape written by the Phase 2 backfill migration for every row
+// that existed before `details` was dropped. Renderers detect this by
+// the absence of `kind` and fall back to a minimal card. New writes
+// (RPC + addCustomActivity) emit either a full PlannedDetail or this
+// minimal shape, never a partial mix.
+export interface LegacyPlannedDetail {
+  notes: string;
+}
+
+// What the workouts.planned_detail column may hold at read time.
+export type PlannedDetailStored =
+  | PlannedDetail
+  | LegacyPlannedDetail
+  | null;
+
 // Kind-specific actuals shape — sparse by design. Runs carry `zones`;
 // strength carries `sets`/`skipped_exercises`/`added_exercises`; physio
 // + mobility carry `exercises`. All optional so a partially-filled log
@@ -47,7 +166,16 @@ export interface Workout {
   id: number;
   kind: WorkoutKind;
   title: string;
-  details: string;
+  // Structured planned payload. Pre-Phase-2 rows were backfilled with
+  // the legacy `{ notes: <original text> }` shape; new RPC writes carry
+  // a full PlannedDetail. The renderer detects which shape it has.
+  planned_detail: PlannedDetailStored;
+  // Per-workout coach-voice rationale. ≤500 chars. Null for legacy
+  // backfilled rows — the renderer falls back to STUB_WHY[subtype].
+  why: string | null;
+  // Origin of the row. Always `manual` in v2; `device` is the seam for
+  // v3+ device sync.
+  source: WorkoutSource;
   status: WorkoutStatus;
   // Order within the day (0 = primary, 1 = secondary, …). Sourced from
   // the `workouts.position` column so diff comparisons can stabilise

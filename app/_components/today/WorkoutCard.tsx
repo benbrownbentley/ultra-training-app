@@ -5,6 +5,7 @@ import Link from "next/link";
 import { logWorkout } from "@/app/actions";
 import type { Workout, WorkoutKind } from "@/lib/plan";
 import type { Variant } from "@/lib/workout-variant";
+import { summarisePlannedDetailForDiff } from "@/lib/preview";
 import { MOTIFS } from "./motifs";
 import { ArrowRight, CheckCircle, ChevronUpRight } from "./icons";
 import { useLoggedToast } from "./LoggedToast";
@@ -89,6 +90,11 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
     });
   }
 
+  // Short readout derived from the structured planned_detail. Legacy
+  // backfilled rows surface their notes directly (the summariser
+  // handles both shapes).
+  const summary = summarisePlannedDetailForDiff(workout.planned_detail);
+
   const doneTime = loggedAt
     ? new Date(loggedAt).toLocaleTimeString("en-US", {
         hour: "2-digit",
@@ -155,12 +161,14 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
           {workout.title}
         </h3>
 
-        <div
-          className="mt-2 font-mono text-[13px] text-zinc-950 dark:text-zinc-50"
-          style={{ letterSpacing: "0.005em" }}
-        >
-          {workout.details}
-        </div>
+        {summary && (
+          <div
+            className="mt-2 font-mono text-[13px] text-zinc-950 dark:text-zinc-50"
+            style={{ letterSpacing: "0.005em" }}
+          >
+            {summary}
+          </div>
+        )}
 
         {variant === "skipped" && (
           <div

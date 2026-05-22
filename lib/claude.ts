@@ -3,6 +3,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type {
   ActualDetail,
   AthleteProfile,
+  PlannedDetail,
+  PlannedDetailStored,
   Race,
   WorkoutKind,
   WorkoutStatus,
@@ -13,6 +15,7 @@ import {
   errorsOnly,
   validateGeneratedPlan,
 } from "@/lib/plan-validation";
+import { isLegacyPlannedDetail } from "@/lib/planned-detail";
 
 const client = new Anthropic();
 
@@ -20,7 +23,11 @@ export interface LoggedWorkout {
   date: string;
   kind: WorkoutKind;
   title: string;
-  details: string;
+  // Phase 2: structured planned payload. May be a full PlannedDetail
+  // (post-migration regen) or the legacy `{ notes }` shape (rows
+  // backfilled by the Phase 2 migration). Renderers branch on the
+  // discriminator.
+  planned_detail: PlannedDetailStored;
   status: WorkoutStatus;
   // Captured-on-the-day actuals. All optional. Fed into formatHistory so
   // Claude can see overperformance / underperformance vs. prescribed and
@@ -32,17 +39,6 @@ export interface LoggedWorkout {
   actual_rpe?: number | null;
   actual_notes?: string | null;
   actual_detail?: ActualDetail | null;
-  // Planned exercises for strength workouts, sourced via
-  // deriveWorkoutContent at history-build time. Lets
-  // formatStrengthActuals classify each exercise as DONE AT PLANNED /
-  // WITH OVERRIDES / SHORT against the planned target.
-  planned_exercises?: {
-    name: string;
-    sets: number;
-    reps: number;
-    weight: number;
-    unit: string;
-  }[];
 }
 
 export interface JournalContextEntry {
@@ -85,8 +81,13 @@ export interface GeneratedWorkout {
   date: string;
   kind: WorkoutKind;
   title: string;
-  details: string;
   position: number;
+  // Per-workout coach-voice rationale. Validated ≤500 chars at the
+  // action boundary; the system prompt asks for 1-3 sentences.
+  why: string;
+  // Kind-specific structured payload. Strict discriminator: the inner
+  // `kind` matches the outer `kind` (validator enforces).
+  planned_detail: PlannedDetail;
 }
 
 // Canonical definition of GenerationSummary + ChangeType lives in
@@ -202,9 +203,28 @@ When workout history is provided, read it for adherence and adapt:
 
 - Generate workouts ONLY from start date through race day. Never include past dates.
 - Every date in the range must have at least one workout. On rest days, schedule 15-20 min mobility.
-- Include the race itself as a "run" kind workout on race day. Details should match the race (distance, elevation, terrain).
+- Include the race itself as a "run" kind workout on race day. The planned_detail should match the race (distance, elevation, terrain).
 - Use the athlete's unit_system for distances and paces. Never substitute metric for imperial or vice versa. The unit_system field is the source of truth.
 - Submit via the submit_training_plan tool. No plain text response.
+
+# STRUCTURED OUTPUT REQUIREMENTS
+
+Each workout you submit has three required fields beyond date/kind/title/position:
+
+1. **\`why\`** — 1-3 sentences of coach voice for *this specific session*. Maximum 500 characters. A good \`why\` references at least one of: the phase the athlete is in (BASE / BUILD / PEAK / TAPER), the placement of this session within the week (e.g. "first quality day after Sunday's long run"), and the recent adherence or journal signal when it's load-bearing ("you skipped two of last week's runs, so this is intentionally short"). Avoid generic platitudes ("running is good for endurance"). If you can't write something specific, pick the constraint that most shaped your decision and explain it. Hard cap: 500 characters.
+
+2. **\`planned_detail\`** — kind-specific structured payload. The inner \`kind\` field MUST equal the outer \`kind\` field — strict discriminator. The shapes are non-negotiable:
+
+   - **run** — \`{ kind: "run", segments: [{label, duration_min?, distance_km?, zone?, intervals?, pace?, note?}], total_duration_min?, total_distance_km?, total_elevation_gain_m?, target_pace? }\`. \`segments\` is required, ≥1 item. Use suggested labels: "Warm-up", "Main set", "Cool-down", "Interval", "Recovery", "Strides", "Block".
+   - **gym** — \`{ kind: "gym", exercises: [{name, equipment?, sets, reps, weight?, unit?, notes?}], warmup?: {duration_min?, items: string[], note?}, total_duration_min? }\`. \`exercises\` is required, ≥1 item. \`unit\` is one of \`kg\` | \`lb\` | \`bw\` (BW = bodyweight, weight null).
+   - **physio** — \`{ kind: "physio", exercises: [{name, equipment?, sets, reps, weight?, unit?, pain_focus?, notes?}], total_duration_min? }\`. Same shape as gym plus \`pain_focus\` (the body area being protected, e.g. "achilles"). \`exercises\` required, ≥1.
+   - **mobility** — \`{ kind: "mobility", movements: [{name, duration_s?, side?, notes?}], total_duration_min? }\`. \`movements\` required, ≥1. \`side\` ∈ \`both\` | \`each\` | \`left\` | \`right\`. Pace ~60-90s per movement; do not over-pack.
+   - **cross** — \`{ kind: "cross", activity, duration_min, target_zone?, intervals?, notes? }\`. \`activity\` is one of cycling / swimming / rowing / elliptical / pool_run / other.
+   - **hike** — \`{ kind: "hike", duration_min, elevation_gain_m?, target_zone?, intervals?, fueling?, notes? }\`. For hikes ≥3 hr include a \`fueling\` line (carbs/hr + water target).
+
+3. **summary** + **changes** at the top level — unchanged from before. \`summary\` is the 1-2 sentence coach voice on the regeneration as a whole.
+
+Emit numeric fields as numbers, not strings (e.g. \`duration_min: 45\`, not \`"45"\`). Distances and durations use the athlete's unit_system for the human-facing \`pace\` / \`target_pace\` strings; \`distance_km\` and \`duration_min\` are always metric and minutes — the display layer converts.
 
 # KIND VOCABULARY
 
@@ -222,6 +242,151 @@ Each workout must declare one of six kinds. Pick the kind that matches the sessi
 First person, addressed to the athlete, warm but direct. Reference recent context (last 14 days of history, journal entries flagged NEW, athlete notes) explicitly. 1-2 sentences.
 
 Example: "You missed two of last week's runs and your calf was flagged in the journal — I've pulled back this week's volume and swapped the Wednesday quality session for an easy bike spin so we can settle the calf before we build into the next block."`;
+
+// Per-kind planned_detail schemas. Each carries `kind` as a literal so
+// the API validator can route on the discriminator before checking
+// per-shape fields. See PHASE_2_SPEC.md §4.2.
+const PLANNED_DETAIL_RUN_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    kind: { type: "string" as const, enum: ["run"] },
+    segments: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        properties: {
+          label: { type: "string" as const },
+          duration_min: { type: "number" as const, nullable: true },
+          distance_km: { type: "number" as const, nullable: true },
+          zone: { type: "string" as const, nullable: true },
+          intervals: { type: "string" as const, nullable: true },
+          pace: { type: "string" as const, nullable: true },
+          note: { type: "string" as const, nullable: true },
+        },
+        required: ["label"],
+      },
+    },
+    total_duration_min: { type: "number" as const, nullable: true },
+    total_distance_km: { type: "number" as const, nullable: true },
+    total_elevation_gain_m: { type: "number" as const, nullable: true },
+    target_pace: { type: "string" as const, nullable: true },
+  },
+  required: ["kind", "segments"],
+};
+
+const PLANNED_DETAIL_EXERCISE_FIELDS = {
+  name: { type: "string" as const },
+  equipment: { type: "string" as const, nullable: true },
+  sets: { type: "integer" as const, minimum: 1 },
+  reps: { type: "integer" as const, minimum: 1 },
+  weight: { type: "number" as const, nullable: true },
+  unit: { type: "string" as const, enum: ["kg", "lb", "bw"], nullable: true },
+  notes: { type: "string" as const, nullable: true },
+};
+
+const PLANNED_DETAIL_GYM_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    kind: { type: "string" as const, enum: ["gym"] },
+    exercises: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        properties: PLANNED_DETAIL_EXERCISE_FIELDS,
+        required: ["name", "sets", "reps"],
+      },
+    },
+    warmup: {
+      type: "object" as const,
+      nullable: true,
+      properties: {
+        duration_min: { type: "number" as const, nullable: true },
+        items: { type: "array" as const, items: { type: "string" as const } },
+        note: { type: "string" as const, nullable: true },
+      },
+      required: ["items"],
+    },
+    total_duration_min: { type: "number" as const, nullable: true },
+  },
+  required: ["kind", "exercises"],
+};
+
+const PLANNED_DETAIL_PHYSIO_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    kind: { type: "string" as const, enum: ["physio"] },
+    exercises: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        properties: {
+          ...PLANNED_DETAIL_EXERCISE_FIELDS,
+          pain_focus: { type: "string" as const, nullable: true },
+        },
+        required: ["name", "sets", "reps"],
+      },
+    },
+    total_duration_min: { type: "number" as const, nullable: true },
+  },
+  required: ["kind", "exercises"],
+};
+
+const PLANNED_DETAIL_MOBILITY_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    kind: { type: "string" as const, enum: ["mobility"] },
+    movements: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        properties: {
+          name: { type: "string" as const },
+          duration_s: { type: "number" as const, nullable: true },
+          side: {
+            type: "string" as const,
+            enum: ["both", "each", "left", "right"],
+            nullable: true,
+          },
+          notes: { type: "string" as const, nullable: true },
+        },
+        required: ["name"],
+      },
+    },
+    total_duration_min: { type: "number" as const, nullable: true },
+  },
+  required: ["kind", "movements"],
+};
+
+const PLANNED_DETAIL_CROSS_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    kind: { type: "string" as const, enum: ["cross"] },
+    activity: { type: "string" as const },
+    duration_min: { type: "number" as const },
+    target_zone: { type: "string" as const, nullable: true },
+    intervals: { type: "string" as const, nullable: true },
+    notes: { type: "string" as const, nullable: true },
+  },
+  required: ["kind", "activity", "duration_min"],
+};
+
+const PLANNED_DETAIL_HIKE_SCHEMA = {
+  type: "object" as const,
+  properties: {
+    kind: { type: "string" as const, enum: ["hike"] },
+    duration_min: { type: "number" as const },
+    elevation_gain_m: { type: "number" as const, nullable: true },
+    target_zone: { type: "string" as const, nullable: true },
+    intervals: { type: "string" as const, nullable: true },
+    fueling: { type: "string" as const, nullable: true },
+    notes: { type: "string" as const, nullable: true },
+  },
+  required: ["kind", "duration_min"],
+};
 
 const PLAN_TOOL: Anthropic.Tool = {
   name: "submit_training_plan",
@@ -245,25 +410,37 @@ const PLAN_TOOL: Anthropic.Tool = {
               type: "string",
               enum: ["run", "gym", "mobility", "hike", "cross", "physio"],
               description:
-                "Workout type. See the KIND VOCABULARY section in the system prompt — pick the kind that matches the session's intent (e.g. hike for vert-focused walking, cross for non-impact aerobic, physio for injury-specific work).",
+                "Workout type. See the KIND VOCABULARY section in the system prompt — pick the kind that matches the session's intent. The inner planned_detail.kind MUST match this outer value (strict discriminator).",
             },
             title: {
               type: "string",
               description:
                 "Short title: e.g. 'Easy run', 'Long run', 'Hill repeats', 'Lower body', 'Mobility'",
             },
-            details: {
-              type: "string",
-              description:
-                "Concrete prescription using the athlete's unit system: e.g. '10 km @ 6:00/km easy', '6 × 90s hill repeats + warmup/cooldown', '45 min — squats, RDLs, single-leg work'",
-            },
             position: {
               type: "integer",
               description:
                 "Order within the day (0 = primary, 1 = secondary, etc.)",
             },
+            why: {
+              type: "string",
+              description:
+                "Per-workout coach-voice rationale, 1-3 sentences, max 500 characters. Reference the phase, the placement of this session in the week, and the recent adherence signal where relevant. Specific beats generic — see STRUCTURED OUTPUT REQUIREMENTS in the system prompt.",
+            },
+            planned_detail: {
+              description:
+                "Kind-specific structured payload. The inner `kind` must match the outer `kind`. See STRUCTURED OUTPUT REQUIREMENTS in the system prompt for the per-kind shape.",
+              oneOf: [
+                PLANNED_DETAIL_RUN_SCHEMA,
+                PLANNED_DETAIL_GYM_SCHEMA,
+                PLANNED_DETAIL_PHYSIO_SCHEMA,
+                PLANNED_DETAIL_MOBILITY_SCHEMA,
+                PLANNED_DETAIL_CROSS_SCHEMA,
+                PLANNED_DETAIL_HIKE_SCHEMA,
+              ],
+            },
           },
-          required: ["date", "kind", "title", "details", "position"],
+          required: ["date", "kind", "title", "position", "why", "planned_detail"],
         },
       },
       summary: {
@@ -321,13 +498,99 @@ export function formatActuals(w: LoggedWorkout): string | null {
   return parts.length > 0 ? `actual: ${parts.join(" · ")}` : null;
 }
 
-// Strength-specific summary. When `planned_exercises` is threaded
-// through (current path — see attachPlannedExercises in app/actions.ts),
-// classify each planned exercise as done-at-planned / with-overrides /
-// short and emit the rich "N exercises (M with overrides, K short)"
-// line. When it's missing (legacy / external callers), fall back to
-// raw totals — "N sets across M exercises" — so Claude still sees the
-// shape of the session.
+// Pulls the planned-exercise targets out of a gym/physio planned_detail
+// so formatStrengthActuals can classify each logged exercise against
+// the plan. Returns null when the row is mobility, cross, hike, run,
+// or a legacy minimal row.
+function plannedExercisesFromDetail(
+  pd: PlannedDetailStored,
+): {
+  name: string;
+  sets: number;
+  reps: number;
+  weight: number;
+  unit: string;
+}[] | null {
+  if (pd == null || isLegacyPlannedDetail(pd)) return null;
+  if (pd.kind !== "gym" && pd.kind !== "physio") return null;
+  return pd.exercises.map((ex) => ({
+    name: ex.name,
+    sets: ex.sets,
+    reps: ex.reps,
+    weight: typeof ex.weight === "number" ? ex.weight : 0,
+    unit: ex.unit ?? "kg",
+  }));
+}
+
+// Renders a structured planned_detail into a single text line for the
+// Claude prompt's RECENT WORKOUTS block. Keep it dense — Claude can
+// reconstruct the session from its own emission shape, so the line
+// summarises rather than restates every field. Falls back to the
+// legacy `{ notes }` block when that's all we have.
+function summarisePlannedDetail(pd: PlannedDetailStored): string {
+  if (pd == null) return "";
+  if (isLegacyPlannedDetail(pd)) return pd.notes;
+  if (pd.kind === "run") {
+    const parts: string[] = [];
+    if (pd.total_duration_min != null) parts.push(`${pd.total_duration_min} min`);
+    if (pd.total_distance_km != null) parts.push(`${pd.total_distance_km} km`);
+    if (pd.total_elevation_gain_m != null)
+      parts.push(`+${pd.total_elevation_gain_m}m`);
+    if (pd.target_pace) parts.push(`@ ${pd.target_pace}`);
+    const segLine = pd.segments
+      .map((s) => {
+        const bits: string[] = [s.label];
+        if (s.intervals) bits.push(s.intervals);
+        else if (s.duration_min != null) bits.push(`${s.duration_min} min`);
+        if (s.zone) bits.push(s.zone);
+        return bits.join(" ");
+      })
+      .join(" · ");
+    return [parts.join(" "), segLine].filter(Boolean).join(" — ");
+  }
+  if (pd.kind === "gym" || pd.kind === "physio") {
+    const exLine = pd.exercises
+      .map((e) => {
+        const setReps = `${e.sets}×${e.reps}`;
+        const wt =
+          e.weight != null && e.unit && e.unit !== "bw"
+            ? ` @ ${e.weight}${e.unit}`
+            : e.unit === "bw"
+              ? " BW"
+              : "";
+        return `${e.name} ${setReps}${wt}`;
+      })
+      .join(", ");
+    const dur = pd.total_duration_min != null ? `${pd.total_duration_min} min — ` : "";
+    return `${dur}${exLine}`;
+  }
+  if (pd.kind === "mobility") {
+    const dur = pd.total_duration_min != null ? `${pd.total_duration_min} min — ` : "";
+    return `${dur}${pd.movements.map((m) => m.name).join(", ")}`;
+  }
+  if (pd.kind === "cross") {
+    const bits: string[] = [`${pd.duration_min} min ${pd.activity}`];
+    if (pd.target_zone) bits.push(pd.target_zone);
+    if (pd.intervals) bits.push(pd.intervals);
+    if (pd.notes) bits.push(pd.notes);
+    return bits.join(" · ");
+  }
+  // hike
+  const bits: string[] = [`${pd.duration_min} min hike`];
+  if (pd.elevation_gain_m != null) bits.push(`+${pd.elevation_gain_m}m`);
+  if (pd.target_zone) bits.push(pd.target_zone);
+  if (pd.intervals) bits.push(pd.intervals);
+  if (pd.fueling) bits.push(`fuel: ${pd.fueling}`);
+  if (pd.notes) bits.push(pd.notes);
+  return bits.join(" · ");
+}
+
+// Strength-specific summary. Reads planned exercises directly out of
+// the workout's structured planned_detail (post-Phase-2 path) and
+// classifies each logged exercise as done-at-planned / with-overrides /
+// short. When the stored payload is the legacy `{ notes }` shape (or
+// not gym/physio), falls back to raw totals — "N sets across M
+// exercises" — so Claude still sees the shape of the session.
 export function formatStrengthActuals(w: LoggedWorkout): string | null {
   const d = w.actual_detail;
   if (!d) return null;
@@ -339,7 +602,7 @@ export function formatStrengthActuals(w: LoggedWorkout): string | null {
     return null;
   }
 
-  const planned = w.planned_exercises ?? [];
+  const planned = plannedExercisesFromDetail(w.planned_detail) ?? [];
   const sets = d.sets ?? [];
 
   // Group recorded sets by exerciseName so the per-exercise comparison
@@ -631,8 +894,9 @@ export function formatAdherenceSummary(summary: AdherenceSummary): string {
 
   if (summary.mostRecentSkipped) {
     const m = summary.mostRecentSkipped;
+    const detail = summarisePlannedDetail(m.planned_detail);
     lines.push(
-      `- Most recent skipped: ${m.date} [${m.kind}] ${m.title} — ${m.details}`,
+      `- Most recent skipped: ${m.date} [${m.kind}] ${m.title}${detail ? ` — ${detail}` : ""}`,
     );
   }
 
@@ -649,8 +913,9 @@ export function formatAdherenceSummary(summary: AdherenceSummary): string {
 // Per-workout detail line for the RECENT WORKOUTS block. Pulled out of
 // formatHistory so it can be unit-tested and reused.
 function formatHistoryLine(w: LoggedWorkout): string[] {
+  const detail = summarisePlannedDetail(w.planned_detail);
   const out = [
-    `${w.date} [${w.kind}] ${w.title} — ${w.details}  →  ${w.status}`,
+    `${w.date} [${w.kind}] ${w.title}${detail ? ` — ${detail}` : ""}  →  ${w.status}`,
   ];
   const actuals = formatActuals(w);
   if (actuals) out.push(`  ${actuals}`);

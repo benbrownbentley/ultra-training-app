@@ -1,13 +1,14 @@
 // Lightweight structural validator for Claude-generated plans. The SYSTEM
 // prompt expresses the rules; this module enforces the small set that we
 // genuinely cannot tolerate breaking (missing days, race not included,
-// out-of-window dates).
+// out-of-window dates, malformed structured payloads, oversize `why`).
 //
 // Design philosophy: keep this conservative. Hard checks throw upstream
 // (in generateTrainingPlan after one retry). Soft checks log warnings
 // but never fail the request. As we observe real failure modes in
 // production we can graduate softer rules from prompt-only to validated.
 
+import { z } from "zod";
 import type { GeneratedWorkout } from "@/lib/claude";
 
 export type ValidationSeverity = "error" | "warning";
@@ -19,10 +20,104 @@ export interface ValidationIssue {
     | "missing_dates"
     | "no_race_day_run"
     | "dates_before_start"
-    | "long_run_in_taper";
+    | "long_run_in_taper"
+    | "planned_detail_invalid"
+    | "kind_mismatch"
+    | "why_missing"
+    | "why_too_long";
   // Human-readable message. Shown in logs and (truncated) in retry prompts.
   message: string;
 }
+
+// ----- PlannedDetail zod schemas. Mirrors the JSON-schema branches in
+// PLAN_TOOL (lib/claude.ts) — the JSON-schema describes the API contract
+// to Claude, this zod runs the same contract at the action boundary so
+// auto-retry-once gets a typed error to feed back. See PHASE_2_SPEC.md
+// §4.2 and §9 (strict-discriminator decision).
+
+const RunSegmentSchema = z.object({
+  label: z.string().min(1),
+  duration_min: z.number().nullish(),
+  distance_km: z.number().nullish(),
+  zone: z.string().nullish(),
+  intervals: z.string().nullish(),
+  pace: z.string().nullish(),
+  note: z.string().nullish(),
+});
+
+const ExerciseSchema = z.object({
+  name: z.string().min(1),
+  equipment: z.string().nullish(),
+  sets: z.number().int().min(1),
+  reps: z.number().int().min(1),
+  weight: z.number().nullish(),
+  unit: z.enum(["kg", "lb", "bw"]).nullish(),
+  notes: z.string().nullish(),
+});
+
+const PhysioExerciseSchema = ExerciseSchema.extend({
+  pain_focus: z.string().nullish(),
+});
+
+const MovementSchema = z.object({
+  name: z.string().min(1),
+  duration_s: z.number().nullish(),
+  side: z.enum(["both", "each", "left", "right"]).nullish(),
+  notes: z.string().nullish(),
+});
+
+const WarmupBlockSchema = z.object({
+  duration_min: z.number().nullish(),
+  items: z.array(z.string()),
+  note: z.string().nullish(),
+});
+
+export const PlannedDetailSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("run"),
+    segments: z.array(RunSegmentSchema).min(1),
+    total_duration_min: z.number().nullish(),
+    total_distance_km: z.number().nullish(),
+    total_elevation_gain_m: z.number().nullish(),
+    target_pace: z.string().nullish(),
+  }),
+  z.object({
+    kind: z.literal("gym"),
+    exercises: z.array(ExerciseSchema).min(1),
+    warmup: WarmupBlockSchema.nullish(),
+    total_duration_min: z.number().nullish(),
+  }),
+  z.object({
+    kind: z.literal("physio"),
+    exercises: z.array(PhysioExerciseSchema).min(1),
+    total_duration_min: z.number().nullish(),
+  }),
+  z.object({
+    kind: z.literal("mobility"),
+    movements: z.array(MovementSchema).min(1),
+    total_duration_min: z.number().nullish(),
+  }),
+  z.object({
+    kind: z.literal("cross"),
+    activity: z.string().min(1),
+    duration_min: z.number(),
+    target_zone: z.string().nullish(),
+    intervals: z.string().nullish(),
+    notes: z.string().nullish(),
+  }),
+  z.object({
+    kind: z.literal("hike"),
+    duration_min: z.number(),
+    elevation_gain_m: z.number().nullish(),
+    target_zone: z.string().nullish(),
+    intervals: z.string().nullish(),
+    fueling: z.string().nullish(),
+    notes: z.string().nullish(),
+  }),
+]);
+
+/** Per-spec §9: `why` cap is 500 chars (~3 sentences). */
+export const WHY_MAX_CHARS = 500;
 
 export interface ValidateArgs {
   workouts: GeneratedWorkout[];
@@ -44,6 +139,67 @@ export interface ValidateArgs {
 export function validateGeneratedPlan(args: ValidateArgs): ValidationIssue[] {
   const { workouts, startDate, raceDate } = args;
   const issues: ValidationIssue[] = [];
+
+  // 0. Per-workout structured checks. We do these first so a malformed
+  //    planned_detail surfaces before the structural checks below that
+  //    might otherwise mask the underlying issue. Cap to the first few
+  //    failures per code to keep retry prompts readable.
+  let kindMismatchCount = 0;
+  let plannedDetailFailCount = 0;
+  const PER_CODE_PREVIEW = 3;
+  for (const w of workouts) {
+    // why presence + length.
+    if (typeof w.why !== "string" || w.why.trim().length === 0) {
+      issues.push({
+        severity: "error",
+        code: "why_missing",
+        message: `Workout on ${w.date} (${w.kind}, "${w.title}") is missing a non-empty \`why\`. Every workout requires a 1-3 sentence rationale, ≤${WHY_MAX_CHARS} chars.`,
+      });
+    } else if (w.why.length > WHY_MAX_CHARS) {
+      issues.push({
+        severity: "error",
+        code: "why_too_long",
+        message: `Workout on ${w.date} (${w.kind}, "${w.title}") has a \`why\` field of ${w.why.length} characters. Maximum is ${WHY_MAX_CHARS}. Trim to 1-3 sentences.`,
+      });
+    }
+    // planned_detail shape + discriminator agreement.
+    const parsed = PlannedDetailSchema.safeParse(w.planned_detail);
+    if (!parsed.success) {
+      if (plannedDetailFailCount < PER_CODE_PREVIEW) {
+        const issue = parsed.error.issues[0];
+        const path = issue.path.length > 0 ? ` (path: ${issue.path.join(".")})` : "";
+        issues.push({
+          severity: "error",
+          code: "planned_detail_invalid",
+          message: `Workout on ${w.date} (${w.kind}, "${w.title}") has an invalid planned_detail${path}: ${issue.message}.`,
+        });
+      }
+      plannedDetailFailCount++;
+    } else if (parsed.data.kind !== w.kind) {
+      if (kindMismatchCount < PER_CODE_PREVIEW) {
+        issues.push({
+          severity: "error",
+          code: "kind_mismatch",
+          message: `Workout on ${w.date} declares outer kind="${w.kind}" but planned_detail.kind="${parsed.data.kind}". The two must match (strict discriminator).`,
+        });
+      }
+      kindMismatchCount++;
+    }
+  }
+  if (plannedDetailFailCount > PER_CODE_PREVIEW) {
+    issues.push({
+      severity: "error",
+      code: "planned_detail_invalid",
+      message: `${plannedDetailFailCount - PER_CODE_PREVIEW} additional workout(s) have invalid planned_detail. Re-check the STRUCTURED OUTPUT REQUIREMENTS section in the system prompt.`,
+    });
+  }
+  if (kindMismatchCount > PER_CODE_PREVIEW) {
+    issues.push({
+      severity: "error",
+      code: "kind_mismatch",
+      message: `${kindMismatchCount - PER_CODE_PREVIEW} additional workout(s) have outer kind / planned_detail.kind mismatches.`,
+    });
+  }
 
   // 1. Every date covered.
   const datesPresent = new Set(workouts.map((w) => w.date));

@@ -13,6 +13,7 @@ import { RegenButton } from "./RegenButton";
 import { LoggedToastProvider } from "./LoggedToast";
 import { AddActivityRow } from "./AddActivityRow";
 import { classifyWorkout } from "@/lib/workout-variant";
+import { summarisePlannedDetailForDiff } from "@/lib/preview";
 
 interface Props {
   plan: Plan;
@@ -128,7 +129,13 @@ export function TodayPageClient({
                 <RestCard />
                 {tomorrow && tomorrow.workouts.length > 0 && (
                   <TomorrowPreview
-                    summary={`${tomorrow.workouts[0].title} · ${tomorrow.workouts[0].details}`}
+                    summary={(() => {
+                      const w = tomorrow.workouts[0];
+                      const detail = summarisePlannedDetailForDiff(
+                        w.planned_detail,
+                      );
+                      return detail ? `${w.title} · ${detail}` : w.title;
+                    })()}
                   />
                 )}
                 <AddActivityRow date={selectedDayIso} />

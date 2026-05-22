@@ -12,6 +12,7 @@ import { TabBar } from "@/app/_components/today/TabBar";
 import { extractMetrics } from "@/app/_components/workout/extract-metrics";
 import { deriveWorkoutContent } from "@/lib/workout-content";
 import { classifyWorkout, type Variant } from "@/lib/workout-variant";
+import { summarisePlannedDetailForDiff } from "@/lib/preview";
 
 export const dynamic = "force-dynamic";
 
@@ -91,10 +92,21 @@ export default async function WorkoutPage({
   const variant = classifyWorkout(workout.status, workout.date, todayIso);
   const { badge, banner } = badgeAndBanner(variant);
 
-  const content = deriveWorkoutContent(workout.kind, workout.title, workout.details);
+  const content = deriveWorkoutContent(
+    workout.kind,
+    workout.title,
+    workout.planned_detail,
+    workout.why,
+  );
   const eyebrow = `${formatEyebrowDate(workout.date)} · ${content.subLabel}`;
-  const metrics = extractMetrics(workout.details, workout.kind);
+  const metrics = extractMetrics(workout.planned_detail, workout.kind);
   const isFuture = variant === "future";
+  // Pre-Phase-2 backfilled rows surface their original prescription
+  // text in the legacy notes block. Structured rows show a one-line
+  // summary derived from planned_detail.
+  const prescriptionText = content.isLegacy
+    ? content.legacyNotes
+    : summarisePlannedDetailForDiff(workout.planned_detail);
 
   return (
     <div className="flex min-h-svh flex-col bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
@@ -116,11 +128,13 @@ export default async function WorkoutPage({
 
           {metrics.length > 0 && <MetricsRow items={metrics} />}
 
-          <Section label="PRESCRIPTION">
-            <p className="text-[14.5px] leading-relaxed text-zinc-950 dark:text-zinc-50">
-              {workout.details}
-            </p>
-          </Section>
+          {prescriptionText.trim().length > 0 && (
+            <Section label="PRESCRIPTION">
+              <p className="text-[14.5px] leading-relaxed text-zinc-950 dark:text-zinc-50">
+                {prescriptionText}
+              </p>
+            </Section>
+          )}
 
           <ActualsForm
             workoutId={workout.id}

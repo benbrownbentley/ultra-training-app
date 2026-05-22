@@ -4,20 +4,43 @@ import {
   buildRetryMessage,
   enumerateDates,
   errorsOnly,
+  PlannedDetailSchema,
+  WHY_MAX_CHARS,
   validateGeneratedPlan,
 } from "@/lib/plan-validation";
 import type { GeneratedWorkout } from "@/lib/claude";
+import type { PlannedDetail } from "@/lib/plan";
+
+// Minimal-but-valid PlannedDetail builder per kind. Keeps fixtures
+// terse while still satisfying the discriminator + required fields.
+function mobilityDetail(): PlannedDetail {
+  return {
+    kind: "mobility",
+    movements: [{ name: "Hip flexor stretch", duration_s: 60 }],
+    total_duration_min: 15,
+  };
+}
+
+function runDetail(): PlannedDetail {
+  return {
+    kind: "run",
+    segments: [{ label: "Main set", duration_min: 30, zone: "Z2" }],
+    total_duration_min: 30,
+    total_distance_km: 5,
+  };
+}
 
 // Build a fully-covered happy-path plan: one workout per day from start
 // through race day, with the race itself as a run on race day.
 function buildHappyPlan(startDate: string, raceDate: string): GeneratedWorkout[] {
   const dates = enumerateDates(startDate, raceDate);
-  return dates.map((d, i) => ({
+  return dates.map((d) => ({
     date: d,
     kind: d === raceDate ? "run" : "mobility",
     title: d === raceDate ? "Race day" : "Mobility",
-    details: d === raceDate ? "Race the thing" : "15 min mobility",
     position: 0,
+    why: d === raceDate ? "Race day — execute the plan." : "Daily mobility to keep the joints honest.",
+    planned_detail: d === raceDate ? runDetail() : mobilityDetail(),
   }));
 }
 
@@ -70,15 +93,20 @@ describe("validateGeneratedPlan — error checks", () => {
       raceDate: "2026-05-25",
     });
     const errors = errorsOnly(issues);
-    expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe("missing_dates");
-    expect(errors[0].message).toContain("2026-05-22");
+    expect(errors.some((e) => e.code === "missing_dates")).toBe(true);
+    const missing = errors.find((e) => e.code === "missing_dates")!;
+    expect(missing.message).toContain("2026-05-22");
   });
 
   it("flags no_race_day_run when race day has no run", () => {
     const plan = buildHappyPlan("2026-05-20", "2026-05-25").map((w) =>
       w.date === "2026-05-25"
-        ? { ...w, kind: "mobility" as const, title: "Mobility" }
+        ? {
+            ...w,
+            kind: "mobility" as const,
+            title: "Mobility",
+            planned_detail: mobilityDetail(),
+          }
         : w,
     );
     const issues = validateGeneratedPlan({
@@ -86,9 +114,7 @@ describe("validateGeneratedPlan — error checks", () => {
       startDate: "2026-05-20",
       raceDate: "2026-05-25",
     });
-    const errors = errorsOnly(issues);
-    expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe("no_race_day_run");
+    expect(errorsOnly(issues).some((e) => e.code === "no_race_day_run")).toBe(true);
   });
 
   it("flags dates_before_start when workouts are dated before the window", () => {
@@ -97,17 +123,16 @@ describe("validateGeneratedPlan — error checks", () => {
       date: "2026-05-15", // before start
       kind: "run",
       title: "Stray past workout",
-      details: "Should not be here",
       position: 0,
+      why: "Should not be here.",
+      planned_detail: runDetail(),
     });
     const issues = validateGeneratedPlan({
       workouts: plan,
       startDate: "2026-05-20",
       raceDate: "2026-05-25",
     });
-    const errors = errorsOnly(issues);
-    expect(errors).toHaveLength(1);
-    expect(errors[0].code).toBe("dates_before_start");
+    expect(errorsOnly(issues).some((e) => e.code === "dates_before_start")).toBe(true);
   });
 
   it("accumulates multiple errors when multiple checks fail", () => {
@@ -123,6 +148,124 @@ describe("validateGeneratedPlan — error checks", () => {
   });
 });
 
+describe("validateGeneratedPlan — Phase 2 structured checks", () => {
+  it("flags why_missing when a workout has no `why`", () => {
+    const plan = buildHappyPlan("2026-05-20", "2026-05-25");
+    plan[0] = { ...plan[0], why: "" };
+    const issues = validateGeneratedPlan({
+      workouts: plan,
+      startDate: "2026-05-20",
+      raceDate: "2026-05-25",
+    });
+    expect(errorsOnly(issues).some((e) => e.code === "why_missing")).toBe(true);
+  });
+
+  it(`flags why_too_long when \`why\` exceeds ${WHY_MAX_CHARS} chars`, () => {
+    const plan = buildHappyPlan("2026-05-20", "2026-05-25");
+    plan[0] = { ...plan[0], why: "x".repeat(WHY_MAX_CHARS + 1) };
+    const issues = validateGeneratedPlan({
+      workouts: plan,
+      startDate: "2026-05-20",
+      raceDate: "2026-05-25",
+    });
+    expect(errorsOnly(issues).some((e) => e.code === "why_too_long")).toBe(true);
+  });
+
+  it("flags kind_mismatch when outer kind disagrees with planned_detail.kind", () => {
+    const plan = buildHappyPlan("2026-05-20", "2026-05-25");
+    // Outer kind = mobility, inner planned_detail.kind = run → mismatch.
+    plan[0] = { ...plan[0], planned_detail: runDetail() };
+    const issues = validateGeneratedPlan({
+      workouts: plan,
+      startDate: "2026-05-20",
+      raceDate: "2026-05-25",
+    });
+    expect(errorsOnly(issues).some((e) => e.code === "kind_mismatch")).toBe(true);
+  });
+
+  it("flags planned_detail_invalid when a discriminator is unknown", () => {
+    const plan = buildHappyPlan("2026-05-20", "2026-05-25");
+    plan[0] = {
+      ...plan[0],
+      planned_detail: { kind: "bogus" } as unknown as PlannedDetail,
+    };
+    const issues = validateGeneratedPlan({
+      workouts: plan,
+      startDate: "2026-05-20",
+      raceDate: "2026-05-25",
+    });
+    expect(errorsOnly(issues).some((e) => e.code === "planned_detail_invalid")).toBe(true);
+  });
+});
+
+describe("PlannedDetailSchema — per-kind happy + failure", () => {
+  it("accepts valid run, gym, physio, mobility, cross, hike payloads", () => {
+    const valid: PlannedDetail[] = [
+      {
+        kind: "run",
+        segments: [{ label: "Main set", duration_min: 30, zone: "Z2" }],
+      },
+      {
+        kind: "gym",
+        exercises: [{ name: "Squat", sets: 4, reps: 6, weight: 60, unit: "kg" }],
+      },
+      {
+        kind: "physio",
+        exercises: [
+          {
+            name: "Calf raises",
+            sets: 3,
+            reps: 8,
+            weight: 20,
+            unit: "kg",
+            pain_focus: "achilles",
+          },
+        ],
+      },
+      {
+        kind: "mobility",
+        movements: [{ name: "World's greatest stretch", duration_s: 60 }],
+      },
+      { kind: "cross", activity: "cycling", duration_min: 45, target_zone: "Z2" },
+      { kind: "hike", duration_min: 180, elevation_gain_m: 800 },
+    ];
+    for (const v of valid) {
+      const parsed = PlannedDetailSchema.safeParse(v);
+      expect(parsed.success).toBe(true);
+    }
+  });
+
+  it("rejects a run missing segments", () => {
+    const parsed = PlannedDetailSchema.safeParse({ kind: "run" });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a gym row with empty exercises array", () => {
+    const parsed = PlannedDetailSchema.safeParse({ kind: "gym", exercises: [] });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a mobility row with no movements", () => {
+    const parsed = PlannedDetailSchema.safeParse({ kind: "mobility", movements: [] });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a cross row missing required activity/duration", () => {
+    const parsed = PlannedDetailSchema.safeParse({ kind: "cross" });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects a hike row missing duration_min", () => {
+    const parsed = PlannedDetailSchema.safeParse({ kind: "hike", elevation_gain_m: 500 });
+    expect(parsed.success).toBe(false);
+  });
+
+  it("rejects an unknown discriminator", () => {
+    const parsed = PlannedDetailSchema.safeParse({ kind: "bogus" });
+    expect(parsed.success).toBe(false);
+  });
+});
+
 describe("validateGeneratedPlan — soft warnings", () => {
   it("warns when a long run is scheduled in the final 7 days", () => {
     // 14-day plan with a "Long run" on day -3 from race.
@@ -132,7 +275,7 @@ describe("validateGeneratedPlan — soft warnings", () => {
             ...w,
             kind: "run" as const,
             title: "Long run",
-            details: "30 km long",
+            planned_detail: runDetail(),
           }
         : w,
     );

@@ -1,11 +1,17 @@
-// Best-effort parser turning a free-text Claude-generated `details` string
-// into the structured payload the Workout Detail design expects. Where data
-// can't be parsed (most v1 plans), the helper falls back to kind-specific
-// stub copy so the design layout still renders honestly — the user sees a
-// real eyebrow + description even if the AI hasn't been asked to emit
-// structured prose yet.
+// Renderer-side projection of a workout's structured planned payload
+// into the shape the WorkoutDetail UI expects. As of Phase 2 (see
+// PHASE_2_SPEC.md) the source of truth is the `planned_detail` JSONB
+// column, not the old free-text `details` string. The legacy backfill
+// shape (`{ notes: <original text> }`) is handled by short-circuiting
+// to a minimal WorkoutContent so the layout still renders honestly
+// while structured data hasn't been regenerated yet.
 
-import type { WorkoutKind } from "./plan";
+import type {
+  PlannedDetail,
+  PlannedDetailStored,
+  WorkoutKind,
+} from "./plan";
+import { isLegacyPlannedDetail } from "./planned-detail";
 
 export type WorkoutSubtype =
   | "running"
@@ -68,6 +74,14 @@ export interface WorkoutContent {
     note: string;
     items: string[];
   } | null;
+  // True when the row is a legacy backfilled `{ notes }` payload. The
+  // drill-down uses this to show the prescription text as a plain notes
+  // block until the user regenerates and full structured data lands.
+  isLegacy: boolean;
+  // Pre-Phase-2 free-text prescription preserved on the legacy fallback
+  // path so the UI can render the original details. Empty for full
+  // structured rows.
+  legacyNotes: string;
 }
 
 // Cycling vs. swim is the one subcategory still inferred from title —
@@ -131,13 +145,18 @@ const STUB_DESCRIPTION: Record<WorkoutSubtype, string> = {
   hike: "Time on feet at vert. Hill-strength stimulus without the impact of running.",
 };
 
+// Fallback `why` copy keyed by subtype. Used when the row has no
+// generated `why` (legacy backfilled rows; rows created before Phase 2;
+// custom user-added activities that didn't carry one). New regen-emitted
+// rows carry per-workout `why` strings sourced from the `workouts.why`
+// column, which is what the drill-down actually wants to display.
 const STUB_WHY: Record<WorkoutSubtype, string> = {
-  running: "Running is the spine of the plan — every session has a purpose, even the easy ones. Today's effort matches where you are in the build, and how Claude has weighed your recent adherence and feedback.",
-  strength: "Lower-body strength carries you through the back third of an ultra, where quads are the limiter. Today's session targets the posterior chain — the muscles that take over when quads fade.",
-  mobility: "Hip and ankle mobility is the single best injury-prevention investment for an ultrarunner. Ten minutes a day pays for itself in week 12 of a build cycle.",
+  running: "Running is the spine of the plan — every session has a purpose, even the easy ones.",
+  strength: "Lower-body strength carries you through the back third of an ultra, where quads are the limiter.",
+  mobility: "Hip and ankle mobility is the single best injury-prevention investment for an ultrarunner.",
   physio: "Targeted prehab protects the next eight days of training. Log honestly so Claude knows if a tissue is heading the wrong way.",
-  cross: "Active recovery: circulation without stimulus. Keep the cadence high and the effort low — if you can't hold a conversation you're going too hard.",
-  hike: "Your race profile has thousands of metres of vert — most of it climbed at hiking pace. Today conditions the legs for sustained climbing under fatigue and lets you practice mountain-pace fueling without the impact of running.",
+  cross: "Active recovery: circulation without stimulus. Keep the cadence high and the effort low.",
+  hike: "Conditions the legs for sustained climbing under fatigue and lets you practice mountain-pace fueling without the impact of running.",
 };
 
 const GLOSSARY_SLUG: Record<WorkoutSubtype, string | null> = {
@@ -158,259 +177,227 @@ const GLOSSARY_LABEL: Record<WorkoutSubtype, string> = {
   hike: "Read more about training hikes",
 };
 
-// Pull warm-up / main set / cool-down out of the details string. Claude
-// tends to emit "Warm-up: 15 min easy. Main set: 4×8 min @ Z3. Cool-down:
-// 10 min easy." — we split on these labels and assign zones if present.
-export function parseRunningSegments(details: string): Segment[] {
-  const segments: Segment[] = [];
-  const lower = details.toLowerCase();
+// Format weight + unit for the renderer's Exercise.weight string. BW
+// units render without a numeric prefix; numeric + unit cases produce
+// "60kg" / "135lb"; everything else collapses to undefined.
+function formatExerciseWeight(
+  weight: number | null | undefined,
+  unit: "kg" | "lb" | "bw" | null | undefined,
+): { weight?: string; unit?: string } {
+  if (unit === "bw") return { unit: "BW" };
+  if (typeof weight === "number" && unit) {
+    return { weight: String(weight), unit };
+  }
+  if (typeof weight === "number") return { weight: String(weight) };
+  return {};
+}
 
-  const warmupMatch = details.match(
-    /warm[\s-]?up[:\s]+([^.;]+?)(?=(?:[.;]|\bmain\s|\bcool[\s-]?down))/i,
-  );
-  const mainMatch = details.match(
-    /(?:main set|main)[:\s]+([^.;]+?)(?=(?:[.;]|\bcool[\s-]?down))/i,
-  );
-  const cooldownMatch = details.match(
-    /cool[\s-]?down[:\s]+([^.;]+)/i,
-  );
+// Build a Segment row from a planned-detail run segment. Emphasis flips
+// to high for anything that smells like main / interval / quality work
+// so the renderer can elevate it visually.
+function segmentFromRun(s: {
+  label: string;
+  duration_min?: number | null;
+  distance_km?: number | null;
+  zone?: string | null;
+  intervals?: string | null;
+  pace?: string | null;
+  note?: string | null;
+}): Segment {
+  const valueParts: string[] = [];
+  if (s.intervals) valueParts.push(s.intervals);
+  else if (s.duration_min != null) valueParts.push(`${s.duration_min} min`);
+  else if (s.distance_km != null) valueParts.push(`${s.distance_km} km`);
+  if (s.pace) valueParts.push(`@ ${s.pace}`);
+  const value = valueParts.join(" ") || s.label;
+  const labelLower = s.label.toLowerCase();
+  const isHigh =
+    labelLower.includes("main") ||
+    labelLower.includes("interval") ||
+    labelLower.includes("tempo") ||
+    labelLower.includes("strides") ||
+    labelLower.includes("block");
+  return {
+    name: s.label,
+    value,
+    zone: s.zone ?? undefined,
+    note: s.note ?? undefined,
+    emphasis: isHigh ? "high" : "low",
+  };
+}
 
-  if (warmupMatch) {
-    segments.push({
-      name: "Warm-up",
-      value: extractValue(warmupMatch[1]) ?? warmupMatch[1].trim(),
-      zone: extractZone(warmupMatch[1]) ?? "Z1–Z2",
-      note: stripValueAndZone(warmupMatch[1]),
-      emphasis: "low",
+// Builds the structured projection of a full PlannedDetail. Mobility +
+// physio + cross + hike all degenerate into either a routine, a
+// physioExercises list, or a single descriptive segment that the
+// renderer already knows how to display.
+function projectStructured(
+  pd: PlannedDetail,
+): Pick<
+  WorkoutContent,
+  "segments" | "exercises" | "routine" | "physioExercises" | "fueling" | "warmup" | "description"
+> {
+  let segments: Segment[] = [];
+  let exercises: Exercise[] = [];
+  let routine: RoutineItem[] = [];
+  let physioExercises: PhysioExercise[] = [];
+  let fueling: string | null = null;
+  let warmup: WorkoutContent["warmup"] = null;
+  let description = "";
+
+  if (pd.kind === "run") {
+    segments = pd.segments.map(segmentFromRun);
+    const summaryBits: string[] = [];
+    if (pd.total_distance_km != null) summaryBits.push(`${pd.total_distance_km} km`);
+    if (pd.total_duration_min != null) summaryBits.push(`${pd.total_duration_min} min`);
+    if (pd.target_pace) summaryBits.push(`@ ${pd.target_pace}`);
+    description = summaryBits.join(" · ");
+  } else if (pd.kind === "gym" || pd.kind === "physio") {
+    const exes = pd.exercises.map((e) => {
+      const { weight, unit } = formatExerciseWeight(e.weight ?? null, e.unit ?? null);
+      return {
+        name: e.name,
+        sets: e.sets,
+        reps: e.reps,
+        weight,
+        unit,
+        equip: e.equipment ?? undefined,
+        note: e.notes ?? undefined,
+      };
     });
-  }
-  if (mainMatch) {
-    segments.push({
-      name: "Main set",
-      value: extractValue(mainMatch[1]) ?? mainMatch[1].trim(),
-      zone: extractZone(mainMatch[1]) ?? extractZone(details) ?? "Z3",
-      note: stripValueAndZone(mainMatch[1]),
-      emphasis: "high",
-    });
-  }
-  if (cooldownMatch) {
-    segments.push({
-      name: "Cool-down",
-      value: extractValue(cooldownMatch[1]) ?? cooldownMatch[1].trim(),
-      zone: extractZone(cooldownMatch[1]) ?? "Z1",
-      note: stripValueAndZone(cooldownMatch[1]),
-      emphasis: "low",
-    });
-  }
-
-  // Fallback — no labelled sections found. If the details has a zone
-  // reference and a duration, render as a single "main set" so the
-  // STRUCTURE block isn't empty.
-  if (segments.length === 0) {
-    const zone = extractZone(details);
-    const value = extractValue(details);
-    if (zone || value) {
-      segments.push({
-        name: "Main set",
-        value: value ?? details.trim(),
-        zone: zone ?? undefined,
-        note: stripValueAndZone(details),
-        emphasis: "high",
-      });
-    }
-  }
-
-  // Defensive: if the lower-cased details have neither "warm" nor "main"
-  // nor "cool", and we got nothing above, leave segments empty so the
-  // caller hides the STRUCTURE block.
-  if (
-    segments.length === 0 &&
-    !lower.includes("warm") &&
-    !lower.includes("main") &&
-    !lower.includes("cool")
-  ) {
-    return [];
-  }
-
-  return segments;
-}
-
-const VALUE_RE = /(\d+(?:\.\d+)?)\s*(min|hr|h|km|mi|sec|s)\b/i;
-const ZONE_RE = /(Z\d(?:[–-]Z\d)?)/i;
-const INTERVAL_RE = /(\d+\s*[×x]\s*(?:\(?[^,;)]+\)?))/i;
-
-function extractValue(text: string): string | null {
-  const interval = text.match(INTERVAL_RE);
-  if (interval) return interval[1].replace(/\s*[×x]\s*/, " × ").trim();
-  const m = text.match(VALUE_RE);
-  if (!m) return null;
-  return `${m[1]} ${m[2].toLowerCase().startsWith("h") ? "hr" : m[2].toLowerCase()}`;
-}
-
-function extractZone(text: string): string | null {
-  const m = text.match(ZONE_RE);
-  return m ? m[1].toUpperCase().replace("-", "–") : null;
-}
-
-function stripValueAndZone(text: string): string | undefined {
-  const cleaned = text
-    .replace(VALUE_RE, "")
-    .replace(ZONE_RE, "")
-    .replace(/^[\s,·.:-]+|[\s,·.:-]+$/g, "")
-    .trim();
-  return cleaned.length > 0 ? cleaned : undefined;
-}
-
-// "Squat 4×6 @ 60kg", "Romanian Deadlift 3×8 @ 50kg", one per line / comma.
-const EXERCISE_LINE_RE =
-  /([A-Z][A-Za-z' /-]+?)\s+(\d+)\s*[×x]\s*(\d+)\s*(?:@\s*([\d.]+)\s*(kg|lb|lbs|bw)?)?/g;
-
-export function parseStrengthExercises(details: string): Exercise[] {
-  const exercises: Exercise[] = [];
-  for (const match of details.matchAll(EXERCISE_LINE_RE)) {
-    const [, name, sets, reps, weight, unit] = match;
-    exercises.push({
-      name: name.trim(),
-      sets: Number(sets),
-      reps: Number(reps),
-      weight: weight ?? undefined,
-      unit: unit?.toLowerCase() === "bw" ? "BW" : unit,
-    });
-  }
-  return exercises;
-}
-
-// Mobility / physio routine parser. Claude emits free-text mobility
-// details in several shapes:
-//   "15 min · World's greatest stretch · 90/90 hip switches"
-//   "15 min — hip flexor, glute, calf stretching"
-//   "10 min — Couch stretch 30s/side, World's greatest stretch 3×5"
-//
-// We strip a leading "N min" duration header, then split on any of the
-// common separators Claude uses: middot, bullet, em-dash, comma. Each
-// fragment may carry a trailing spec ("3×10", "30s/side") which we
-// peel off so the row renders with the name on the left and spec on
-// the right.
-//
-// TODO v2: replace this parser with structured routine emission from
-// Claude. Extend submit_training_plan's tool schema to accept
-// `routine: {name: string; spec?: string}[]` per mobility workout,
-// then this parser becomes a legacy fallback for old rows only.
-
-// Matches at the END of a fragment:
-//   • "3x10" / "3×10"
-//   • "2x5/side" / "2×5 per side"
-//   • "60s" / "30s/side"
-const SPEC_RE =
-  /\s+(\d+\s*[x×]\s*\d+(?:\s*(?:s|\/side|\s+per\s+side))?|\d+\s*s(?:\/side)?)\s*$/i;
-
-// "15 min — ", "20 min · ", "5min, " etc. when it sits at the very
-// start of the details. The trailing separator is consumed so we don't
-// emit an empty fragment after stripping.
-const DURATION_HEADER_RE = /^\s*\d+\s*min\s*[—·•,-]?\s*/i;
-
-export function parseRoutine(details: string): RoutineItem[] {
-  if (!details || !details.trim()) return [];
-
-  // Strip a leading duration header so we don't emit "15 min" as a
-  // routine item — the prescription section already conveys total
-  // duration.
-  const stripped = details.replace(DURATION_HEADER_RE, "");
-
-  // Split on every separator Claude actually uses. Comma + em-dash are
-  // the most common; middot + bullet are kept for older rows. Hyphen
-  // is intentionally NOT in the class — "90/90 hip-switches" would
-  // get torn apart.
-  const fragments = stripped
-    .split(/[·•—,]/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-
-  if (fragments.length === 0) return [];
-
-  // Cap at 8 entries so a misparse on a wordy prescription doesn't
-  // dump twenty fragments into the UI.
-  return fragments
-    .slice(0, 8)
-    .map((frag) => {
-      const m = frag.match(SPEC_RE);
-      if (m) {
-        const name = frag.slice(0, m.index).trim();
-        const spec = m[1].replace(/\s+/g, "");
-        return name ? { name, spec } : { name: frag };
+    if (pd.kind === "gym") {
+      exercises = exes;
+      if (pd.warmup) {
+        warmup = {
+          duration:
+            pd.warmup.duration_min != null
+              ? `~${pd.warmup.duration_min} min`
+              : "warm-up",
+          note: pd.warmup.note ?? "Build to working weight.",
+          items: pd.warmup.items,
+        };
       }
-      return { name: frag };
-    })
-    .filter((r) => r.name.length > 0 && !/^[,.\s-]+$/.test(r.name));
-}
-
-// Single entry point used by the page.
-export function deriveWorkoutContent(
-  kind: WorkoutKind,
-  title: string,
-  details: string,
-): WorkoutContent {
-  const subtype = pickSubtype(kind);
-
-  const segments =
-    subtype === "running" || subtype === "hike" || subtype === "cross"
-      ? parseRunningSegments(details)
-      : [];
-
-  const exercises =
-    subtype === "strength" ? parseStrengthExercises(details) : [];
-
-  const routine =
-    subtype === "mobility" ? parseRoutine(details) : [];
-
-  const physioExercises =
-    subtype === "physio"
-      ? parseRoutine(details).map<PhysioExercise>((r) => ({
-          name: r.name,
-          spec: r.spec,
-          pain: null,
-        }))
-      : [];
-
-  // Long-hike fueling reminder — surfaced when the title or details look
-  // like a multi-hour effort.
-  const fueling = (() => {
-    if (subtype !== "hike") return null;
-    const hours = details.match(/(\d+(?:\.\d+)?)\s*(?:hr|h)\b/i);
-    if (!hours) return null;
-    if (Number(hours[1]) < 3) return null;
-    return "Fuel ~80g carbs/hr · 1.5L water";
-  })();
-
-  // Generic warm-up reminder for heavy lifts. We can't know "heaviness"
-  // from text, so emit when the parsed exercises include a Squat / DL.
-  const warmup =
-    subtype === "strength" &&
-    exercises.some((e) => /squat|deadlift|press/i.test(e.name))
-      ? {
-          duration: "~8 min",
-          note: "Build to working weight. Heavy compound lifts need a thorough ramp-up.",
-          items: [
-            "Goblet squat · 2 × 8 light",
-            "Glute bridge · 2 × 10 BW",
-            "Working set ramps · 50% → 70% → 90%",
-          ],
-        }
-      : null;
+    } else {
+      // physio — surface as physioExercises rows (per-exercise pain
+      // capture lives on the actuals side, so pain starts null).
+      physioExercises = pd.exercises.map((e, i) => ({
+        name: e.name,
+        spec: `${exes[i].sets}×${exes[i].reps}${exes[i].weight ? ` @ ${exes[i].weight}${exes[i].unit ?? ""}` : ""}`,
+        pain: null,
+        notes: e.notes ?? undefined,
+      }));
+    }
+    if (pd.total_duration_min != null) {
+      description = `${pd.total_duration_min} min`;
+    }
+  } else if (pd.kind === "mobility") {
+    routine = pd.movements.map((m) => {
+      const specBits: string[] = [];
+      if (m.duration_s != null) specBits.push(`${m.duration_s}s`);
+      if (m.side && m.side !== "both") {
+        specBits.push(m.side === "each" ? "/side" : `(${m.side})`);
+      }
+      return {
+        name: m.name,
+        spec: specBits.join("").trim() || undefined,
+      };
+    });
+    if (pd.total_duration_min != null) {
+      description = `${pd.total_duration_min} min`;
+    }
+  } else if (pd.kind === "cross") {
+    description = `${pd.duration_min} min ${pd.activity}${pd.target_zone ? ` · ${pd.target_zone}` : ""}`;
+    segments = [
+      {
+        name: "Main set",
+        value:
+          pd.intervals ?? `${pd.duration_min} min ${pd.activity}`,
+        zone: pd.target_zone ?? undefined,
+        note: pd.notes ?? undefined,
+        emphasis: "high",
+      },
+    ];
+  } else {
+    // hike
+    const bits: string[] = [`${pd.duration_min} min`];
+    if (pd.elevation_gain_m != null) bits.push(`+${pd.elevation_gain_m} m`);
+    if (pd.target_zone) bits.push(pd.target_zone);
+    description = bits.join(" · ");
+    segments = [
+      {
+        name: "Main set",
+        value: pd.intervals ?? `${pd.duration_min} min hike`,
+        zone: pd.target_zone ?? undefined,
+        note: pd.notes ?? undefined,
+        emphasis: "high",
+      },
+    ];
+    if (pd.fueling) fueling = pd.fueling;
+  }
 
   return {
-    subtype,
-    subLabel: subLabel(subtype, title),
-    description: STUB_DESCRIPTION[subtype],
-    why: STUB_WHY[subtype],
-    glossarySlug: GLOSSARY_SLUG[subtype],
-    glossaryLabel: GLOSSARY_LABEL[subtype],
     segments,
     exercises,
     routine,
     physioExercises,
     fueling,
     warmup,
+    description,
+  };
+}
+
+// Single entry point used by the page. Phase 2: reads directly from the
+// structured `planned_detail` payload. Legacy rows (`{ notes }`) fall
+// through to a minimal-card path.
+export function deriveWorkoutContent(
+  kind: WorkoutKind,
+  title: string,
+  planned_detail: PlannedDetailStored,
+  why?: string | null,
+): WorkoutContent {
+  const subtype = pickSubtype(kind);
+  const base = {
+    subtype,
+    subLabel: subLabel(subtype, title),
+    glossarySlug: GLOSSARY_SLUG[subtype],
+    glossaryLabel: GLOSSARY_LABEL[subtype],
+    why: why && why.trim().length > 0 ? why.trim() : STUB_WHY[subtype],
+  };
+
+  // Legacy backfilled row (or missing planned_detail entirely): nothing
+  // structured to project. Surface the raw notes as the description and
+  // let the renderer hide structural sections.
+  if (planned_detail == null || isLegacyPlannedDetail(planned_detail)) {
+    const notes = planned_detail == null ? "" : planned_detail.notes;
+    return {
+      ...base,
+      description:
+        notes.trim().length > 0 ? notes.trim() : STUB_DESCRIPTION[subtype],
+      segments: [],
+      exercises: [],
+      routine: [],
+      physioExercises: [],
+      fueling: null,
+      warmup: null,
+      isLegacy: true,
+      legacyNotes: notes,
+    };
+  }
+
+  const projected = projectStructured(planned_detail);
+  return {
+    ...base,
+    description:
+      projected.description.length > 0
+        ? projected.description
+        : STUB_DESCRIPTION[subtype],
+    segments: projected.segments,
+    exercises: projected.exercises,
+    routine: projected.routine,
+    physioExercises: projected.physioExercises,
+    fueling: projected.fueling,
+    warmup: projected.warmup,
+    isLegacy: false,
+    legacyNotes: "",
   };
 }
 

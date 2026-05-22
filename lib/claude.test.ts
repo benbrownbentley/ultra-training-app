@@ -99,21 +99,40 @@ const fixtureHistory: LoggedWorkout[] = [
     date: "2026-05-13",
     kind: "run",
     title: "Easy",
-    details: "10 km @ 6:00/km",
+    planned_detail: {
+      kind: "run",
+      segments: [{ label: "Main set", duration_min: 60, zone: "Z2" }],
+      total_duration_min: 60,
+      total_distance_km: 10,
+      target_pace: "6:00/km",
+    },
     status: "completed",
   },
   {
     date: "2026-05-14",
     kind: "run",
     title: "Long run",
-    details: "32 km @ 6:30/km",
+    planned_detail: {
+      kind: "run",
+      segments: [{ label: "Main set", distance_km: 32, zone: "Z1-Z2" }],
+      total_duration_min: 210,
+      total_distance_km: 32,
+      target_pace: "6:30/km",
+    },
     status: "completed",
   },
   {
     date: "2026-05-15",
     kind: "gym",
     title: "Strength A",
-    details: "45 min lower body",
+    planned_detail: {
+      kind: "gym",
+      exercises: [
+        { name: "Squat", sets: 4, reps: 6, weight: 60, unit: "kg" },
+        { name: "RDL", sets: 3, reps: 8, weight: 50, unit: "kg" },
+      ],
+      total_duration_min: 45,
+    },
     status: "skipped",
   },
 ];
@@ -267,8 +286,15 @@ describe("formatHistory", () => {
     expect(out).toContain("Last 7 days: 2/3 completed (67%), 1 skipped, 0 unlogged");
     expect(out).toContain("This cycle (since 2026-05-13)");
     expect(out).toContain("RECENT WORKOUTS (last 28 days, detailed)");
-    expect(out).toContain("2026-05-13 [run] Easy — 10 km @ 6:00/km  →  completed");
-    expect(out).toContain("2026-05-15 [gym] Strength A — 45 min lower body  →  skipped");
+    // Structured payload renders as a summarised one-liner including
+    // distance + pace + segment.
+    expect(out).toContain("2026-05-13 [run] Easy");
+    expect(out).toContain("10 km");
+    expect(out).toContain("@ 6:00/km");
+    expect(out).toContain("→  completed");
+    expect(out).toContain("2026-05-15 [gym] Strength A");
+    expect(out).toContain("Squat 4×6 @ 60kg");
+    expect(out).toContain("→  skipped");
   });
   it("includes by-kind breakdown and most-recent-skipped line", () => {
     const out = formatHistory(fixtureHistory, FIXTURE_TODAY);
@@ -281,7 +307,11 @@ describe("formatHistory", () => {
         date: "2026-05-13",
         kind: "run",
         title: "Tempo",
-        details: "60 min @ Z3",
+        planned_detail: {
+          kind: "run",
+          segments: [{ label: "Main set", duration_min: 60, zone: "Z3" }],
+          total_duration_min: 60,
+        },
         status: "completed",
         actual_duration_min: 62,
         actual_distance_km: 11.2,
@@ -308,7 +338,11 @@ describe("formatHistory", () => {
         date: "2026-05-14",
         kind: "run",
         title: "Easy",
-        details: "8 km easy",
+        planned_detail: {
+          kind: "run",
+          segments: [{ label: "Main set", distance_km: 8 }],
+          total_distance_km: 8,
+        },
         status: "completed",
         actual_distance_km: 8.5,
         actual_rpe: 3,
@@ -323,16 +357,18 @@ describe("formatHistory", () => {
         date: "2026-05-15",
         kind: "gym",
         title: "Strength A",
-        details: "Squat 4×6 @ 60kg, RDL 3×8 @ 50kg, Walking Lunge 3×8 @ 20kg, Calf Raise 3×12 @ 30kg",
+        // Planned exercises are now read directly off planned_detail.
+        planned_detail: {
+          kind: "gym",
+          exercises: [
+            { name: "Squat", sets: 4, reps: 6, weight: 60, unit: "kg" },
+            { name: "Romanian Deadlift", sets: 3, reps: 8, weight: 50, unit: "kg" },
+            { name: "Walking Lunge", sets: 3, reps: 8, weight: 20, unit: "kg" },
+            { name: "Calf Raise", sets: 3, reps: 12, weight: 30, unit: "kg" },
+          ],
+        },
         status: "completed",
         actual_notes: "RDL felt heavy on last set",
-        // Threaded by attachPlannedExercises at history-build time.
-        planned_exercises: [
-          { name: "Squat", sets: 4, reps: 6, weight: 60, unit: "kg" },
-          { name: "Romanian Deadlift", sets: 3, reps: 8, weight: 50, unit: "kg" },
-          { name: "Walking Lunge", sets: 3, reps: 8, weight: 20, unit: "kg" },
-          { name: "Calf Raise", sets: 3, reps: 12, weight: 30, unit: "kg" },
-        ],
         actual_detail: {
           sets: [
             // Squat: all at planned
@@ -368,13 +404,15 @@ describe("formatHistory", () => {
     expect(out).toContain("user-added: Hip Thrust");
     expect(out).toContain("\"RDL felt heavy on last set\"");
   });
-  it("falls back to raw totals when planned_exercises is missing", () => {
+  it("falls back to raw totals when the planned_detail is the legacy notes shape", () => {
     const strength: LoggedWorkout[] = [
       {
         date: "2026-05-15",
         kind: "gym",
         title: "Strength A",
-        details: "Full body",
+        // Legacy backfilled row: no structured exercises to classify
+        // against, so formatStrengthActuals falls back to raw totals.
+        planned_detail: { notes: "Full body strength session" },
         status: "completed",
         actual_detail: {
           sets: [
@@ -394,7 +432,7 @@ describe("formatHistory", () => {
         date: "2026-05-15",
         kind: "gym",
         title: "Strength A",
-        details: "Full body",
+        planned_detail: { notes: "Full body" },
         status: "completed",
       },
     ];
@@ -414,14 +452,23 @@ describe("formatHistory", () => {
         date: "2026-04-10",
         kind: "run",
         title: "Easy",
-        details: "8 km easy",
+        planned_detail: {
+          kind: "run",
+          segments: [{ label: "Main set", distance_km: 8 }],
+          total_distance_km: 8,
+        },
         status: "completed",
       },
       {
         date: "2026-05-13",
         kind: "run",
         title: "Easy",
-        details: "10 km @ 6:00/km",
+        planned_detail: {
+          kind: "run",
+          segments: [{ label: "Main set", distance_km: 10 }],
+          total_distance_km: 10,
+          target_pace: "6:00/km",
+        },
         status: "completed",
       },
     ];
@@ -429,9 +476,10 @@ describe("formatHistory", () => {
     expect(out).toContain("EARLIER IN THIS CYCLE (rolled up — not shown per-workout)");
     expect(out).toContain("Range: 2026-04-10 → 2026-04-10");
     // Older workout should NOT appear as a detailed line.
-    expect(out).not.toContain("2026-04-10 [run] Easy — 8 km easy");
+    expect(out).not.toContain("2026-04-10 [run] Easy");
     // Recent workout should appear.
-    expect(out).toContain("2026-05-13 [run] Easy — 10 km @ 6:00/km");
+    expect(out).toContain("2026-05-13 [run] Easy");
+    expect(out).toContain("10 km");
   });
 });
 
@@ -467,11 +515,11 @@ describe("computeAdherence", () => {
   });
   it("detects skip clusters of ≥2 consecutive days", () => {
     const withCluster: LoggedWorkout[] = [
-      { date: "2026-05-11", kind: "run", title: "Easy", details: "", status: "skipped" },
-      { date: "2026-05-12", kind: "run", title: "Easy", details: "", status: "skipped" },
-      { date: "2026-05-13", kind: "run", title: "Easy", details: "", status: "skipped" },
-      { date: "2026-05-14", kind: "run", title: "Easy", details: "", status: "completed" },
-      { date: "2026-05-15", kind: "gym", title: "S", details: "", status: "skipped" },
+      { date: "2026-05-11", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "skipped" },
+      { date: "2026-05-12", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "skipped" },
+      { date: "2026-05-13", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "skipped" },
+      { date: "2026-05-14", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "completed" },
+      { date: "2026-05-15", kind: "gym", title: "S", planned_detail: { notes: "" }, status: "skipped" },
     ];
     const a = computeAdherence(withCluster, FIXTURE_TODAY);
     expect(a.skipClusters).toHaveLength(1);
@@ -483,10 +531,10 @@ describe("computeAdherence", () => {
   });
   it("does NOT count a day as a skip day if any workout that day was completed", () => {
     const mixed: LoggedWorkout[] = [
-      { date: "2026-05-13", kind: "run", title: "Easy", details: "", status: "skipped" },
-      { date: "2026-05-13", kind: "gym", title: "S", details: "", status: "completed" },
-      { date: "2026-05-14", kind: "run", title: "Easy", details: "", status: "skipped" },
-      { date: "2026-05-15", kind: "run", title: "Easy", details: "", status: "skipped" },
+      { date: "2026-05-13", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "skipped" },
+      { date: "2026-05-13", kind: "gym", title: "S", planned_detail: { notes: "" }, status: "completed" },
+      { date: "2026-05-14", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "skipped" },
+      { date: "2026-05-15", kind: "run", title: "Easy", planned_detail: { notes: "" }, status: "skipped" },
     ];
     const a = computeAdherence(mixed, FIXTURE_TODAY);
     // Only 2026-05-14 and 2026-05-15 are skip days; 2026-05-13 has a

@@ -10,9 +10,11 @@ import type {
   ActualDetail,
   AthleteProfile,
   Plan,
+  PlannedDetailStored,
   Race,
   Workout,
   WorkoutKind,
+  WorkoutSource,
   WorkoutStatus,
 } from "@/lib/plan";
 import type { JournalEntry } from "@/lib/journal";
@@ -64,7 +66,9 @@ interface WorkoutRow {
   date: string;
   kind: WorkoutKind;
   title: string;
-  details: string;
+  planned_detail: PlannedDetailStored;
+  why: string | null;
+  source: WorkoutSource | null;
   position: number;
   status: WorkoutStatus;
   logged_at: string | null;
@@ -82,7 +86,7 @@ interface WorkoutRow {
 // getWorkoutById, and getRaceAndHistory so adding a column lights up
 // everywhere automatically.
 const WORKOUT_COLUMNS =
-  "id, date, kind, title, details, position, status, logged_at, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail, is_custom";
+  "id, date, kind, title, planned_detail, why, source, position, status, logged_at, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail, is_custom";
 
 const RACE_COLUMNS =
   "id, name, distance, date, elevation_gain, terrain, target_time, intent, priority, elevation_loss, cutoff_time, climate, course_profile, support";
@@ -129,7 +133,9 @@ export async function getPlan(): Promise<Plan | null> {
       id: row.id,
       kind: row.kind,
       title: row.title,
-      details: row.details,
+      planned_detail: row.planned_detail,
+      why: row.why,
+      source: row.source ?? "manual",
       status: row.status,
       position: row.position,
       logged_at: row.logged_at,
@@ -179,7 +185,9 @@ interface WorkoutDetail {
   date: string;
   kind: WorkoutKind;
   title: string;
-  details: string;
+  planned_detail: PlannedDetailStored;
+  why: string | null;
+  source: WorkoutSource | null;
   position: number;
   status: WorkoutStatus;
   logged_at: string | null;
@@ -265,7 +273,7 @@ export interface LoggedWorkoutRow {
   date: string;
   kind: WorkoutKind;
   title: string;
-  details: string;
+  planned_detail: PlannedDetailStored;
   status: WorkoutStatus;
   actual_duration_min: number | null;
   actual_distance_km: number | null;
@@ -307,7 +315,7 @@ export async function getRaceAndHistory(beforeDate: string): Promise<{
     supabase
       .from("workouts")
       .select(
-        "date, kind, title, details, status, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail",
+        "date, kind, title, planned_detail, status, actual_duration_min, actual_distance_km, actual_elevation_gain_m, actual_hr_avg, actual_rpe, actual_notes, actual_detail",
       )
       .eq("user_id", userId)
       .lt("date", beforeDate)

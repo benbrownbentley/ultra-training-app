@@ -1,12 +1,10 @@
-// Best-effort parser turning a free-text `details` string (Claude generates
-// these — e.g. "10 km @ 6:00/km easy", "45 min — squats, RDLs") into the
-// structured metric tiles the design expects.
-//
-// Returns whatever tiles it can extract; the caller hides the row entirely
-// if the result is empty, so misses are silent rather than rendering
-// half-empty placeholders.
+// Renders the workout's planned_detail into the structured metric
+// tiles the design expects. Phase 2: structured-only path. Pre-Phase-2
+// backfilled rows (`{ notes }`) carry no metric data, so the
+// component caller hides the tile row when the result is empty.
 
-import type { WorkoutKind } from "@/lib/plan";
+import type { PlannedDetailStored, WorkoutKind } from "@/lib/plan";
+import { isLegacyPlannedDetail } from "@/lib/planned-detail";
 
 export interface MetricTile {
   label: string;
@@ -15,74 +13,123 @@ export interface MetricTile {
   primary?: boolean;
 }
 
-const DISTANCE_RE = /(\d+(?:\.\d+)?)\s*(km|mi)\b/i;
-const DURATION_RE = /(\d+(?:\.\d+)?)\s*(min|hr|h)\b/i;
-const VERT_RE = /\+\s*(\d+(?:\,\d+)?)\s*m\b/i;
-const SETS_REPS_RE = /(\d+)\s*[×x]\s*(\d+)/;
-const ZONE_RE = /(Z\d(?:[–-]Z\d)?)/i;
-const PACE_RE = /(\d+:\d{2})\s*\/\s*(km|mi)/i;
-
 export function extractMetrics(
-  details: string,
+  planned: PlannedDetailStored,
   kind: WorkoutKind,
 ): MetricTile[] {
+  if (planned == null || isLegacyPlannedDetail(planned)) return [];
   const tiles: MetricTile[] = [];
 
-  const zoneMatch = details.match(ZONE_RE);
-  if (zoneMatch) {
-    tiles.push({ label: "HR Z", value: zoneMatch[1].toUpperCase(), primary: true });
-  }
-
-  const durationMatch = details.match(DURATION_RE);
-  if (durationMatch) {
-    const unit = durationMatch[2].toLowerCase().startsWith("h") ? "hr" : "min";
-    tiles.push({
-      label: "TIME",
-      value: durationMatch[1],
-      unit,
-      primary: !zoneMatch && kind !== "run",
-    });
-  }
-
-  const distanceMatch = details.match(DISTANCE_RE);
-  if (distanceMatch && kind === "run") {
-    tiles.push({
-      label: "DIST",
-      value: distanceMatch[1],
-      unit: distanceMatch[2].toLowerCase(),
-    });
-  }
-
-  const vertMatch = details.match(VERT_RE);
-  if (vertMatch) {
-    tiles.push({ label: "VERT", value: `+${vertMatch[1]}`, unit: "m" });
-  }
-
-  const paceMatch = details.match(PACE_RE);
-  if (paceMatch && kind === "run") {
-    tiles.push({
-      label: "PACE",
-      value: paceMatch[1],
-      unit: `/${paceMatch[2].toLowerCase()}`,
-    });
-  }
-
-  if (tiles.length === 0) {
-    const setsRepsMatch = details.match(SETS_REPS_RE);
-    if (setsRepsMatch) {
+  if (planned.kind === "run") {
+    if (planned.target_pace) {
+      tiles.push({ label: "PACE", value: planned.target_pace });
+    }
+    if (planned.total_duration_min != null) {
       tiles.push({
-        label: "SETS",
-        value: `${setsRepsMatch[1]}×${setsRepsMatch[2]}`,
+        label: "TIME",
+        value: String(planned.total_duration_min),
+        unit: "min",
+      });
+    }
+    if (planned.total_distance_km != null) {
+      tiles.push({
+        label: "DIST",
+        value: String(planned.total_distance_km),
+        unit: "km",
         primary: true,
       });
     }
+    if (planned.total_elevation_gain_m != null) {
+      tiles.push({
+        label: "VERT",
+        value: `+${planned.total_elevation_gain_m}`,
+        unit: "m",
+      });
+    }
+    // Surface the main set's zone as a glance metric when present.
+    const mainSet = planned.segments.find((s) =>
+      /main|interval|tempo|strides|block/i.test(s.label),
+    );
+    if (mainSet?.zone) {
+      tiles.push({ label: "HR Z", value: mainSet.zone.toUpperCase() });
+    }
+    return tiles;
   }
 
+  if (planned.kind === "gym" || planned.kind === "physio") {
+    if (planned.total_duration_min != null) {
+      tiles.push({
+        label: "TIME",
+        value: String(planned.total_duration_min),
+        unit: "min",
+        primary: true,
+      });
+    }
+    tiles.push({
+      label: "EXERCISES",
+      value: String(planned.exercises.length),
+    });
+    // Surface total sets as a glance metric so the user can see scope.
+    const totalSets = planned.exercises.reduce((sum, e) => sum + e.sets, 0);
+    if (totalSets > 0) {
+      tiles.push({ label: "SETS", value: String(totalSets) });
+    }
+    return tiles;
+  }
+
+  if (planned.kind === "mobility") {
+    if (planned.total_duration_min != null) {
+      tiles.push({
+        label: "TIME",
+        value: String(planned.total_duration_min),
+        unit: "min",
+        primary: true,
+      });
+    }
+    tiles.push({
+      label: "MOVEMENTS",
+      value: String(planned.movements.length),
+    });
+    return tiles;
+  }
+
+  if (planned.kind === "cross") {
+    tiles.push({
+      label: "TIME",
+      value: String(planned.duration_min),
+      unit: "min",
+      primary: true,
+    });
+    if (planned.target_zone) {
+      tiles.push({ label: "HR Z", value: planned.target_zone.toUpperCase() });
+    }
+    return tiles;
+  }
+
+  // hike
+  tiles.push({
+    label: "TIME",
+    value: String(planned.duration_min),
+    unit: "min",
+    primary: true,
+  });
+  if (planned.elevation_gain_m != null) {
+    tiles.push({
+      label: "VERT",
+      value: `+${planned.elevation_gain_m}`,
+      unit: "m",
+    });
+  }
+  if (planned.target_zone) {
+    tiles.push({ label: "HR Z", value: planned.target_zone.toUpperCase() });
+  }
+  // Mute kind reference so it's not flagged as unused.
+  void kind;
   return tiles;
 }
 
 // Eyebrow describing the kind + parsed sub-type. Falls back to the bare kind
-// when no sub-type can be inferred from title/details.
+// when no sub-type can be inferred from the title.
 export function kindEyebrow(kind: WorkoutKind, title: string): string {
   const t = title.toLowerCase();
   if (kind === "run") {

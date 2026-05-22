@@ -1,11 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-  deriveWorkoutContent,
-  parseRunningSegments,
-  parseStrengthExercises,
-  parseRoutine,
-  pickSubtype,
-} from "./workout-content";
+import { deriveWorkoutContent, pickSubtype } from "./workout-content";
+import type { PlannedDetail } from "@/lib/plan";
 
 describe("pickSubtype", () => {
   it("maps each DB kind 1:1 onto the visual subtype", () => {
@@ -18,151 +13,157 @@ describe("pickSubtype", () => {
   });
 });
 
-describe("parseRunningSegments", () => {
-  it("extracts warm-up, main set, cool-down with zones", () => {
-    const segments = parseRunningSegments(
-      "Warm-up: 15 min easy at Z1–Z2. Main set: 4×8 min at Z3 tempo. Cool-down: 10 min easy at Z1.",
-    );
-    expect(segments.length).toBe(3);
-    expect(segments[0].name).toBe("Warm-up");
-    expect(segments[1].name).toBe("Main set");
-    expect(segments[1].emphasis).toBe("high");
-    expect(segments[2].name).toBe("Cool-down");
-  });
-
-  it("returns empty when neither structure nor a value is present", () => {
-    const segments = parseRunningSegments("Easy session, no specifics.");
-    expect(segments).toEqual([]);
-  });
-
-  it("falls back to a single Main set when only a zone is mentioned", () => {
-    const segments = parseRunningSegments("Tempo block at Z3, 45 minutes.");
-    expect(segments.length).toBe(1);
-    expect(segments[0].name).toBe("Main set");
-    expect(segments[0].zone).toBe("Z3");
-  });
-});
-
-describe("parseStrengthExercises", () => {
-  it("parses sets, reps, weight, and unit", () => {
-    const ex = parseStrengthExercises(
-      "Squat 4×6 @ 60kg. Romanian Deadlift 3×8 @ 50kg. Walking Lunge 3×8 @ 20kg.",
-    );
-    expect(ex.length).toBe(3);
-    expect(ex[0]).toMatchObject({ name: "Squat", sets: 4, reps: 6, weight: "60", unit: "kg" });
-  });
-
-  it("returns empty when nothing matches", () => {
-    expect(parseStrengthExercises("Easy mobility session.")).toEqual([]);
-  });
-});
-
-describe("parseRoutine", () => {
-  it("splits on the em-dot separator into rows", () => {
-    const r = parseRoutine(
-      "World's greatest stretch · 90/90 hip switches · Ankle rocks · Cossack squats",
-    );
-    expect(r.length).toBe(4);
-    expect(r[0].name).toContain("greatest");
-    expect(r.every((x) => x.spec === undefined)).toBe(true);
-  });
-
-  it("skips a leading 'N min' duration header", () => {
-    const r = parseRoutine(
-      "15 min · World's greatest stretch · 90/90 hip switches · Ankle rocks",
-    );
-    expect(r.length).toBe(3);
-    expect(r[0].name).toContain("greatest");
-    expect(r.map((x) => x.name)).not.toContain("15 min");
-  });
-
-  it("extracts a trailing 3×10 spec from a fragment", () => {
-    const r = parseRoutine("15 min · Banded clamshell 3×10 · Glute bridge");
-    expect(r.length).toBe(2);
-    expect(r[0]).toEqual({ name: "Banded clamshell", spec: "3×10" });
-    expect(r[1]).toEqual({ name: "Glute bridge" });
-  });
-
-  it("extracts a trailing 30s/side spec", () => {
-    const r = parseRoutine("Couch stretch 30s/side · 90/90 hip switches");
-    expect(r.length).toBe(2);
-    expect(r[0]).toEqual({ name: "Couch stretch", spec: "30s/side" });
-  });
-
-  it("tolerates extra whitespace around separators", () => {
-    const r = parseRoutine(
-      "  15 min   ·   Hip flexor stretch   ·   Ankle rocks   ",
-    );
-    expect(r.length).toBe(2);
-    expect(r[0].name).toBe("Hip flexor stretch");
-    expect(r[1].name).toBe("Ankle rocks");
-  });
-
-  it("parses comma-separated details with a leading duration header", () => {
-    const out = parseRoutine(
-      "15 min — hip flexor, glute, calf stretching",
-    );
-    expect(out).toEqual([
-      { name: "hip flexor" },
-      { name: "glute" },
-      { name: "calf stretching" },
-    ]);
-  });
-
-  it("parses em-dash-separated details", () => {
-    const out = parseRoutine(
-      "10 min — World's greatest stretch — 90/90 hip switches — Ankle rocks",
-    );
-    expect(out).toEqual([
-      { name: "World's greatest stretch" },
-      { name: "90/90 hip switches" },
-      { name: "Ankle rocks" },
-    ]);
-  });
-
-  it("preserves spec extraction across the new separators", () => {
-    const out = parseRoutine(
-      "15 min — Couch stretch 60s/side, World's greatest stretch 3×5",
-    );
-    expect(out[0]).toEqual({ name: "Couch stretch", spec: "60s/side" });
-    expect(out[1]).toEqual({ name: "World's greatest stretch", spec: "3×5" });
-  });
-
-  it("handles a single-item routine without bailing", () => {
-    const out = parseRoutine("10 min — couch stretch");
-    expect(out).toEqual([{ name: "couch stretch" }]);
-  });
-
-  it("returns empty for empty or whitespace input", () => {
-    expect(parseRoutine("").length).toBe(0);
-    expect(parseRoutine("   ").length).toBe(0);
-  });
-});
-
-describe("deriveWorkoutContent", () => {
-  it("surfaces a description and why stub for the chosen subtype", () => {
-    const c = deriveWorkoutContent("run", "Tempo Run", "Easy 6km");
+describe("deriveWorkoutContent — structured payloads", () => {
+  it("projects a run payload into segment rows with zones", () => {
+    const pd: PlannedDetail = {
+      kind: "run",
+      segments: [
+        { label: "Warm-up", duration_min: 15, zone: "Z1-Z2", note: "easy spin" },
+        { label: "Main set", duration_min: 40, zone: "Z3", intervals: "4 × 8 min" },
+        { label: "Cool-down", duration_min: 10, zone: "Z1" },
+      ],
+      total_duration_min: 65,
+      target_pace: "5:30/km",
+    };
+    const c = deriveWorkoutContent("run", "Tempo Run", pd, "Phase B build day.");
     expect(c.subtype).toBe("running");
-    expect(c.subLabel).toBe("RUN · TEMPO");
-    expect(c.description.length).toBeGreaterThan(0);
+    expect(c.isLegacy).toBe(false);
+    expect(c.segments).toHaveLength(3);
+    expect(c.segments[0].name).toBe("Warm-up");
+    expect(c.segments[1].emphasis).toBe("high");
+    expect(c.segments[2].name).toBe("Cool-down");
+    expect(c.why).toBe("Phase B build day.");
+  });
+
+  it("projects a gym payload into exercise rows + warmup", () => {
+    const pd: PlannedDetail = {
+      kind: "gym",
+      exercises: [
+        { name: "Squat", sets: 4, reps: 6, weight: 60, unit: "kg" },
+        { name: "RDL", sets: 3, reps: 8, weight: 50, unit: "kg" },
+      ],
+      warmup: { duration_min: 8, items: ["Goblet squat 2 × 8"], note: "Build slowly" },
+      total_duration_min: 45,
+    };
+    const c = deriveWorkoutContent("gym", "Lower body", pd, null);
+    expect(c.subtype).toBe("strength");
+    expect(c.exercises).toHaveLength(2);
+    expect(c.exercises[0]).toMatchObject({ name: "Squat", sets: 4, reps: 6, weight: "60", unit: "kg" });
+    expect(c.warmup).not.toBeNull();
+    expect(c.warmup!.items).toContain("Goblet squat 2 × 8");
+  });
+
+  it("projects a physio payload into physioExercises with null pain", () => {
+    const pd: PlannedDetail = {
+      kind: "physio",
+      exercises: [
+        {
+          name: "Heavy slow calf raises",
+          sets: 3,
+          reps: 8,
+          weight: 20,
+          unit: "kg",
+          pain_focus: "achilles",
+        },
+      ],
+    };
+    const c = deriveWorkoutContent("physio", "Achilles prehab", pd, null);
+    expect(c.subtype).toBe("physio");
+    expect(c.physioExercises).toHaveLength(1);
+    expect(c.physioExercises[0].name).toBe("Heavy slow calf raises");
+    expect(c.physioExercises[0].pain).toBeNull();
+  });
+
+  it("projects a mobility payload into routine rows with side specs", () => {
+    const pd: PlannedDetail = {
+      kind: "mobility",
+      movements: [
+        { name: "World's greatest stretch", duration_s: 60, side: "each" },
+        { name: "Couch stretch", duration_s: 60, side: "both" },
+      ],
+      total_duration_min: 15,
+    };
+    const c = deriveWorkoutContent("mobility", "Mobility", pd, null);
+    expect(c.subtype).toBe("mobility");
+    expect(c.routine).toHaveLength(2);
+    expect(c.routine[0]).toMatchObject({ name: "World's greatest stretch" });
+    expect(c.routine[0].spec).toContain("60s");
+    expect(c.routine[1].spec).toBe("60s");
+  });
+
+  it("projects a cross payload as a single main-set segment with zone", () => {
+    const pd: PlannedDetail = {
+      kind: "cross",
+      activity: "cycling",
+      duration_min: 60,
+      target_zone: "Z2",
+      notes: "easy spin",
+    };
+    const c = deriveWorkoutContent("cross", "Bike spin", pd, null);
+    expect(c.subtype).toBe("cross");
+    expect(c.segments).toHaveLength(1);
+    expect(c.segments[0].zone).toBe("Z2");
+    expect(c.subLabel).toBe("CROSS-TRAINING · CYCLING");
+  });
+
+  it("projects a hike payload + surfaces fueling when present", () => {
+    const pd: PlannedDetail = {
+      kind: "hike",
+      duration_min: 240,
+      elevation_gain_m: 1200,
+      target_zone: "Z1-Z2",
+      fueling: "60g carbs/hr, 500ml water/hr",
+    };
+    const c = deriveWorkoutContent("hike", "Vert hike", pd, null);
+    expect(c.subtype).toBe("hike");
+    expect(c.fueling).toContain("60g carbs");
+    expect(c.subLabel).toBe("CROSS-TRAINING · HIKE");
+  });
+
+  it("uses provided `why` over the subtype stub", () => {
+    const pd: PlannedDetail = {
+      kind: "run",
+      segments: [{ label: "Main set", duration_min: 30 }],
+    };
+    const c = deriveWorkoutContent("run", "Easy Run", pd, "Specific session rationale.");
+    expect(c.why).toBe("Specific session rationale.");
+  });
+
+  it("falls back to STUB_WHY when no `why` is provided", () => {
+    const pd: PlannedDetail = {
+      kind: "run",
+      segments: [{ label: "Main set", duration_min: 30 }],
+    };
+    const c = deriveWorkoutContent("run", "Easy Run", pd, null);
     expect(c.why.length).toBeGreaterThan(0);
   });
+});
 
-  it("attaches a fueling reminder only to long hikes", () => {
-    expect(
-      deriveWorkoutContent("hike", "Trail Hike", "~4 hr hike at Z1").fueling,
-    ).not.toBeNull();
-    expect(
-      deriveWorkoutContent("hike", "Recovery Hike", "2 hr easy hike").fueling,
-    ).toBeNull();
+describe("deriveWorkoutContent — legacy backfilled rows", () => {
+  it("renders a legacy { notes } payload as a minimal card without throwing", () => {
+    const c = deriveWorkoutContent(
+      "run",
+      "Tempo Run",
+      { notes: "10 km @ 6:00/km easy" },
+      null,
+    );
+    expect(c.isLegacy).toBe(true);
+    expect(c.legacyNotes).toBe("10 km @ 6:00/km easy");
+    expect(c.segments).toEqual([]);
+    expect(c.exercises).toEqual([]);
+    expect(c.routine).toEqual([]);
+    expect(c.description).toBe("10 km @ 6:00/km easy");
   });
 
-  it("attaches a warm-up reminder when squat / deadlift / press is in the exercise list", () => {
-    const c = deriveWorkoutContent(
-      "gym",
-      "Strength A",
-      "Squat 4×6 @ 60kg. Bench Press 4×6 @ 50kg.",
-    );
-    expect(c.warmup).not.toBeNull();
+  it("falls back to the subtype description when notes are empty", () => {
+    const c = deriveWorkoutContent("mobility", "Mobility", { notes: "" }, null);
+    expect(c.isLegacy).toBe(true);
+    expect(c.description.length).toBeGreaterThan(0);
+  });
+
+  it("handles a null planned_detail without throwing", () => {
+    const c = deriveWorkoutContent("gym", "Strength", null, null);
+    expect(c.isLegacy).toBe(true);
+    expect(c.legacyNotes).toBe("");
   });
 });

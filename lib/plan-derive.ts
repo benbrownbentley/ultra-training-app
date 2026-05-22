@@ -1,17 +1,15 @@
 // Derived plan helpers — pure functions over the basic Plan + today date.
 // Phase boundaries are inferred from week position in the block (we don't
-// store coach-defined phases yet). Volume and vert are best-effort parses
-// of the free-text `details` field; misses are silent so the UI only
-// shows numbers it's confident in.
+// store coach-defined phases yet). Volume and vert are read directly off
+// the structured `planned_detail` payload (Phase 2). Legacy backfilled
+// rows contribute zero — they only land here for users who haven't
+// regenerated their plan post-migration.
 
 import type { Day, Plan, Workout } from "@/lib/plan";
+import { isLegacyPlannedDetail } from "@/lib/planned-detail";
 import { addDays, daysBetween, weekStart } from "@/lib/utils";
 
 export type PlanPhase = "base" | "build" | "peak" | "taper";
-
-const DISTANCE_RE = /(\d+(?:\.\d+)?)\s*(km|mi)\b/i;
-const VERT_RE = /\+\s*(\d+(?:,\d+)?)\s*m\b/i;
-const DURATION_RE = /(\d+(?:\.\d+)?)\s*(min|hr|h)\b/i;
 
 // 1-indexed week in a `totalWeeks`-long block → coarse phase classification.
 // Base: first third. Build: middle third. Peak: until 2 weeks out. Taper: last 2.
@@ -30,26 +28,31 @@ export function phaseLabel(phase: PlanPhase): string {
   return { base: "BASE", build: "BUILD", peak: "PEAK", taper: "TAPER" }[phase];
 }
 
-// Pulls a distance value out of a free-text `details` string. Returns the
-// figure in km — converts miles when that's what was logged.
-function distanceKm(details: string): number {
-  const m = details.match(DISTANCE_RE);
-  if (!m) return 0;
-  const value = parseFloat(m[1]);
-  return m[2].toLowerCase() === "mi" ? value * 1.609344 : value;
+// Pulls planned distance in km out of a structured run payload.
+// Returns 0 for legacy backfilled rows or non-run kinds.
+function distanceKm(w: Workout): number {
+  const pd = w.planned_detail;
+  if (pd == null || isLegacyPlannedDetail(pd)) return 0;
+  if (pd.kind === "run") return pd.total_distance_km ?? 0;
+  return 0;
 }
 
-function vertM(details: string): number {
-  const m = details.match(VERT_RE);
-  if (!m) return 0;
-  return parseInt(m[1].replace(",", ""), 10);
+function vertM(w: Workout): number {
+  const pd = w.planned_detail;
+  if (pd == null || isLegacyPlannedDetail(pd)) return 0;
+  if (pd.kind === "run") return pd.total_elevation_gain_m ?? 0;
+  if (pd.kind === "hike") return pd.elevation_gain_m ?? 0;
+  return 0;
 }
 
-function durationMin(details: string): number {
-  const m = details.match(DURATION_RE);
-  if (!m) return 0;
-  const value = parseFloat(m[1]);
-  return m[2].toLowerCase().startsWith("h") ? value * 60 : value;
+function durationMin(w: Workout): number {
+  const pd = w.planned_detail;
+  if (pd == null || isLegacyPlannedDetail(pd)) return 0;
+  if (pd.kind === "run" || pd.kind === "gym" || pd.kind === "mobility" || pd.kind === "physio") {
+    return pd.total_duration_min ?? 0;
+  }
+  if (pd.kind === "cross" || pd.kind === "hike") return pd.duration_min;
+  return 0;
 }
 
 export interface WeekStats {
@@ -74,15 +77,21 @@ export function weekStats(days: Day[]): WeekStats {
       totalWorkouts++;
       if (w.status === "completed") completedCount++;
       if (w.kind === "run") {
-        const km = distanceKm(w.details);
-        const vert = vertM(w.details);
-        volKm += km;
-        vertMSum += vert;
-        if (!/easy|recovery|rest/i.test(w.title + " " + w.details)) {
+        volKm += distanceKm(w);
+        vertMSum += vertM(w);
+        // "Quality" runs = anything not flagged easy / recovery / rest
+        // in the title. Title alone is enough: easy runs are almost
+        // always titled "Easy" / "Recovery", and the structured
+        // planned_detail doesn't carry an explicit quality flag.
+        if (!/easy|recovery|rest/i.test(w.title)) {
           qualityCount++;
         }
       } else if (w.kind === "gym") {
         qualityCount++;
+      } else if (w.kind === "hike") {
+        // Hike vert lands here too — hike sessions on hilly courses
+        // contribute meaningfully to weekly climbing load.
+        vertMSum += vertM(w);
       }
     }
   }
@@ -168,9 +177,9 @@ export function daySummaryLabel(day: Day): string {
   const first = day.workouts[0];
   if (first.kind === "gym") return "strength";
   if (first.kind === "mobility") return "mobility";
-  const km = distanceKm(first.details);
+  const km = distanceKm(first);
   if (km > 0) return `${Math.round(km)} km`;
-  const min = durationMin(first.details);
+  const min = durationMin(first);
   if (min > 0) return `${Math.round(min)} min`;
   return first.title.toLowerCase().split(" ")[0];
 }

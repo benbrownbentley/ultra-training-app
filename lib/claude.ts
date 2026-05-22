@@ -12,11 +12,20 @@ import type {
 import {
   addDays,
   buildRetryMessage,
+  enumerateDates as enumerateDatesValidator,
   errorsOnly,
   validateGeneratedPlan,
+  validateMetaPlan,
+  validatePhaseChunk,
 } from "@/lib/plan-validation";
 import { isLegacyPlannedDetail } from "@/lib/planned-detail";
 import { buildPlanGenMetrics } from "@/lib/plan-gen-metrics";
+import type {
+  GenerationPhase,
+  MetaPlan,
+  PhaseMetadata,
+  PhaseSummaryForPrompt,
+} from "@/lib/plan-generation-types";
 
 const client = new Anthropic();
 
@@ -478,6 +487,89 @@ const PLAN_TOOL: Anthropic.Tool = {
     required: ["workouts", "summary", "changes"],
   },
 };
+
+// ----- Phase 2.5 META-PLAN TOOL ------------------------------------
+//
+// Step 0 of the chunked-generation pipeline. Returns just the
+// periodization breakdown (BASE / BUILD / PEAK / TAPER with date
+// ranges). Tiny output → tight ~5–10s call. The orchestrator uses
+// the output to decide which per-phase chunks to spawn and how to
+// label progress in the UI. See CHUNKING_SPEC.md §3.3.
+
+export const META_PLAN_TOOL: Anthropic.Tool = {
+  name: "submit_meta_plan",
+  description:
+    "Submit the periodization phase breakdown for the training window. No per-workout detail — just the phases and their date ranges.",
+  input_schema: {
+    type: "object",
+    properties: {
+      phases: {
+        type: "array",
+        minItems: 1,
+        maxItems: 4,
+        description:
+          "Phases in chronological order. Each phase covers contiguous dates with no gaps or overlaps. First phase starts on the training start date; last phase ends on race day.",
+        items: {
+          type: "object",
+          properties: {
+            phase: {
+              type: "string",
+              enum: ["base", "build", "peak", "taper"],
+              description:
+                "Periodization phase. BASE must come first when present; TAPER must be last when present.",
+            },
+            week_start_iso: {
+              type: "string",
+              description: "ISO date YYYY-MM-DD of the first day of this phase (inclusive).",
+            },
+            week_end_iso: {
+              type: "string",
+              description: "ISO date YYYY-MM-DD of the last day of this phase (inclusive).",
+            },
+            rationale: {
+              type: "string",
+              description:
+                "1-2 sentences explaining the phase boundary choice. Server-side log only — not shown to users.",
+            },
+          },
+          required: ["phase", "week_start_iso", "week_end_iso"],
+        },
+      },
+      meta_summary: {
+        type: "string",
+        description:
+          "1-2 sentence coach-voice summary of the overall periodization approach. Surfaces as the opening copy on the regen result page.",
+      },
+    },
+    required: ["phases", "meta_summary"],
+  },
+};
+
+const META_PLAN_SYSTEM_PROMPT = `You are an expert ultra marathon coach. Your job in this step is narrow: produce the periodization phase breakdown for an athlete's training window. Do NOT generate workouts — that happens in a subsequent step. Submit your output via the submit_meta_plan tool only.
+
+# PHASES
+
+Allocate the training window from start date through race day across these phases, in this order:
+
+- BASE (~40-50% of available weeks): aerobic volume, mobility, strength foundation. No quality work yet.
+- BUILD (~30-40%): race-specific intensity — hill repeats, tempo, long-run-with-effort.
+- PEAK (~10-15%): highest sustained volume and longest long run.
+- TAPER (final 2 weeks, non-negotiable): reduce volume, maintain some intensity.
+
+Compressed-window handling:
+- Window < 12 weeks: compress BASE to 2-3 weeks; keep BUILD → PEAK → TAPER.
+- Window < 6 weeks: skip BASE entirely. Focus on race-specific work + 2-week taper.
+- Window < 3 weeks: TAPER-only plan. One phase, named "taper". Maintain fitness, do not build.
+
+# OUTPUT REQUIREMENTS
+
+- Submit via the submit_meta_plan tool. No plain text response.
+- Phases must be chronological with no gaps and no overlaps. Phase N+1 starts the day after phase N ends.
+- First phase's week_start_iso = training start date (provided in the prompt).
+- Last phase's week_end_iso = race day (provided in the prompt).
+- Use the periodization rules above to size each phase. The rationale field for each phase is for debugging — be specific about why this phase is this many weeks.
+- The meta_summary is shown to the athlete. 1-2 sentences in coach voice (first person, addressed to the athlete) framing what the training cycle will feel like end-to-end.
+`;
 
 // Builds the `actual: …` sub-lines for a single workout. Each populated
 // field contributes one fragment, joined by " · ". Returns null when no
@@ -1439,13 +1531,24 @@ export async function generateTrainingPlan(
   if (secondErrors.length > 0) {
     // Retry also failed. Log the failure path's metrics so we still
     // capture token cost + duration before throwing — operationally
-    // useful when diagnosing repeated failures. Then throw so the
-    // action layer can render the error screen with a Retry button.
+    // useful when diagnosing repeated failures. Phase 2.1 follow-up:
+    // bundling this in here since we touch lib/claude.ts. The
+    // [plan-gen-metrics] line on a failed run is greppable alongside
+    // the successful ones so Phase 2.5 chunk sizing can see the full
+    // distribution including blowouts.
     const codes = secondErrors.map((e) => e.code).join(", ");
     console.warn(
       "[generateTrainingPlan] retry also failed validation — throwing. Issues:",
       secondErrors,
     );
+    logMetrics({
+      workouts: secondResult.workouts,
+      tokensIn,
+      tokensOut,
+      durationMs: Date.now() - startedAt,
+      isWizard: args.isWizard ?? false,
+      retried: true,
+    });
     throw new Error(
       `Plan failed validation after retry (issues: ${codes}). See server logs for details.`,
     );
@@ -1507,4 +1610,437 @@ function logWarnings(
     "[generateTrainingPlan] plan accepted with warnings:",
     warnings,
   );
+}
+
+// ----- Phase 2.5: chunked-generation primitives --------------------
+//
+// Two new exported functions live below: generateMetaPlan (Step 0)
+// and generatePhase (Step N). Both reuse the existing
+// callClaudeOnce-style stream pattern but with their own tools,
+// system prompts, and validators. The orchestrator in
+// lib/plan-generation-orchestrator.ts composes them.
+
+export interface GenerateMetaPlanArgs {
+  race: Race;
+  otherRaces?: Race[];
+  profile: AthleteProfile;
+  startDate: string;
+  // History + journal + previousSummary aren't passed to the
+  // meta-plan call — periodization decisions are based on the
+  // window length and athlete experience, not on per-workout
+  // history. Keeping the meta-plan prompt tight keeps the call
+  // fast.
+}
+
+/**
+ * Step 0 of the chunked-generation pipeline. Returns just the
+ * periodization phase breakdown (no per-workout content). Single
+ * Claude call wrapped in auto-retry-once on `validateMetaPlan`.
+ * Surfaces a typed exception on retry exhaustion; the orchestrator
+ * classifies it and writes the failure to the job row.
+ *
+ * Expected wall-clock: 5-10s. Token output is tiny (~300-600 out).
+ */
+export async function generateMetaPlan(
+  args: GenerateMetaPlanArgs,
+): Promise<MetaPlan> {
+  const firstMessage = await callMetaPlanOnce(args);
+  const firstResult = parseMetaPlanFromMessage(firstMessage);
+  const firstIssues = validateMetaPlan({
+    metaPlan: firstResult.metaPlan,
+    startDate: args.startDate,
+    raceDate: args.race.date,
+  });
+  const firstErrors = errorsOnly(firstIssues);
+  if (firstErrors.length === 0) {
+    return firstResult.metaPlan;
+  }
+
+  console.warn(
+    "[generateMetaPlan] validation failed on first attempt — retrying once. Issues:",
+    firstErrors,
+  );
+  const retryMessages: Anthropic.MessageParam[] = [
+    { role: "assistant", content: firstResult.rawContent },
+    {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: firstResult.toolUseId,
+          content: buildRetryMessage(firstIssues, "submit_meta_plan"),
+          is_error: true,
+        },
+      ],
+    },
+  ];
+  const secondMessage = await callMetaPlanOnce(args, retryMessages);
+  const secondResult = parseMetaPlanFromMessage(secondMessage);
+  const secondIssues = validateMetaPlan({
+    metaPlan: secondResult.metaPlan,
+    startDate: args.startDate,
+    raceDate: args.race.date,
+  });
+  const secondErrors = errorsOnly(secondIssues);
+  if (secondErrors.length > 0) {
+    const codes = secondErrors.map((e) => e.code).join(", ");
+    console.warn(
+      "[generateMetaPlan] retry also failed validation — throwing. Issues:",
+      secondErrors,
+    );
+    throw new Error(
+      `Meta-plan failed validation after retry (issues: ${codes}). See server logs for details.`,
+    );
+  }
+  console.info("[generateMetaPlan] retry succeeded.");
+  return secondResult.metaPlan;
+}
+
+// One meta-plan API call. Mirrors callClaudeOnce structurally so the
+// retry path can replay the assistant turn.
+async function callMetaPlanOnce(
+  args: GenerateMetaPlanArgs,
+  extraMessages: Anthropic.MessageParam[] = [],
+): Promise<Anthropic.Message> {
+  const model = process.env.CLAUDE_MODEL ?? "claude-haiku-4-5";
+  const supportsThinking =
+    model.startsWith("claude-opus-") || model === "claude-sonnet-4-6";
+
+  const baseParams = {
+    model,
+    // Meta-plan output is small (~600 tokens worst case for 4 phases).
+    // Lower max_tokens than the full-plan call keeps the request tight.
+    max_tokens: 2048,
+    system: [
+      {
+        type: "text" as const,
+        text: META_PLAN_SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" as const },
+      },
+    ],
+    tools: [META_PLAN_TOOL],
+    tool_choice: {
+      type: "tool" as const,
+      name: "submit_meta_plan",
+    },
+    messages: [
+      { role: "user" as const, content: buildMetaPlanUserPrompt(args) },
+      ...extraMessages,
+    ],
+  };
+
+  const stream = client.messages.stream(
+    supportsThinking
+      ? {
+          ...baseParams,
+          thinking: { type: "adaptive" as const },
+          output_config: { effort: "low" as const },
+        }
+      : baseParams,
+  );
+  return await stream.finalMessage();
+}
+
+// Pulls the meta-plan output out of a tool_use block. Throws when
+// Claude either didn't call the tool or returned a malformed shape;
+// validateMetaPlan handles structural issues downstream.
+function parseMetaPlanFromMessage(message: Anthropic.Message): {
+  metaPlan: MetaPlan;
+  toolUseId: string;
+  rawContent: Anthropic.Message["content"];
+} {
+  const toolUse = message.content.find(
+    (block): block is Anthropic.ToolUseBlock =>
+      block.type === "tool_use" && block.name === "submit_meta_plan",
+  );
+  if (!toolUse) {
+    throw new Error(
+      `Claude did not call submit_meta_plan. stop_reason=${message.stop_reason}`,
+    );
+  }
+  const input = toolUse.input as {
+    phases?: unknown;
+    meta_summary?: unknown;
+  };
+  if (!Array.isArray(input.phases)) {
+    throw new Error("Claude returned no phases array on submit_meta_plan.");
+  }
+  const summary =
+    typeof input.meta_summary === "string" && input.meta_summary.trim().length > 0
+      ? input.meta_summary.trim()
+      : "Periodization set. Generating workouts next.";
+  // Map the snake_case API shape to the camelCase TypeScript shape.
+  // Drop malformed phase entries silently — validateMetaPlan will
+  // catch missing dates / wrong order downstream.
+  const phases: PhaseMetadata[] = (input.phases as unknown[])
+    .filter(
+      (p): p is {
+        phase: string;
+        week_start_iso: string;
+        week_end_iso: string;
+        rationale?: string;
+      } =>
+        typeof p === "object" &&
+        p !== null &&
+        typeof (p as { phase?: unknown }).phase === "string" &&
+        typeof (p as { week_start_iso?: unknown }).week_start_iso === "string" &&
+        typeof (p as { week_end_iso?: unknown }).week_end_iso === "string",
+    )
+    .filter((p) => ["base", "build", "peak", "taper"].includes(p.phase))
+    .map((p) => {
+      const weeks = Math.max(
+        1,
+        Math.round(
+          enumerateDatesValidator(p.week_start_iso, p.week_end_iso).length / 7,
+        ),
+      );
+      return {
+        phase: p.phase as GenerationPhase,
+        weekStartIso: p.week_start_iso,
+        weekEndIso: p.week_end_iso,
+        weeks,
+        rationale: typeof p.rationale === "string" ? p.rationale : undefined,
+      };
+    });
+  return {
+    metaPlan: { phases, meta_summary: summary },
+    toolUseId: toolUse.id,
+    rawContent: message.content,
+  };
+}
+
+// Compact prompt that gives Claude only what it needs to choose the
+// phase boundaries: race date, start date, athlete experience, and
+// athlete training-time availability. Skips per-workout history.
+export function buildMetaPlanUserPrompt(args: GenerateMetaPlanArgs): string {
+  return `Decide the periodization phase breakdown for this athlete.
+
+RACE
+${formatRace(args.race, args.profile.unit_system)}
+
+RUNNER PROFILE (relevant slice — only fields that should influence phase sizing)
+${formatProfile(args.profile)}
+
+PLAN PARAMETERS
+- Start date (today): ${args.startDate}
+- End date (race day): ${args.race.date}
+
+Submit the periodization breakdown via the submit_meta_plan tool. Include a short coach-voice meta_summary the athlete will see, and a per-phase rationale (server-side only).`;
+}
+
+export interface GeneratePhaseArgs {
+  // Standard generation context — same payload the full-plan call
+  // would receive, plus phase-specific framing.
+  race: Race;
+  otherRaces?: Race[];
+  profile: AthleteProfile;
+  startDate: string;          // overall training start (for context)
+  history: LoggedWorkout[];
+  notes?: string | null;
+  journalEntries?: JournalContextEntry[];
+  previousSummary?: GenerationSummary | null;
+  isWizard?: boolean;
+  // Phase 2.5: which phase to generate + window + prior context.
+  phase: PhaseMetadata;
+  metaPlan: MetaPlan;
+  priorPhaseSummaries: PhaseSummaryForPrompt[];
+}
+
+export interface PhaseGenerationOutput {
+  workouts: GeneratedWorkout[];
+  summary: GenerationSummary;
+}
+
+/**
+ * Step N of the chunked-generation pipeline. Generates the workouts
+ * for one phase. Reuses the existing submit_training_plan tool — the
+ * structured shape is identical to the legacy full-plan call. The
+ * only difference is the prompt scopes the date window to this
+ * phase and threads compact summaries of prior-completed phases for
+ * continuity.
+ *
+ * Wraps callClaudeOnce + parsePlanFromMessage + auto-retry-once on
+ * validatePhaseChunk. Throws on retry exhaustion; the orchestrator
+ * classifies + writes failure to the job row.
+ *
+ * Expected wall-clock: 20-60s depending on phase length.
+ */
+export async function generatePhase(
+  args: GeneratePhaseArgs,
+): Promise<PhaseGenerationOutput> {
+  const firstMessage = await callPhaseOnce(args);
+  const firstResult = parsePlanFromMessage(firstMessage);
+  const firstIssues = validatePhaseChunk({
+    workouts: firstResult.workouts,
+    phaseStart: args.phase.weekStartIso,
+    phaseEnd: args.phase.weekEndIso,
+    phase: args.phase.phase,
+  });
+  const firstErrors = errorsOnly(firstIssues);
+  if (firstErrors.length === 0) {
+    return { workouts: firstResult.workouts, summary: firstResult.summary };
+  }
+
+  console.warn(
+    `[generatePhase:${args.phase.phase}] validation failed on first attempt — retrying once. Issues:`,
+    firstErrors,
+  );
+  const priorToolUse = firstResult._raw.content.find(
+    (block): block is Anthropic.ToolUseBlock =>
+      block.type === "tool_use" && block.name === "submit_training_plan",
+  );
+  if (!priorToolUse) {
+    throw new Error(
+      "Internal: parsed phase from first attempt but tool_use block missing on retry.",
+    );
+  }
+  const retryMessages: Anthropic.MessageParam[] = [
+    { role: "assistant", content: firstResult._raw.content },
+    {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: priorToolUse.id,
+          content: buildRetryMessage(firstIssues, "submit_training_plan"),
+          is_error: true,
+        },
+      ],
+    },
+  ];
+  const secondMessage = await callPhaseOnce(args, retryMessages);
+  const secondResult = parsePlanFromMessage(secondMessage);
+  const secondIssues = validatePhaseChunk({
+    workouts: secondResult.workouts,
+    phaseStart: args.phase.weekStartIso,
+    phaseEnd: args.phase.weekEndIso,
+    phase: args.phase.phase,
+  });
+  const secondErrors = errorsOnly(secondIssues);
+  if (secondErrors.length > 0) {
+    const codes = secondErrors.map((e) => e.code).join(", ");
+    console.warn(
+      `[generatePhase:${args.phase.phase}] retry also failed — throwing. Issues:`,
+      secondErrors,
+    );
+    throw new Error(
+      `Phase ${args.phase.phase} failed validation after retry (issues: ${codes}). See server logs for details.`,
+    );
+  }
+  console.info(`[generatePhase:${args.phase.phase}] retry succeeded.`);
+  return { workouts: secondResult.workouts, summary: secondResult.summary };
+}
+
+// One per-phase API call. Wraps callClaudeOnce's pattern with a
+// phase-scoped user prompt — the existing system prompt + tool stay
+// the same so per-workout output shape is identical to the legacy
+// full-plan call.
+async function callPhaseOnce(
+  args: GeneratePhaseArgs,
+  extraMessages: Anthropic.MessageParam[] = [],
+): Promise<Anthropic.Message> {
+  const model = process.env.CLAUDE_MODEL ?? "claude-haiku-4-5";
+  const supportsThinking =
+    model.startsWith("claude-opus-") || model === "claude-sonnet-4-6";
+
+  const baseParams = {
+    model,
+    // Per-phase chunks are bounded by phase length (~30-45 workouts
+    // → ~6-9k tokens), but leave headroom for thinking + variability.
+    max_tokens: 16000,
+    system: [
+      {
+        type: "text" as const,
+        text: SYSTEM_PROMPT,
+        cache_control: { type: "ephemeral" as const },
+      },
+    ],
+    tools: [PLAN_TOOL],
+    tool_choice: {
+      type: "tool" as const,
+      name: "submit_training_plan",
+    },
+    messages: [
+      { role: "user" as const, content: buildPhaseUserPrompt(args) },
+      ...extraMessages,
+    ],
+  };
+
+  const stream = client.messages.stream(
+    supportsThinking
+      ? {
+          ...baseParams,
+          thinking: { type: "adaptive" as const },
+          output_config: { effort: "medium" as const },
+        }
+      : baseParams,
+  );
+  return await stream.finalMessage();
+}
+
+// Builds the per-phase user prompt. Re-uses the regular full-plan
+// prompt for race / profile / history / journal sections, then
+// prepends the phase-specific framing (which phase, what's already
+// done, what dates to cover).
+export function buildPhaseUserPrompt(args: GeneratePhaseArgs): string {
+  const phase = args.phase;
+  const priorBlock =
+    args.priorPhaseSummaries.length === 0
+      ? "(This is the first phase. No prior-phase summaries to consider.)"
+      : args.priorPhaseSummaries
+          .map(
+            (p) =>
+              `- ${p.phase.toUpperCase()} (${p.weekStartIso} → ${p.weekEndIso}, ${p.weeks} weeks, ${p.workoutCount} workouts): ${p.summary}`,
+          )
+          .join("\n");
+
+  const fullPlanPrompt = buildUserPrompt({
+    race: args.race,
+    otherRaces: args.otherRaces,
+    profile: args.profile,
+    startDate: args.startDate,
+    history: args.history,
+    notes: args.notes,
+    journalEntries: args.journalEntries,
+    previousSummary: args.previousSummary,
+    isWizard: args.isWizard,
+  });
+
+  return `${fullPlanPrompt}
+
+PHASE TO GENERATE
+You are generating workouts for ONE specific periodization phase. Do not generate workouts for any other phase or any dates outside this window.
+
+- Phase: ${phase.phase.toUpperCase()}
+- Window: ${phase.weekStartIso} → ${phase.weekEndIso} (${phase.weeks} weeks, inclusive of both endpoints)
+- Overall training arc (for context): ${args.metaPlan.phases
+    .map((p) => `${p.phase.toUpperCase()} (${p.weekStartIso} → ${p.weekEndIso})`)
+    .join(" → ")}
+
+PRIOR PHASES (compact summaries — context only, do not re-emit workouts for these dates):
+${priorBlock}
+
+OUTPUT FOR THIS PHASE
+- Every date from ${phase.weekStartIso} through ${phase.weekEndIso} (inclusive) must have at least one workout.
+- Do NOT generate workouts for any date outside this window.
+- Apply this phase's role per the methodology section: ${phaseRoleSummary(phase.phase)}.
+- The summary field in your tool call describes THIS phase only — 1-2 sentences in coach voice about what these weeks build toward.
+- The changes array describes the moves you made within this phase (e.g. "ADDED 2× tempo per week"). 1-4 entries.
+
+Submit via the submit_training_plan tool. Only emit workouts for ${phase.weekStartIso} → ${phase.weekEndIso}.`;
+}
+
+// Short imperative description of each phase's role. Reinforces the
+// methodology section without duplicating it.
+function phaseRoleSummary(phase: GenerationPhase): string {
+  switch (phase) {
+    case "base":
+      return "aerobic volume, mobility, strength foundation. NO quality work, hill repeats, or tempo. Long run grows ~10% per week with a cutback every 4th week";
+    case "build":
+      return "introduce race-specific intensity — hill repeats, tempo, long-run-with-effort. 1-2 quality sessions per week, 1 long run, remainder easy aerobic";
+    case "peak":
+      return "highest sustained volume and longest long run. Race-specific brick sessions if applicable. Final quality block before the taper";
+    case "taper":
+      return "reduce volume ~40% in week -2, ~60% in week -1. Maintain some intensity. End with a short shakeout 1-2 days before race. Include the race itself on race day if this window contains it";
+  }
 }

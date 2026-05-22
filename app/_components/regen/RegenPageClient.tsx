@@ -97,11 +97,11 @@ export function RegenPageClient({
   }, []);
 
   const handleTryAgain = useCallback(() => {
-    // From the error state, fire a fresh previewPlan with no notes. This
-    // matches the design's "Try again" CTA — no extra typing required.
-    // Generation failures now return a typed envelope; thrown errors
-    // come from network-level issues (504 HTML, dropped connection) and
-    // fall through to the same error UX.
+    // From the error state, fire a fresh previewPlan with no notes.
+    // Chunked path returns a jobId → route to the progress page;
+    // legacy path returns a previewId → route to the diff view.
+    // Thrown errors come from network-level issues (504 HTML, dropped
+    // connection) and fall through to the same branded error UX.
     setPhase("generating");
     setErrorMessage(null);
     startTransition(async () => {
@@ -111,7 +111,11 @@ export function RegenPageClient({
           router.push(`/regen?error=${r.code}&req=${r.requestId}`);
           return;
         }
-        router.push(`/regen?preview=${r.previewId}`);
+        if (r.jobId !== null) {
+          router.push(`/regen?job=${r.jobId}`);
+        } else {
+          router.push(`/regen?preview=${r.previewId}`);
+        }
       } catch (e) {
         console.error("[RegenPageClient] previewPlan threw", e);
         router.push(`/regen?error=generation_timeout`);

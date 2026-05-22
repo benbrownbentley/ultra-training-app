@@ -14,6 +14,7 @@ import {
 import { buildContextRows } from "@/lib/regen-context";
 import { RegenPageClient } from "@/app/_components/regen/RegenPageClient";
 import { RegenErrorPage } from "@/app/_components/regen/RegenErrorPage";
+import { RegenJobPage } from "@/app/_components/regen/RegenJobPage";
 import type { PlanGenErrorCode } from "@/lib/plan-gen-result";
 
 export const dynamic = "force-dynamic";
@@ -29,21 +30,38 @@ const KNOWN_ERROR_CODES: PlanGenErrorCode[] = [
   "unknown",
 ];
 
-// /regen renders the preview-then-accept screen. The URL is the source of
-// truth: ?preview=<id> identifies which pending preview to show; or
-// ?error=<code> renders the branded retry state when previewPlan
-// failed. Missing or invalid → bounce home (the user almost certainly
-// arrived by mistake or from a stale link).
+// /regen renders the preview-then-accept screen. The URL is the source
+// of truth across three branches:
+//   ?job=<id>      → Phase 2.5 chunked progress UI; polls until done
+//                    then routes itself to ?preview=<id>
+//   ?preview=<id>  → pending plan_previews row → diff view
+//   ?error=<code>  → branded retry state for generation failures
+// Missing or invalid → bounce home.
 export default async function RegenPage({
   searchParams,
 }: {
-  searchParams: Promise<{ preview?: string; error?: string; req?: string }>;
+  searchParams: Promise<{
+    preview?: string;
+    error?: string;
+    req?: string;
+    job?: string;
+    jobId?: string;
+  }>;
 }) {
   const {
     preview: previewParam,
     error: errorParam,
     req: reqParam,
+    job: jobParam,
+    jobId: errorJobIdParam,
   } = await searchParams;
+
+  // Chunked-progress branch. The client component polls
+  // getGenerationJobStatus and self-routes once status flips. Cheap
+  // server-side — no DB read here; let the polling client own it.
+  if (jobParam && /^\d+$/.test(jobParam)) {
+    return <RegenJobPage jobId={Number(jobParam)} />;
+  }
 
   // Generation-failure branch. Falls back to the `unknown` code if a
   // stray query param doesn't match the typed set — keeps the page
@@ -51,7 +69,13 @@ export default async function RegenPage({
   if (errorParam) {
     const code = (KNOWN_ERROR_CODES.find((c) => c === errorParam) ??
       "unknown") as PlanGenErrorCode;
-    return <RegenErrorPage code={code} requestId={reqParam} />;
+    const jobId =
+      errorJobIdParam && /^\d+$/.test(errorJobIdParam)
+        ? Number(errorJobIdParam)
+        : null;
+    return (
+      <RegenErrorPage code={code} requestId={reqParam} jobId={jobId} />
+    );
   }
 
   if (!previewParam || !/^\d+$/.test(previewParam)) {

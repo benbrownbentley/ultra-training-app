@@ -2,14 +2,18 @@ import { describe, expect, it } from "vitest";
 import {
   addDays,
   buildRetryMessage,
+  enrichPhaseWeeks,
   enumerateDates,
   errorsOnly,
   PlannedDetailSchema,
   WHY_MAX_CHARS,
   validateGeneratedPlan,
+  validateMetaPlan,
+  validatePhaseChunk,
 } from "@/lib/plan-validation";
 import type { GeneratedWorkout } from "@/lib/claude";
 import type { PlannedDetail } from "@/lib/plan";
+import type { MetaPlan } from "@/lib/plan-generation-types";
 
 // Minimal-but-valid PlannedDetail builder per kind. Keeps fixtures
 // terse while still satisfying the discriminator + required fields.
@@ -330,5 +334,289 @@ describe("buildRetryMessage", () => {
     ];
     const msg = buildRetryMessage(issues);
     expect(msg).not.toContain("this is a warning");
+  });
+  it("targets the provided tool name on retry", () => {
+    const msg = buildRetryMessage(
+      [
+        {
+          severity: "error",
+          code: "meta_plan_empty",
+          message: "no phases",
+        },
+      ],
+      "submit_meta_plan",
+    );
+    expect(msg).toContain("submit_meta_plan");
+    expect(msg).not.toContain("submit_training_plan");
+  });
+});
+
+// ---------- Phase 2.5 ---------------------------------------------
+
+function metaPlan(phases: { phase: "base" | "build" | "peak" | "taper"; start: string; end: string }[]): MetaPlan {
+  return {
+    meta_summary: "Test plan.",
+    phases: phases.map((p) => ({
+      phase: p.phase,
+      weekStartIso: p.start,
+      weekEndIso: p.end,
+      weeks: Math.max(
+        1,
+        Math.round(enumerateDates(p.start, p.end).length / 7),
+      ),
+    })),
+  };
+}
+
+describe("validateMetaPlan", () => {
+  it("accepts a clean 4-phase plan covering the full window", () => {
+    const mp = metaPlan([
+      { phase: "base", start: "2026-05-20", end: "2026-06-09" }, // 3 wks
+      { phase: "build", start: "2026-06-10", end: "2026-06-30" }, // 3 wks
+      { phase: "peak", start: "2026-07-01", end: "2026-07-14" }, // 2 wks
+      { phase: "taper", start: "2026-07-15", end: "2026-07-28" }, // 2 wks
+    ]);
+    expect(
+      errorsOnly(
+        validateMetaPlan({
+          metaPlan: mp,
+          startDate: "2026-05-20",
+          raceDate: "2026-07-28",
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("flags meta_plan_empty when no phases are returned", () => {
+    const issues = validateMetaPlan({
+      metaPlan: { meta_summary: "x", phases: [] },
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain("meta_plan_empty");
+  });
+
+  it("flags meta_plan_phase_gap when a date is missing between phases", () => {
+    const mp = metaPlan([
+      { phase: "base", start: "2026-05-20", end: "2026-06-09" },
+      { phase: "build", start: "2026-06-11", end: "2026-06-30" }, // gap on 06-10
+      { phase: "taper", start: "2026-07-01", end: "2026-07-28" },
+    ]);
+    const issues = validateMetaPlan({
+      metaPlan: mp,
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain(
+      "meta_plan_phase_gap",
+    );
+  });
+
+  it("flags meta_plan_overlap when phases share dates", () => {
+    const mp = metaPlan([
+      { phase: "base", start: "2026-05-20", end: "2026-06-15" },
+      { phase: "build", start: "2026-06-10", end: "2026-06-30" }, // overlaps 06-10..06-15
+      { phase: "taper", start: "2026-07-01", end: "2026-07-28" },
+    ]);
+    const issues = validateMetaPlan({
+      metaPlan: mp,
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain(
+      "meta_plan_overlap",
+    );
+  });
+
+  it("flags meta_plan_start_mismatch when first phase starts late", () => {
+    const mp = metaPlan([
+      { phase: "base", start: "2026-05-22", end: "2026-06-09" }, // expected 05-20
+      { phase: "build", start: "2026-06-10", end: "2026-07-28" },
+    ]);
+    const issues = validateMetaPlan({
+      metaPlan: mp,
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain(
+      "meta_plan_start_mismatch",
+    );
+  });
+
+  it("flags meta_plan_end_mismatch when last phase ends early", () => {
+    const mp = metaPlan([
+      { phase: "base", start: "2026-05-20", end: "2026-06-09" },
+      { phase: "taper", start: "2026-06-10", end: "2026-07-20" }, // expected end 07-28
+    ]);
+    const issues = validateMetaPlan({
+      metaPlan: mp,
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain(
+      "meta_plan_end_mismatch",
+    );
+  });
+
+  it("flags meta_plan_invalid_phase_order when TAPER comes before PEAK", () => {
+    const mp = metaPlan([
+      { phase: "base", start: "2026-05-20", end: "2026-06-09" },
+      { phase: "taper", start: "2026-06-10", end: "2026-06-30" }, // taper before peak
+      { phase: "peak", start: "2026-07-01", end: "2026-07-28" },
+    ]);
+    const issues = validateMetaPlan({
+      metaPlan: mp,
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain(
+      "meta_plan_invalid_phase_order",
+    );
+  });
+
+  it("flags meta_plan_invalid_phase_order when BASE comes after BUILD", () => {
+    const mp = metaPlan([
+      { phase: "build", start: "2026-05-20", end: "2026-06-09" },
+      { phase: "base", start: "2026-06-10", end: "2026-07-28" }, // base after build
+    ]);
+    const issues = validateMetaPlan({
+      metaPlan: mp,
+      startDate: "2026-05-20",
+      raceDate: "2026-07-28",
+    });
+    expect(errorsOnly(issues).map((i) => i.code)).toContain(
+      "meta_plan_invalid_phase_order",
+    );
+  });
+});
+
+// Build a happy-path workout fixture for the per-phase validator.
+function chunkWorkout(date: string, raceDay: boolean = false): GeneratedWorkout {
+  return raceDay
+    ? {
+        date,
+        kind: "run",
+        title: "Race day",
+        position: 0,
+        why: "Race the thing.",
+        planned_detail: {
+          kind: "run",
+          segments: [{ label: "Main set", duration_min: 30 }],
+        },
+      }
+    : {
+        date,
+        kind: "mobility",
+        title: "Mobility",
+        position: 0,
+        why: "Daily mobility keeps the joints honest.",
+        planned_detail: {
+          kind: "mobility",
+          movements: [{ name: "Hip flexor stretch", duration_s: 60 }],
+          total_duration_min: 15,
+        },
+      };
+}
+
+describe("validatePhaseChunk", () => {
+  it("accepts a clean chunk covering every date in the phase window", () => {
+    const workouts = enumerateDates("2026-05-20", "2026-05-23").map((d) =>
+      chunkWorkout(d),
+    );
+    expect(
+      errorsOnly(
+        validatePhaseChunk({
+          workouts,
+          phaseStart: "2026-05-20",
+          phaseEnd: "2026-05-23",
+          phase: "base",
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("flags missing_dates_in_phase when a date is uncovered", () => {
+    const workouts = enumerateDates("2026-05-20", "2026-05-23")
+      .filter((d) => d !== "2026-05-22")
+      .map((d) => chunkWorkout(d));
+    const issues = validatePhaseChunk({
+      workouts,
+      phaseStart: "2026-05-20",
+      phaseEnd: "2026-05-23",
+      phase: "base",
+    });
+    const codes = errorsOnly(issues).map((i) => i.code);
+    expect(codes).toContain("missing_dates_in_phase");
+    const msg = errorsOnly(issues).find(
+      (i) => i.code === "missing_dates_in_phase",
+    )!.message;
+    expect(msg).toContain("2026-05-22");
+  });
+
+  it("flags out-of-window workouts as missing_dates_in_phase too", () => {
+    const workouts = [
+      chunkWorkout("2026-05-20"),
+      chunkWorkout("2026-05-21"),
+      chunkWorkout("2026-05-22"),
+      chunkWorkout("2026-05-23"),
+      chunkWorkout("2026-05-24"), // outside [05-20, 05-23]
+    ];
+    const issues = validatePhaseChunk({
+      workouts,
+      phaseStart: "2026-05-20",
+      phaseEnd: "2026-05-23",
+      phase: "base",
+    });
+    const msgs = errorsOnly(issues)
+      .filter((i) => i.code === "missing_dates_in_phase")
+      .map((i) => i.message);
+    expect(msgs.some((m) => m.includes("outside"))).toBe(true);
+  });
+
+  it("propagates per-workout structural errors (why_missing, planned_detail_invalid)", () => {
+    const workouts = [
+      chunkWorkout("2026-05-20"),
+      { ...chunkWorkout("2026-05-21"), why: "" }, // missing
+      {
+        ...chunkWorkout("2026-05-22"),
+        planned_detail: { kind: "bogus" } as unknown as GeneratedWorkout["planned_detail"],
+      },
+      chunkWorkout("2026-05-23"),
+    ];
+    const codes = errorsOnly(
+      validatePhaseChunk({
+        workouts,
+        phaseStart: "2026-05-20",
+        phaseEnd: "2026-05-23",
+        phase: "base",
+      }),
+    ).map((i) => i.code);
+    expect(codes).toContain("why_missing");
+    expect(codes).toContain("planned_detail_invalid");
+  });
+});
+
+describe("enrichPhaseWeeks", () => {
+  it("computes a sensible weeks count from the date range", () => {
+    const enriched = enrichPhaseWeeks([
+      {
+        phase: "base",
+        weekStartIso: "2026-05-20",
+        weekEndIso: "2026-06-09",
+        weeks: 0, // pre-enrichment
+      },
+    ]);
+    expect(enriched[0].weeks).toBe(3); // 21 days → 3 weeks
+  });
+  it("floors a sub-week range to 1 week (never zero)", () => {
+    const enriched = enrichPhaseWeeks([
+      {
+        phase: "taper",
+        weekStartIso: "2026-07-25",
+        weekEndIso: "2026-07-28",
+        weeks: 0,
+      },
+    ]);
+    expect(enriched[0].weeks).toBe(1);
   });
 });

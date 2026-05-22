@@ -10,6 +10,11 @@
 
 import { z } from "zod";
 import type { GeneratedWorkout } from "@/lib/claude";
+import type {
+  GenerationPhase,
+  MetaPlan,
+  PhaseMetadata,
+} from "@/lib/plan-generation-types";
 
 export type ValidationSeverity = "error" | "warning";
 
@@ -24,7 +29,18 @@ export interface ValidationIssue {
     | "planned_detail_invalid"
     | "kind_mismatch"
     | "why_missing"
-    | "why_too_long";
+    | "why_too_long"
+    // Phase 2.5 — meta-plan structural issues.
+    | "meta_plan_empty"
+    | "meta_plan_phase_gap"
+    | "meta_plan_overlap"
+    | "meta_plan_start_mismatch"
+    | "meta_plan_end_mismatch"
+    | "meta_plan_invalid_phase_order"
+    // Phase 2.5 — per-phase chunk issues. Distinct from missing_dates
+    // so the retry prompt asks Claude to fix the phase, not the
+    // whole plan.
+    | "missing_dates_in_phase";
   // Human-readable message. Shown in logs and (truncated) in retry prompts.
   message: string;
 }
@@ -267,18 +283,245 @@ export function errorsOnly(issues: ValidationIssue[]): ValidationIssue[] {
 
 /**
  * Builds a follow-up message body suitable for asking Claude to retry.
- * Lists each error and reminds it to re-submit via the tool.
+ * Lists each error and reminds it to re-submit via the tool. The
+ * caller passes the tool name so meta-plan vs. per-workout retries
+ * both point Claude at the right re-submit endpoint.
  */
-export function buildRetryMessage(issues: ValidationIssue[]): string {
+export function buildRetryMessage(
+  issues: ValidationIssue[],
+  toolName: string = "submit_training_plan",
+): string {
   const errorLines = issues
     .filter((i) => i.severity === "error")
     .map((i) => `- [${i.code}] ${i.message}`)
     .join("\n");
-  return `The plan you just submitted failed validation. Please fix the following issues and re-submit via the submit_training_plan tool:
+  return `The output you just submitted failed validation. Please fix the following issues and re-submit via the ${toolName} tool:
 
 ${errorLines}
 
-Re-submit the full plan with all workouts, the coach-voice summary, and the changes array. Do not respond with plain text.`;
+Re-submit the corrected output via ${toolName}. Do not respond with plain text.`;
+}
+
+// ----- Phase 2.5: meta-plan + per-phase validators.
+//
+// These run inside generateMetaPlan / generatePhase and into the
+// existing auto-retry-once mechanic. The codes feed buildRetryMessage
+// so Claude's retry context names the specific structural fault.
+
+/** Allowed phase order. TAPER, if present, must be last. */
+const PHASE_ORDER_RANK: Record<GenerationPhase, number> = {
+  base: 0,
+  build: 1,
+  peak: 2,
+  taper: 3,
+};
+
+/**
+ * Returns validation issues for a meta-plan. Each phase must cover
+ * contiguous dates with no gaps/overlaps; the first phase must start
+ * on startDate and the last must end on raceDate. TAPER (when
+ * present) must be last; BASE (when present) must be first. See
+ * CHUNKING_SPEC.md §3.3 + §4.1.
+ */
+export function validateMetaPlan(args: {
+  metaPlan: MetaPlan;
+  startDate: string;
+  raceDate: string;
+}): ValidationIssue[] {
+  const { metaPlan, startDate, raceDate } = args;
+  const issues: ValidationIssue[] = [];
+  const phases = metaPlan.phases ?? [];
+
+  // 0. Must have at least one phase. Without this every other check
+  //    bottoms out with index 0 issues.
+  if (phases.length === 0) {
+    issues.push({
+      severity: "error",
+      code: "meta_plan_empty",
+      message: `Meta-plan must contain at least one phase covering ${startDate} through ${raceDate}.`,
+    });
+    return issues;
+  }
+
+  // 1. First phase starts on startDate.
+  if (phases[0].weekStartIso !== startDate) {
+    issues.push({
+      severity: "error",
+      code: "meta_plan_start_mismatch",
+      message: `First phase (${phases[0].phase}) starts on ${phases[0].weekStartIso}; must start on ${startDate}.`,
+    });
+  }
+
+  // 2. Last phase ends on raceDate.
+  const last = phases[phases.length - 1];
+  if (last.weekEndIso !== raceDate) {
+    issues.push({
+      severity: "error",
+      code: "meta_plan_end_mismatch",
+      message: `Last phase (${last.phase}) ends on ${last.weekEndIso}; must end on ${raceDate}.`,
+    });
+  }
+
+  // 3. Adjacent phases: no gaps, no overlaps. The expected start of
+  //    phase N+1 is the day after phase N ends.
+  for (let i = 0; i < phases.length - 1; i++) {
+    const prev = phases[i];
+    const next = phases[i + 1];
+    const expectedNextStart = addDays(prev.weekEndIso, 1);
+    if (next.weekStartIso > expectedNextStart) {
+      issues.push({
+        severity: "error",
+        code: "meta_plan_phase_gap",
+        message: `Gap between phases: ${prev.phase} ends ${prev.weekEndIso}, but ${next.phase} starts ${next.weekStartIso} (expected ${expectedNextStart}).`,
+      });
+    } else if (next.weekStartIso < expectedNextStart) {
+      issues.push({
+        severity: "error",
+        code: "meta_plan_overlap",
+        message: `Phases overlap: ${prev.phase} ends ${prev.weekEndIso}, but ${next.phase} starts ${next.weekStartIso} (expected ${expectedNextStart}).`,
+      });
+    }
+  }
+
+  // 4. Order: rank monotonically non-decreasing. TAPER must be last
+  //    when present; BASE must be first when present. The rank check
+  //    catches both implicitly — a BASE after BUILD has lower rank
+  //    than its predecessor, which trips the inequality.
+  for (let i = 0; i < phases.length - 1; i++) {
+    const prevRank = PHASE_ORDER_RANK[phases[i].phase];
+    const nextRank = PHASE_ORDER_RANK[phases[i + 1].phase];
+    if (nextRank <= prevRank) {
+      issues.push({
+        severity: "error",
+        code: "meta_plan_invalid_phase_order",
+        message: `Phase order invalid: ${phases[i].phase} → ${phases[i + 1].phase}. Allowed order is base → build → peak → taper.`,
+      });
+      break; // One message is enough; no need to flag every pair.
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Returns validation issues for a single phase's workout chunk.
+ * Reuses the per-workout structural checks from validateGeneratedPlan
+ * (planned_detail shape, kind discriminator, why presence + length)
+ * and adds a phase-scoped date-coverage check. The code
+ * `missing_dates_in_phase` distinguishes the per-phase failure from
+ * the full-plan `missing_dates` so the retry prompt asks Claude to
+ * regenerate just this phase, not the entire plan.
+ */
+export function validatePhaseChunk(args: {
+  workouts: GeneratedWorkout[];
+  phaseStart: string;
+  phaseEnd: string;
+  phase: GenerationPhase;
+}): ValidationIssue[] {
+  const { workouts, phaseStart, phaseEnd, phase } = args;
+  const issues: ValidationIssue[] = [];
+
+  // Per-workout checks. Same shape as validateGeneratedPlan's loop.
+  let kindMismatchCount = 0;
+  let plannedDetailFailCount = 0;
+  const PER_CODE_PREVIEW = 3;
+  for (const w of workouts) {
+    if (typeof w.why !== "string" || w.why.trim().length === 0) {
+      issues.push({
+        severity: "error",
+        code: "why_missing",
+        message: `Workout on ${w.date} (${w.kind}, "${w.title}") is missing a non-empty \`why\`. Every workout requires a 1-3 sentence rationale, ≤${WHY_MAX_CHARS} chars.`,
+      });
+    } else if (w.why.length > WHY_MAX_CHARS) {
+      issues.push({
+        severity: "error",
+        code: "why_too_long",
+        message: `Workout on ${w.date} (${w.kind}, "${w.title}") has a \`why\` field of ${w.why.length} characters. Maximum is ${WHY_MAX_CHARS}.`,
+      });
+    }
+    const parsed = PlannedDetailSchema.safeParse(w.planned_detail);
+    if (!parsed.success) {
+      if (plannedDetailFailCount < PER_CODE_PREVIEW) {
+        const issue = parsed.error.issues[0];
+        const path = issue.path.length > 0 ? ` (path: ${issue.path.join(".")})` : "";
+        issues.push({
+          severity: "error",
+          code: "planned_detail_invalid",
+          message: `Workout on ${w.date} (${w.kind}, "${w.title}") has an invalid planned_detail${path}: ${issue.message}.`,
+        });
+      }
+      plannedDetailFailCount++;
+    } else if (parsed.data.kind !== w.kind) {
+      if (kindMismatchCount < PER_CODE_PREVIEW) {
+        issues.push({
+          severity: "error",
+          code: "kind_mismatch",
+          message: `Workout on ${w.date} declares outer kind="${w.kind}" but planned_detail.kind="${parsed.data.kind}". The two must match (strict discriminator).`,
+        });
+      }
+      kindMismatchCount++;
+    }
+  }
+  if (plannedDetailFailCount > PER_CODE_PREVIEW) {
+    issues.push({
+      severity: "error",
+      code: "planned_detail_invalid",
+      message: `${plannedDetailFailCount - PER_CODE_PREVIEW} additional workout(s) in this phase have invalid planned_detail.`,
+    });
+  }
+  if (kindMismatchCount > PER_CODE_PREVIEW) {
+    issues.push({
+      severity: "error",
+      code: "kind_mismatch",
+      message: `${kindMismatchCount - PER_CODE_PREVIEW} additional workout(s) in this phase have outer/inner kind mismatches.`,
+    });
+  }
+
+  // Phase-scoped date coverage. Every day in [phaseStart, phaseEnd]
+  // must have at least one workout. Workouts outside the window are
+  // also flagged so Claude doesn't bleed into the next phase.
+  const datesPresent = new Set(workouts.map((w) => w.date));
+  const expectedDates = enumerateDates(phaseStart, phaseEnd);
+  const missing = expectedDates.filter((d) => !datesPresent.has(d));
+  if (missing.length > 0) {
+    const preview = missing.slice(0, 5).join(", ");
+    const more = missing.length > 5 ? `, +${missing.length - 5} more` : "";
+    issues.push({
+      severity: "error",
+      code: "missing_dates_in_phase",
+      message: `Phase ${phase} (${phaseStart} → ${phaseEnd}) is missing workouts on ${missing.length} day(s): ${preview}${more}. Every date in this phase must have at least one workout.`,
+    });
+  }
+  const outOfWindow = workouts.filter(
+    (w) => w.date < phaseStart || w.date > phaseEnd,
+  );
+  if (outOfWindow.length > 0) {
+    issues.push({
+      severity: "error",
+      code: "missing_dates_in_phase",
+      message: `${outOfWindow.length} workout(s) fall outside the ${phase} phase window (${phaseStart} → ${phaseEnd}). Only generate dates inside this phase.`,
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * Convenience: enrich a PhaseMetadata with the `weeks` count derived
+ * from its date range. The orchestrator runs each meta-plan phase
+ * through this so downstream readers (prompt builders, UI labels)
+ * see a consistent number. Returns a new array; does not mutate.
+ */
+export function enrichPhaseWeeks(phases: PhaseMetadata[]): PhaseMetadata[] {
+  return phases.map((p) => ({
+    ...p,
+    weeks: Math.max(
+      1,
+      Math.round(
+        (enumerateDates(p.weekStartIso, p.weekEndIso).length) / 7,
+      ),
+    ),
+  }));
 }
 
 // ---------- date helpers ----------

@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { submitWizard } from "@/app/actions";
+import { useCallback, useState, useTransition } from "react";
+import { resumeGenerationJob, submitWizard } from "@/app/actions";
 import type { PlanGenErrorCode } from "@/lib/plan-gen-result";
+import type { JobStatusSnapshot } from "@/lib/plan-generation-types";
+import { GeneratingPhaseState } from "@/app/_components/generating/GeneratingPhaseState";
 import { WelcomeStep } from "./WelcomeStep";
 import { WizardChrome } from "./WizardChrome";
 import {
@@ -39,6 +41,7 @@ type StepId =
   | "schedule"
   | "equipment"
   | "generating"
+  | "generating-chunked"
   | "generating-error"
   | "done";
 
@@ -64,7 +67,15 @@ export function WizardClient() {
   const [generationError, setGenerationError] = useState<{
     code: PlanGenErrorCode;
     requestId?: string;
+    // When set, the "Try again" CTA resumes this job from its last
+    // successful phase (chunked path). When null, retry re-runs the
+    // wizard submit from scratch.
+    jobId?: number;
   } | null>(null);
+  // Phase 2.5 chunked path: when submitWizard returns { jobId, ok:true }
+  // we transition to GeneratingPhaseState which polls until complete
+  // or failed. jobId stays set across the lifetime of that screen.
+  const [chunkedJobId, setChunkedJobId] = useState<number | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function set<K extends keyof WizardPayload>(key: K, value: WizardPayload[K]) {
@@ -95,22 +106,30 @@ export function WizardClient() {
     if (idx > 0) goTo(NUMBERED_FLOW[idx - 1]);
   }
 
-  function submit() {
+  // useCallback so onTryAgain (which depends on it) has a stable
+  // reference and React's hook-deps lint doesn't trip.
+  const submit = useCallback(() => {
     setError(null);
     setGenerationError(null);
+    setChunkedJobId(null);
     setStep("generating");
     startTransition(async () => {
       try {
         const r = await submitWizard(data);
         if (!r.ok) {
-          // Generation failed in a way the server could classify —
-          // surface the branded error screen so the user has a single
-          // primary Try-Again CTA. Wizard inputs are preserved in
-          // client state so a retry doesn't lose typed answers.
           setGenerationError({ code: r.code, requestId: r.requestId });
           setStep("generating-error");
           return;
         }
+        // Chunked path: hand control to GeneratingPhaseState which
+        // polls until complete. The progress component's terminal
+        // handlers transition us to "done" / "generating-error".
+        if (r.jobId !== null) {
+          setChunkedJobId(r.jobId);
+          setStep("generating-chunked");
+          return;
+        }
+        // Legacy path: server action returned synchronously on success.
         setStep("done");
       } catch (e) {
         // Network-level failure — the server action's typed envelope
@@ -121,7 +140,57 @@ export function WizardClient() {
         setStep("generating-error");
       }
     });
-  }
+  }, [data]);
+
+  // "Try again" / "Resume generation" from the error screen. When the
+  // failure was mid-pipeline (chunked path), we resume the existing
+  // job; otherwise we re-run the wizard submit from scratch.
+  const onTryAgain = useCallback(() => {
+    if (generationError?.jobId != null) {
+      const jobId = generationError.jobId;
+      setError(null);
+      setGenerationError(null);
+      setChunkedJobId(jobId);
+      setStep("generating-chunked");
+      // Kick the orchestrator from the client so resumption starts
+      // immediately and the polling component picks up the job's
+      // updated status.
+      startTransition(async () => {
+        try {
+          const r = await resumeGenerationJob(jobId);
+          if (!r.ok) {
+            setGenerationError({
+              code: r.code,
+              requestId: r.requestId,
+              jobId,
+            });
+            setStep("generating-error");
+          }
+          // Success path is handled by GeneratingPhaseState's polling.
+        } catch (e) {
+          console.error("[WizardClient] resume threw", e);
+          setGenerationError({ code: "generation_timeout", jobId });
+          setStep("generating-error");
+        }
+      });
+      return;
+    }
+    submit();
+  }, [generationError, submit]);
+
+  // Wired into GeneratingPhaseState — fires once when polling shows
+  // the job has finished or failed.
+  const onJobComplete = useCallback((snapshot: JobStatusSnapshot) => {
+    void snapshot;
+    setStep("done");
+  }, []);
+  const onJobFailed = useCallback((snapshot: JobStatusSnapshot) => {
+    setGenerationError({
+      code: snapshot.failureCode ?? "unknown",
+      jobId: snapshot.jobId,
+    });
+    setStep("generating-error");
+  }, []);
 
   if (step === "welcome") {
     return (
@@ -135,12 +204,21 @@ export function WizardClient() {
   if (step === "generating") {
     return <GeneratingState />;
   }
+  if (step === "generating-chunked" && chunkedJobId !== null) {
+    return (
+      <GeneratingPhaseState
+        jobId={chunkedJobId}
+        onComplete={onJobComplete}
+        onFailed={onJobFailed}
+      />
+    );
+  }
   if (step === "generating-error") {
     return (
       <GeneratingErrorState
         code={generationError?.code ?? "unknown"}
         requestId={generationError?.requestId}
-        onTryAgain={submit}
+        onTryAgain={onTryAgain}
         onEditSetup={() => {
           setGenerationError(null);
           setStep("races");

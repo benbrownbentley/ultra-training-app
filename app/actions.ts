@@ -17,6 +17,11 @@ import {
   makeRequestId,
   type PlanGenFailure,
 } from "@/lib/plan-gen-result";
+import {
+  getJobStatus,
+  runGenerationPipeline,
+} from "@/lib/plan-generation-orchestrator";
+import type { JobStatusSnapshot } from "@/lib/plan-generation-types";
 import { blankToNull, getTodayISO } from "@/lib/utils";
 import type {
   GymAccess,
@@ -257,16 +262,29 @@ export async function addCustomActivity(input: {
  * Phase 1 of the regenerate flow: generate a candidate plan and stash it
  * in plan_previews. Does NOT touch the live workouts or journal — the
  * commit phase handles that. Returns a typed envelope — on success,
- * `{ ok: true, previewId }`; on failure, `{ ok: false, code, requestId }`
- * so the UI can render the branded retry state instead of letting the
- * Vercel 504 reach the user. See lib/plan-gen-result.ts.
+ * either `{ ok: true, previewId }` (legacy single-call) or `{ ok:
+ * true, jobId, previewId? }` (chunked path); on failure,
+ * `{ ok: false, code, requestId }` so the UI renders the branded retry
+ * state instead of letting the Vercel 504 reach the user. See
+ * lib/plan-gen-result.ts.
+ *
+ * On the chunked path the orchestrator generates synchronously inside
+ * this action call — it just persists per-phase state in
+ * plan_generation_jobs as it goes, so a separately-polled status
+ * action can show progress. The client routes to `/regen?job=<id>`
+ * for chunked or `/regen?preview=<id>` for legacy.
  *
  * Discards any existing pending preview for this user first so at most
  * one is ever in flight (acceptance criterion #4 — no accumulation).
  */
-export async function previewPlan(
-  notes?: string,
-): Promise<{ ok: true; previewId: number } | PlanGenFailure> {
+export async function previewPlan(notes?: string): Promise<
+  | {
+      ok: true;
+      previewId: number | null;
+      jobId: number | null;
+    }
+  | PlanGenFailure
+> {
   const today = getTodayISO();
   const { user } = await requireUser();
 
@@ -305,11 +323,46 @@ export async function previewPlan(
   // this in-app discard is just defense.
   await discardAllPendingPreviews(user.id);
 
-  // Catch generation failures and convert to the typed envelope. Lets
-  // the client UI distinguish timeout / validation / anthropic /
-  // unknown and render the appropriate branded state. Everything else
-  // (auth, Supabase IO) still throws — those are bugs, not expected
-  // failure modes.
+  // Phase 2.5 chunked path. Behind a feature flag so we can flip back
+  // to the legacy single-call path without redeploying. The
+  // orchestrator runs the meta-plan + per-phase pipeline, persists a
+  // plan_generation_jobs row, and on success returns the jobId +
+  // (regen-only) previewId the client routes to.
+  if (planChunkingEnabled()) {
+    const result = await runGenerationPipeline({
+      user,
+      race,
+      otherRaces,
+      profile,
+      startDate: today,
+      history,
+      journalEntries: journalContext,
+      notes: blankToNull(notes ?? ""),
+      previousSummary,
+      trigger: "regen",
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        code: result.code,
+        requestId: result.requestId,
+      };
+    }
+    // Chunked happy path: hand the client the jobId so it routes to
+    // the progress page. previewId may be set already if the
+    // orchestrator finished synchronously fast enough — currently it
+    // always does because the orchestrator is synchronous server-side.
+    return {
+      ok: true,
+      jobId: result.jobId,
+      previewId: result.previewId,
+    };
+  }
+
+  // Legacy single-call path. Catch generation failures and convert to
+  // the typed envelope. Lets the client UI distinguish timeout /
+  // validation / anthropic / unknown and render the appropriate
+  // branded state. Everything else (auth, Supabase IO) still throws.
   let result;
   try {
     result = await generateTrainingPlan({
@@ -361,7 +414,7 @@ export async function previewPlan(
   if (attempt.error) throw attempt.error;
   if (!attempt.data) throw new Error("Failed to create preview.");
 
-  return { ok: true, previewId: attempt.data.id };
+  return { ok: true, previewId: attempt.data.id, jobId: null };
 }
 
 // Internal helper — marks every pending preview for a user as
@@ -530,13 +583,19 @@ export async function createJournalEntry(args: CreateJournalArgs) {
   revalidatePath("/journal");
 
   if (args.regenAfter) {
-    // Generate a preview, then route the user to the regen preview screen
-    // so they can review the diff before the plan actually changes. On
-    // generation failure, route to /regen?error=<code> so the user sees
-    // the branded retry state instead of a bare server error.
+    // Generate a preview, then route the user to the regen preview
+    // screen so they can review the diff before the plan changes. On
+    // generation failure, route to /regen?error=<code>. On the
+    // chunked path the orchestrator returns a jobId — route to
+    // /regen?job=<id> so the user sees the per-phase progress UI;
+    // the legacy path returns a previewId and we go straight to the
+    // diff view.
     const r = await previewPlan();
     if (!r.ok) {
       redirect(`/regen?error=${r.code}&req=${r.requestId}`);
+    }
+    if (r.jobId) {
+      redirect(`/regen?job=${r.jobId}`);
     }
     redirect(`/regen?preview=${r.previewId}`);
   } else {
@@ -914,11 +973,13 @@ const WizardPayloadSchema = z.object({
 
 // expected to manage the post-submit UX (the wizard shows generating →
 // done states inline), so we don't redirect here. Returns a typed
-// envelope on generation failure so the wizard can render the
-// branded error state instead of the Vercel default 504.
+// envelope: legacy path resolves to { ok: true }, chunked path to
+// { ok: true, jobId } so the wizard can transition to the per-phase
+// progress UI and poll. Failures collapse into PlanGenFailure with a
+// stable code so the wizard renders the branded retry state.
 export async function submitWizard(
   rawData: WizardPayload,
-): Promise<{ ok: true } | PlanGenFailure> {
+): Promise<{ ok: true; jobId: number | null } | PlanGenFailure> {
   const data = WizardPayloadSchema.parse(rawData);
   const { user } = await requireUser();
 
@@ -1027,10 +1088,30 @@ export async function submitWizard(
   if (!race) throw new Error("No race configured.");
   if (!profile) throw new Error("No athlete profile configured.");
 
-  // Wrap the Claude call in a typed envelope so the wizard can render
-  // the branded error state instead of letting a Vercel 504 reach the
-  // user. Anthropic / validation / timeout errors all collapse into
-  // PlanGenFailure with a stable code.
+  // Phase 2.5 chunked path. Wizard returns { ok: true, jobId } so the
+  // client transitions to the per-phase progress UI. Feature flag
+  // keeps the legacy single-call path active for fallback.
+  if (planChunkingEnabled()) {
+    const result = await runGenerationPipeline({
+      user,
+      race,
+      otherRaces,
+      profile,
+      startDate: today,
+      history: [],
+      journalEntries: [],
+      trigger: "wizard",
+    });
+    if (!result.ok) {
+      return { ok: false, code: result.code, requestId: result.requestId };
+    }
+    revalidatePath("/");
+    return { ok: true, jobId: result.jobId };
+  }
+
+  // Legacy single-call path. Wrap in try/catch so a 504 / Anthropic
+  // failure / validation-after-retry surfaces the typed envelope and
+  // the wizard renders the branded error state.
   let result;
   try {
     result = await generateTrainingPlan({
@@ -1059,5 +1140,100 @@ export async function submitWizard(
   if (rpcErr) throw rpcErr;
 
   revalidatePath("/");
-  return { ok: true };
+  return { ok: true, jobId: null };
+}
+
+/**
+ * Polling endpoint for the GeneratingPhaseState component. Returns
+ * the current job's progress (status, completed phases, workout
+ * count, optional previewId/failureCode). Called every 2 seconds by
+ * the progress UI; cheap reads only, no Claude calls. RLS scopes to
+ * own-row reads.
+ */
+export async function getGenerationJobStatus(
+  jobId: number,
+): Promise<JobStatusSnapshot | null> {
+  const { user } = await requireUser();
+  return getJobStatus(user.id, jobId);
+}
+
+/**
+ * Resume a failed or pending generation job. Picks up at the first
+ * phase not in `completed_phases`. The "Resume generation" CTA in the
+ * friendly error UX (wizard + regen) calls this.
+ */
+export async function resumeGenerationJob(jobId: number): Promise<
+  | {
+      ok: true;
+      jobId: number;
+      previewId: number | null;
+      trigger: "wizard" | "regen";
+    }
+  | PlanGenFailure
+> {
+  const today = getTodayISO();
+  const { user } = await requireUser();
+
+  const [{ race, otherRaces, history }, profile, journal, previousSummary] =
+    await Promise.all([
+      getRaceAndHistory(today),
+      getAthleteProfile(),
+      listJournalEntries(),
+      getLatestAcceptedSummary(),
+    ]);
+  if (!race) throw new Error("No race configured.");
+  if (!profile) throw new Error("No athlete profile configured.");
+
+  // Load the job to recover its trigger value — the resume should
+  // route back to the same surface (wizard/done vs. regen/preview).
+  const status = await getJobStatus(user.id, jobId);
+  if (!status) {
+    return {
+      ok: false,
+      code: "unknown",
+      requestId: makeRequestId(),
+    };
+  }
+
+  const journalContext = journal.map((e) => ({
+    type: e.type,
+    entry_date: e.entry_date,
+    title: e.title,
+    body: e.body,
+    details_lines: formatJournalDetails(e),
+    consumed: e.consumed,
+  }));
+
+  const result = await runGenerationPipeline({
+    user,
+    race,
+    otherRaces,
+    profile,
+    startDate: today,
+    history,
+    journalEntries: journalContext,
+    notes: null,
+    previousSummary,
+    trigger: status.trigger,
+    resumeJobId: jobId,
+  });
+  if (!result.ok) {
+    return { ok: false, code: result.code, requestId: result.requestId };
+  }
+  if (status.trigger === "wizard") revalidatePath("/");
+  return {
+    ok: true,
+    jobId: result.jobId,
+    previewId: result.previewId,
+    trigger: status.trigger,
+  };
+}
+
+/**
+ * True when the chunked-generation orchestrator should run instead of
+ * the legacy single-call path. Off by default; flipped via the
+ * `PLAN_CHUNKING_ENABLED` env var. Documented in .env.example.
+ */
+function planChunkingEnabled(): boolean {
+  return process.env.PLAN_CHUNKING_ENABLED === "true";
 }

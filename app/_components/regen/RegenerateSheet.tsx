@@ -114,9 +114,15 @@ function SheetBody({
           return;
         }
         onClose();
-        // Hand off to the regen result screen — it owns the accept/discard
-        // UX from here. Router.push so the sheet's parent state stays clean.
-        router.push(`/regen?preview=${r.previewId}`);
+        // Phase 2.5 chunked path returns a jobId — route to the
+        // progress page which polls until complete then auto-routes
+        // to the preview diff. Legacy path lands at ?preview=<id>
+        // directly.
+        if (r.jobId !== null) {
+          router.push(`/regen?job=${r.jobId}`);
+        } else {
+          router.push(`/regen?preview=${r.previewId}`);
+        }
       } catch (e) {
         // Network-level failure (504 HTML response, dropped connection)
         // — the server action's typed envelope never reached us. Treat

@@ -1529,6 +1529,16 @@ Sequenced after Phase 2.1 lands because the logging data from Phase 2.1 informs 
 
 Spec will be written in a dedicated session after Phase 2.1 logging data lands. Likely implementation: 2-3 focused Claude Code sessions.
 
+### Phase 2.6 — Chunked-generation cleanup (deferred)
+
+Sequenced ~4 weeks after Phase 2.5 lands and the `PLAN_CHUNKING_ENABLED` flag has been on in prod without incident. One small PR:
+
+- Delete the legacy `generateTrainingPlan` function from `lib/claude.ts` and its callers' fallback branches in `app/actions.ts` (the `if (planChunkingEnabled()) { … } else { … }` forks collapse to the chunked path).
+- Delete the `PLAN_CHUNKING_ENABLED` env var. Document the removal in `.env.example`.
+- Delete the legacy `GeneratingState` import path in `WizardClient` — the wizard always renders `GeneratingPhaseState` once chunking is the only path.
+- Optional: graduate polling to Server-Sent Events if Option A (polling) feels janky in practice. Spec §3.7 has the reasoning.
+- Optional: nightly cleanup cron for old `plan_generation_jobs` rows (>30 days, terminal status). Vercel Cron or pg_cron. See CHUNKING_SPEC.md §10.
+
 ### Phase 3 — Remaining UX polish
 
 Goal: close the small UX gaps that would confuse friends/early users.

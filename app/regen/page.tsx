@@ -15,6 +15,10 @@ import { buildContextRows } from "@/lib/regen-context";
 import { RegenPageClient } from "@/app/_components/regen/RegenPageClient";
 
 export const dynamic = "force-dynamic";
+// "Regenerate again" calls previewPlan from this page. Phase 2's
+// structured output is token-heavy; bump beyond the default so a full
+// ultra plan finishes inside the Vercel function window.
+export const maxDuration = 300;
 
 // /regen renders the preview-then-accept screen. The URL is the source of
 // truth: ?preview=<id> identifies which pending preview to show. Missing

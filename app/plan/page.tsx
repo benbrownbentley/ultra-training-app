@@ -6,6 +6,9 @@ import { buildContextRows } from "@/lib/regen-context";
 import { PlanPageClient } from "@/app/_components/plan/PlanPageClient";
 
 export const dynamic = "force-dynamic";
+// RegeneratePlanRow on this page triggers previewPlan. Phase 2's
+// structured output needs more wall-clock time than the default.
+export const maxDuration = 300;
 
 export default async function PlanPage() {
   const [plan, profile] = await Promise.all([getPlan(), getAthleteProfile()]);

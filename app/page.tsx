@@ -6,7 +6,11 @@ import { buildContextRows } from "@/lib/regen-context";
 import type { Day } from "@/lib/plan";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+// Server actions invoked from this page (notably previewPlan) call
+// Claude with a structured tool schema that emits ~150-250 workouts
+// each with a per-workout `why` (Phase 2). Output token count is high
+// enough that 60s isn't always sufficient. 300 is the Vercel Pro max.
+export const maxDuration = 300;
 
 // Short weekday + day-of-month in the style the design uses ("TUE 17 MAY").
 function formatTodayLabel(iso: string): string {

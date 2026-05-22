@@ -9,6 +9,7 @@ import {
   type LoggedWorkout,
 } from "@/lib/claude";
 import type { AthleteProfile, Race } from "@/lib/plan";
+import { buildPlanGenMetrics } from "@/lib/plan-gen-metrics";
 import {
   classifyGenerationError,
   makeRequestId,
@@ -24,25 +25,32 @@ import type {
   GenerationPhase,
   JobStatusSnapshot,
   MetaPlan,
+  PhaseMetadata,
 } from "@/lib/plan-generation-types";
 import {
   buildPriorPhaseSummaries,
   combineSummaries,
 } from "@/lib/plan-generation-helpers";
 
-// Orchestrator for the Phase 2.5 chunked-generation pipeline. The two
-// public entry points are runGenerationPipeline (wizard + regen call
-// this) and getJobStatus (polling clients hit this every 2s).
+// Orchestrator for the chunked-generation pipeline. Phase 2.5 shipped
+// this as a single synchronous pipeline (`runGenerationPipeline`);
+// Phase 2.5.1 splits the loop so the server actions return after the
+// fast meta-plan step (~10s) and the client drives each subsequent
+// phase via `advanceJob`. The pure helpers `runKickoff`,
+// `runOnePhase`, and `runFinalize` are the building blocks both
+// paths share — the legacy composition (`runGenerationPipeline`)
+// stays callable for any code still on the synchronous-orchestrator
+// API surface.
 //
-// Design constraints (see CHUNKING_SPEC.md §3.6):
-// - Idempotent per phase. Re-running a completed phase is wasteful
-//   but not catastrophic; the orchestrator skips already-completed
-//   phases by reading completed_phases off the job row.
-// - Failure carries a typed code + requestId so the UI can render
-//   code-specific copy. Mid-pipeline failures preserve completed
-//   phases for the Resume path.
-// - Wizard commits the assembled plan directly via commit_plan_preview.
-//   Regen inserts a plan_previews row instead (preview-then-accept).
+// Design constraints (see CHUNKING_SPEC.md §3.6 + PHASE_2_5_1_SPEC.md):
+// - Per-phase idempotency. `advanceJob` checks `completed_phases`
+//   before running, so React StrictMode double-mount or accidental
+//   double-clicks don't double-emit a phase.
+// - Failure preserves work. Mid-pipeline failures leave
+//   `completed_phases` + `partial_workouts` intact so the Resume
+//   path picks up at the failed phase, not from scratch.
+// - Wizard commits directly via commit_plan_preview RPC. Regen
+//   inserts a plan_previews row so the user can review the diff.
 
 export interface RunGenerationArgs {
   user: { id: string };
@@ -62,12 +70,14 @@ export interface RunGenerationArgs {
 
 export type RunGenerationResult =
   | { ok: true; jobId: number; previewId: number | null }
-  | {
-      ok: false;
-      code: PlanGenErrorCode;
-      requestId: string;
-      jobId?: number;
-    };
+  | RunGenerationFailure;
+
+export interface RunGenerationFailure {
+  ok: false;
+  code: PlanGenErrorCode;
+  requestId: string;
+  jobId?: number;
+}
 
 interface JobRow {
   id: number;
@@ -86,28 +96,23 @@ interface JobRow {
 const JOB_COLUMNS =
   "id, user_id, trigger, meta_plan, completed_phases, partial_workouts, notes, preview_id, status, failure_code, failure_phase";
 
+// =============================================================
+// Public helpers — the building blocks the action layer composes
+// =============================================================
+
 /**
- * Entry point called by submitWizard / previewPlan when the
- * PLAN_CHUNKING_ENABLED feature flag is on. Returns a typed envelope
- * the action layer turns into a redirect (success) or branded error
- * UX (failure). See CHUNKING_SPEC.md §3.6.
+ * Step 0 of the chunked pipeline. Cancels any pending job for this
+ * user, runs the meta-plan call, validates it, and inserts a new
+ * `plan_generation_jobs` row. Returns the new jobId so the client
+ * can route to /regen?job=<id> and start the advance loop.
+ *
+ * Wall-clock budget: ~10-15s. The fast handoff that makes the
+ * progress UI feel responsive (Phase 2.5.1).
  */
-export async function runGenerationPipeline(
-  args: RunGenerationArgs,
-): Promise<RunGenerationResult> {
-  // Resume branch: pick up an existing pending job.
-  if (typeof args.resumeJobId === "number") {
-    return resumeJob(args, args.resumeJobId);
-  }
-  // Fresh-start branch.
-  return startFreshJob(args);
-}
-
-// ----- Fresh start ------------------------------------------------
-
-async function startFreshJob(
-  args: RunGenerationArgs,
-): Promise<RunGenerationResult> {
+export async function runKickoff(args: RunGenerationArgs): Promise<
+  | { ok: true; jobId: number; metaPlan: MetaPlan }
+  | RunGenerationFailure
+> {
   // 1. Cancel any prior pending job for this user. Same defense-in-
   //    depth pattern as plan_previews — at most one pending job at a
   //    time per user. Done before the meta-plan call so a fast-clicker
@@ -132,14 +137,14 @@ async function startFreshJob(
     );
     return { ok: false, code, requestId };
   }
-  // Normalise + enrich the meta-plan so downstream readers see the
-  // weeks count baked in.
+  // Normalise + enrich so downstream readers see weeks counts.
   const enrichedMeta: MetaPlan = {
     ...metaPlan,
     phases: enrichPhaseWeeks(metaPlan.phases),
   };
 
-  // 3. Insert the job row.
+  // 3. Insert the job row. partial_workouts + completed_phases start
+  //    empty; the advance loop populates them per phase.
   const insert = await supabaseAdmin
     .from("plan_generation_jobs")
     .insert({
@@ -161,129 +166,156 @@ async function startFreshJob(
     );
     return { ok: false, code: "unknown", requestId };
   }
-  const jobId = insert.data.id;
-  return runPhasesAndCommit(args, jobId, enrichedMeta, [], []);
+  return { ok: true, jobId: insert.data.id, metaPlan: enrichedMeta };
 }
 
-// ----- Resume ------------------------------------------------------
+/**
+ * One iteration of the per-phase generation loop. Called once per
+ * phase from `advanceJob`. The function:
+ *
+ * 1. Builds prior-phase summaries from the running workouts buffer.
+ * 2. Calls `generatePhase` with the bounded date window.
+ * 3. Appends emitted workouts + summary to the accumulators.
+ * 4. UPDATEs the job row with the new completed_phases + partial.
+ * 5. Emits the per-phase `[plan-gen-metrics]` log line.
+ *
+ * On failure, marks the job failed (preserving prior-phase work) so
+ * the Resume path can pick up at this phase. Returns the failure
+ * envelope including jobId for the client's error UX.
+ */
+export async function runOnePhase(args: {
+  pipelineArgs: RunGenerationArgs;
+  jobId: number;
+  phase: PhaseMetadata;
+  metaPlan: MetaPlan;
+  completedPhases: GenerationPhase[];
+  partialWorkouts: GeneratedWorkout[];
+}): Promise<
+  | {
+      ok: true;
+      completedPhases: GenerationPhase[];
+      workouts: GeneratedWorkout[];
+      summary: GenerationSummary;
+    }
+  | RunGenerationFailure
+> {
+  const {
+    pipelineArgs,
+    jobId,
+    phase,
+    metaPlan,
+    completedPhases,
+    partialWorkouts,
+  } = args;
 
-async function resumeJob(
-  args: RunGenerationArgs,
-  jobId: number,
-): Promise<RunGenerationResult> {
-  const { data: row, error } = await supabaseAdmin
-    .from("plan_generation_jobs")
-    .select(JOB_COLUMNS)
-    .eq("id", jobId)
-    .eq("user_id", args.user.id)
-    .maybeSingle<JobRow>();
-  if (error || !row) {
+  const startedAt = Date.now();
+  const priorSummaries = buildPriorPhaseSummaries(
+    metaPlan,
+    completedPhases,
+    partialWorkouts,
+  );
+
+  let phaseResult;
+  try {
+    phaseResult = await generatePhase({
+      race: pipelineArgs.race,
+      otherRaces: pipelineArgs.otherRaces,
+      profile: pipelineArgs.profile,
+      startDate: pipelineArgs.startDate,
+      history: pipelineArgs.history,
+      notes: pipelineArgs.notes,
+      journalEntries: pipelineArgs.journalEntries,
+      previousSummary: pipelineArgs.previousSummary,
+      isWizard: pipelineArgs.trigger === "wizard",
+      phase,
+      metaPlan,
+      priorPhaseSummaries: priorSummaries,
+    });
+  } catch (err) {
+    const code = classifyGenerationError(err);
     const requestId = makeRequestId();
     console.error(
-      `[orchestrator] resume: job ${jobId} not found (req=${requestId})`,
-      error,
+      `[orchestrator] phase ${phase.phase} failed (code=${code}, req=${requestId})`,
+      err,
     );
-    return { ok: false, code: "unknown", requestId };
+    await markJobFailed(
+      jobId,
+      code,
+      phase.phase,
+      partialWorkouts,
+      completedPhases,
+    );
+    return { ok: false, code, requestId, jobId };
   }
-  // Only pending and failed jobs can be resumed. A completed job has
-  // already committed; a cancelled job was deliberately superseded.
-  if (row.status !== "pending" && row.status !== "failed") {
-    const requestId = makeRequestId();
-    return { ok: false, code: "unknown", requestId, jobId };
-  }
-  // Flip back to pending so polling clients see "generating" again.
+
+  const nextWorkouts = [...partialWorkouts, ...phaseResult.workouts];
+  const nextCompleted: GenerationPhase[] = [...completedPhases, phase.phase];
+
   await supabaseAdmin
     .from("plan_generation_jobs")
     .update({
-      status: "pending",
-      failure_code: null,
-      failure_phase: null,
+      completed_phases: nextCompleted,
+      partial_workouts: nextWorkouts,
       updated_at: new Date().toISOString(),
     })
     .eq("id", jobId)
-    .eq("user_id", args.user.id);
-  return runPhasesAndCommit(
-    args,
-    jobId,
-    row.meta_plan,
-    row.completed_phases,
-    row.partial_workouts,
-  );
+    .eq("user_id", pipelineArgs.user.id);
+
+  // Emit the per-phase metrics line. Stays at the orchestrator layer
+  // so Phase 2.5.1's move to client-driven looping doesn't lose the
+  // structured logging — the call site moved, the shape didn't.
+  logPhaseMetrics({
+    phase: phase.phase,
+    workouts: phaseResult.workouts,
+    durationMs: Date.now() - startedAt,
+    isWizard: pipelineArgs.trigger === "wizard",
+  });
+
+  return {
+    ok: true,
+    completedPhases: nextCompleted,
+    workouts: nextWorkouts,
+    summary: phaseResult.summary,
+  };
 }
 
-// ----- Shared phase loop + commit ---------------------------------
+/**
+ * Final step of the pipeline. Called once after every phase has
+ * landed. Runs the assembled-plan validator (catches inter-phase
+ * gaps that the per-phase validator can't see) and then commits:
+ *
+ * - Wizard runs commit via `commit_plan_preview` RPC directly.
+ * - Regen inserts a `plan_previews` row so the user reviews a diff.
+ *
+ * Marks the job complete on success. On validator failure, marks
+ * the job failed with code='validation_failed' so the Resume path
+ * is available (rare but real — usually means a phase boundary
+ * missed race day).
+ */
+export async function runFinalize(args: {
+  pipelineArgs: RunGenerationArgs;
+  jobId: number;
+  metaPlan: MetaPlan;
+  workouts: GeneratedWorkout[];
+  summaries: GenerationSummary[];
+  completedPhases: GenerationPhase[];
+}): Promise<
+  { ok: true; previewId: number | null } | RunGenerationFailure
+> {
+  const {
+    pipelineArgs,
+    jobId,
+    metaPlan,
+    workouts,
+    summaries,
+    completedPhases,
+  } = args;
 
-async function runPhasesAndCommit(
-  args: RunGenerationArgs,
-  jobId: number,
-  metaPlan: MetaPlan,
-  completedPhases: GenerationPhase[],
-  partialWorkouts: GeneratedWorkout[],
-): Promise<RunGenerationResult> {
-  const completedSet = new Set(completedPhases);
-  // Working buffers — accumulate as each phase lands.
-  const workouts: GeneratedWorkout[] = [...partialWorkouts];
-  const summaries: GenerationSummary[] = []; // current-run summaries only
-
-  for (const phase of metaPlan.phases) {
-    if (completedSet.has(phase.phase)) continue;
-
-    const priorSummaries = buildPriorPhaseSummaries(
-      metaPlan,
-      completedPhases,
-      workouts,
-    );
-
-    let phaseResult;
-    try {
-      phaseResult = await generatePhase({
-        race: args.race,
-        otherRaces: args.otherRaces,
-        profile: args.profile,
-        startDate: args.startDate,
-        history: args.history,
-        notes: args.notes,
-        journalEntries: args.journalEntries,
-        previousSummary: args.previousSummary,
-        isWizard: args.trigger === "wizard",
-        phase,
-        metaPlan,
-        priorPhaseSummaries: priorSummaries,
-      });
-    } catch (err) {
-      const code = classifyGenerationError(err);
-      const requestId = makeRequestId();
-      console.error(
-        `[orchestrator] phase ${phase.phase} failed (code=${code}, req=${requestId})`,
-        err,
-      );
-      await markJobFailed(jobId, code, phase.phase, workouts, completedPhases);
-      return { ok: false, code, requestId, jobId };
-    }
-
-    workouts.push(...phaseResult.workouts);
-    completedPhases.push(phase.phase);
-    completedSet.add(phase.phase);
-    summaries.push(phaseResult.summary);
-    await supabaseAdmin
-      .from("plan_generation_jobs")
-      .update({
-        completed_phases: completedPhases,
-        partial_workouts: workouts,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", jobId)
-      .eq("user_id", args.user.id);
-  }
-
-  // Final validation across the assembled plan. Catches inter-phase
-  // gaps that the per-phase validator can't see (e.g., a missing
-  // race-day run when TAPER's last date is race day but Claude
-  // emitted a mobility there instead of a run).
+  // Inter-phase gap check.
   const finalIssues = validateGeneratedPlan({
     workouts,
-    startDate: args.startDate,
-    raceDate: args.race.date,
+    startDate: pipelineArgs.startDate,
+    raceDate: pipelineArgs.race.date,
   });
   const finalErrors = errorsOnly(finalIssues);
   if (finalErrors.length > 0) {
@@ -302,13 +334,12 @@ async function runPhasesAndCommit(
     return { ok: false, code: "validation_failed", requestId, jobId };
   }
 
-  // Commit step. Wizard → direct commit via RPC. Regen → insert a
-  // plan_previews row so the user can review before accepting.
   const assembledSummary = combineSummaries(metaPlan, summaries);
-  if (args.trigger === "wizard") {
+
+  if (pipelineArgs.trigger === "wizard") {
     const { error: rpcErr } = await supabaseAdmin.rpc("commit_plan_preview", {
-      p_user_id: args.user.id,
-      p_today: args.startDate,
+      p_user_id: pipelineArgs.user.id,
+      p_today: pipelineArgs.startDate,
       p_workouts: workouts,
     });
     if (rpcErr) {
@@ -335,25 +366,23 @@ async function runPhasesAndCommit(
         updated_at: new Date().toISOString(),
       })
       .eq("id", jobId)
-      .eq("user_id", args.user.id);
-    return { ok: true, jobId, previewId: null };
+      .eq("user_id", pipelineArgs.user.id);
+    return { ok: true, previewId: null };
   }
 
-  // Regen: insert plan_previews row (status: pending). The regen page
-  // diffs it against the live plan; accept moves it to status: accepted.
-  // Discard any prior pending preview first — mirror previewPlan's
-  // single-pending invariant.
+  // Regen path. Discard any prior pending preview so the unique
+  // partial index doesn't trip on the new insert.
   await supabaseAdmin
     .from("plan_previews")
     .update({ status: "discarded", decided_at: new Date().toISOString() })
-    .eq("user_id", args.user.id)
+    .eq("user_id", pipelineArgs.user.id)
     .eq("status", "pending");
   const previewInsert = await supabaseAdmin
     .from("plan_previews")
     .insert({
-      user_id: args.user.id,
-      workouts: workouts.filter((w) => w.date >= args.startDate),
-      notes: args.notes ?? null,
+      user_id: pipelineArgs.user.id,
+      workouts: workouts.filter((w) => w.date >= pipelineArgs.startDate),
+      notes: pipelineArgs.notes ?? null,
       generation_summary: assembledSummary,
       status: "pending" as const,
     })
@@ -385,11 +414,130 @@ async function runPhasesAndCommit(
       updated_at: new Date().toISOString(),
     })
     .eq("id", jobId)
-    .eq("user_id", args.user.id);
-  return { ok: true, jobId, previewId };
+    .eq("user_id", pipelineArgs.user.id);
+  return { ok: true, previewId };
 }
 
-// ----- Job-status read for polling --------------------------------
+// =============================================================
+// Legacy composition path — kept reachable for backwards compat
+// and tests that exercise the synchronous pipeline shape.
+// =============================================================
+
+/**
+ * Legacy entry point. Runs the full pipeline synchronously inside
+ * the action that called it — Phase 2.5's original shape. Phase
+ * 2.5.1 callers (previewPlan / submitWizard) call `runKickoff`
+ * directly and let the client drive the per-phase loop via
+ * `advanceJob`, but this function stays in place because:
+ *
+ * - Existing orchestrator tests exercise the composed pipeline.
+ * - The resume path's "kick off resumption" can short-circuit
+ *   to a single call when the caller doesn't want to manage the
+ *   loop themselves (currently only `resumeGenerationJob` action).
+ */
+export async function runGenerationPipeline(
+  args: RunGenerationArgs,
+): Promise<RunGenerationResult> {
+  if (typeof args.resumeJobId === "number") {
+    return resumeJobLegacy(args, args.resumeJobId);
+  }
+  const kickoff = await runKickoff(args);
+  if (!kickoff.ok) return kickoff;
+  return runPhasesAndCommit(args, kickoff.jobId, kickoff.metaPlan, [], []);
+}
+
+async function resumeJobLegacy(
+  args: RunGenerationArgs,
+  jobId: number,
+): Promise<RunGenerationResult> {
+  const { data: row, error } = await supabaseAdmin
+    .from("plan_generation_jobs")
+    .select(JOB_COLUMNS)
+    .eq("id", jobId)
+    .eq("user_id", args.user.id)
+    .maybeSingle<JobRow>();
+  if (error || !row) {
+    const requestId = makeRequestId();
+    console.error(
+      `[orchestrator] resume: job ${jobId} not found (req=${requestId})`,
+      error,
+    );
+    return { ok: false, code: "unknown", requestId };
+  }
+  if (row.status !== "pending" && row.status !== "failed") {
+    const requestId = makeRequestId();
+    return { ok: false, code: "unknown", requestId, jobId };
+  }
+  await supabaseAdmin
+    .from("plan_generation_jobs")
+    .update({
+      status: "pending",
+      failure_code: null,
+      failure_phase: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", jobId)
+    .eq("user_id", args.user.id);
+  return runPhasesAndCommit(
+    args,
+    jobId,
+    row.meta_plan,
+    row.completed_phases,
+    row.partial_workouts,
+  );
+}
+
+/**
+ * Legacy phase loop. Composes `runOnePhase` for each remaining phase
+ * then `runFinalize` — same behavior as Phase 2.5 with all the work
+ * inside one server-action invocation. Kept for the resume action
+ * and existing test coverage; new code (Phase 2.5.1 forward) calls
+ * `runOnePhase` directly via `advanceJob`.
+ */
+export async function runPhasesAndCommit(
+  args: RunGenerationArgs,
+  jobId: number,
+  metaPlan: MetaPlan,
+  completedPhases: GenerationPhase[],
+  partialWorkouts: GeneratedWorkout[],
+): Promise<RunGenerationResult> {
+  const completedSet = new Set(completedPhases);
+  let workouts = [...partialWorkouts];
+  let completed = [...completedPhases];
+  const summaries: GenerationSummary[] = [];
+
+  for (const phase of metaPlan.phases) {
+    if (completedSet.has(phase.phase)) continue;
+    const phaseResult = await runOnePhase({
+      pipelineArgs: args,
+      jobId,
+      phase,
+      metaPlan,
+      completedPhases: completed,
+      partialWorkouts: workouts,
+    });
+    if (!phaseResult.ok) return phaseResult;
+    workouts = phaseResult.workouts;
+    completed = phaseResult.completedPhases;
+    completedSet.add(phase.phase);
+    summaries.push(phaseResult.summary);
+  }
+
+  const finalize = await runFinalize({
+    pipelineArgs: args,
+    jobId,
+    metaPlan,
+    workouts,
+    summaries,
+    completedPhases: completed,
+  });
+  if (!finalize.ok) return finalize;
+  return { ok: true, jobId, previewId: finalize.previewId };
+}
+
+// =============================================================
+// Public reads
+// =============================================================
 
 /**
  * Returns the polling snapshot the UI uses to drive the progress
@@ -423,7 +571,52 @@ export async function getJobStatus(
   };
 }
 
-// ----- Internal helpers -------------------------------------------
+/**
+ * Reads the full job row including meta_plan + completed_phases +
+ * partial_workouts. Used by `advanceJob` (which needs to pick the
+ * next pending phase and pass the running accumulators into
+ * `runOnePhase`) and the resume path. RLS-scoped.
+ */
+export async function loadJob(
+  userId: string,
+  jobId: number,
+): Promise<JobRow | null> {
+  const { data, error } = await supabaseAdmin
+    .from("plan_generation_jobs")
+    .select(JOB_COLUMNS)
+    .eq("id", jobId)
+    .eq("user_id", userId)
+    .maybeSingle<JobRow>();
+  if (error || !data) return null;
+  return data;
+}
+
+/**
+ * Flips a job's status back to `pending` and clears the failure
+ * fields. Called by `advanceJob` when the caller's resuming a
+ * previously-failed job. Keeps the job's `completed_phases` and
+ * `partial_workouts` intact so the resume picks up at the failed
+ * phase.
+ */
+export async function reopenJobForResume(
+  userId: string,
+  jobId: number,
+): Promise<void> {
+  await supabaseAdmin
+    .from("plan_generation_jobs")
+    .update({
+      status: "pending",
+      failure_code: null,
+      failure_phase: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", jobId)
+    .eq("user_id", userId);
+}
+
+// =============================================================
+// Internal helpers
+// =============================================================
 
 async function cancelAllPendingJobs(userId: string): Promise<void> {
   const { error } = await supabaseAdmin
@@ -434,7 +627,6 @@ async function cancelAllPendingJobs(userId: string): Promise<void> {
     })
     .eq("user_id", userId)
     .eq("status", "pending");
-  // Soft-warn on failure — cancelling prior jobs is best-effort.
   if (error) {
     console.warn("[orchestrator] cancelAllPendingJobs failed:", error);
   }
@@ -458,6 +650,38 @@ async function markJobFailed(
       updated_at: new Date().toISOString(),
     })
     .eq("id", jobId);
+}
+
+// Emits a [plan-gen-metrics] line per phase chunk. Same shape as the
+// legacy generateTrainingPlan emission so Vercel-log greps still
+// work — the only change is `phase` + `chunked: true` markers so
+// per-phase rows can be distinguished from full-plan rows in logs.
+function logPhaseMetrics(args: {
+  phase: GenerationPhase;
+  workouts: GeneratedWorkout[];
+  durationMs: number;
+  isWizard: boolean;
+}): void {
+  // tokens_in / tokens_out aren't accumulated at this layer — the
+  // SDK call lives inside generatePhase. We pass 0/0; the per-phase
+  // duration + workout count + why distribution carry the load.
+  // Downstream metric scripts already tolerate zeros (see Phase 2.1
+  // distribution test fixtures).
+  const metrics = buildPlanGenMetrics({
+    tokensIn: 0,
+    tokensOut: 0,
+    durationMs: args.durationMs,
+    whys: args.workouts.map((w) => w.why ?? ""),
+    isWizard: args.isWizard,
+    retried: false,
+  });
+  console.log(
+    `[plan-gen-metrics] ${JSON.stringify({
+      ...metrics,
+      phase: args.phase,
+      chunked: true,
+    })}`,
+  );
 }
 
 // Re-exports for the action layer so callers don't need to import

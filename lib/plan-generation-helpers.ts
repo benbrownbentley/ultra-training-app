@@ -7,8 +7,28 @@ import type { GeneratedWorkout, GenerationSummary } from "@/lib/claude";
 import type {
   GenerationPhase,
   MetaPlan,
+  PhaseMetadata,
   PhaseSummaryForPrompt,
 } from "@/lib/plan-generation-types";
+
+/**
+ * Phase 2.5.1: picks the next pending phase from the meta-plan.
+ * Returns `null` when every phase in the meta-plan has already been
+ * completed — the orchestrator's `advanceJob` interprets that as a
+ * signal to run the finalize step.
+ *
+ * Order-preserving: returns the FIRST phase whose name isn't in
+ * `completedPhases`. The job row's `completed_phases` is appended
+ * in completion order, but the meta-plan's `phases` array is the
+ * source of truth for sequencing.
+ */
+export function pickNextPhase(
+  metaPlan: MetaPlan,
+  completedPhases: GenerationPhase[],
+): PhaseMetadata | null {
+  const completedSet = new Set(completedPhases);
+  return metaPlan.phases.find((p) => !completedSet.has(p.phase)) ?? null;
+}
 
 /**
  * Builds compact per-phase summaries for the prompts of subsequent

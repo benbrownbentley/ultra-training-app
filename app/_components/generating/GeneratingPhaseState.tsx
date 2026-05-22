@@ -1,18 +1,23 @@
 "use client";
 
-// Phase 2.5 progress UI. Polls getGenerationJobStatus every 2s, renders
-// per-phase progress with three states per phase (queued / generating /
-// done). Replaces the wizard's atmospheric `GeneratingState` + the
-// regen sheet's button-spinner during the chunked-generation path.
-// See CHUNKING_SPEC.md §3.8 and §9 for the design decisions.
+// Phase 2.5.1 progress UI. **Drives** the per-phase advance loop
+// client-side via sequential `advanceJob` calls — the server actions
+// stayed synchronous in Phase 2.5 which meant `previewPlan` /
+// `submitWizard` blocked for the full ~4 minutes and this component
+// never got a jobId to render against. Now the server returns after
+// the fast meta-plan kickoff (~15s); this component takes the jobId
+// and runs the loop, re-rendering progress between each phase call.
 //
-// Outcome routing is owned by the caller — when the polled status
-// flips to `complete`, the parent decides where to send the user
-// (DoneState on wizard, /regen?preview=<id> on regen). When it flips
-// to `failed`, the parent renders the friendly error UX.
+// Outcome routing is owned by the caller — when the loop completes,
+// the parent decides where to send the user (DoneState on wizard,
+// /regen?preview=<id> on regen). On failure, the parent renders the
+// branded error UX.
 
-import { useEffect, useState } from "react";
-import { getGenerationJobStatus } from "@/app/actions";
+import { useEffect, useRef, useState } from "react";
+import {
+  advanceJob,
+  getGenerationJobStatus,
+} from "@/app/actions";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { VertLogo } from "@/app/_components/today/icons";
 import type {
@@ -22,17 +27,13 @@ import type {
 
 interface Props {
   jobId: number;
-  // Fired exactly once when the polled status first flips to
-  // 'complete'. The caller routes to DoneState (wizard) or
-  // /regen?preview=<id> (regen) based on the snapshot.
+  // Fired exactly once when the loop completes successfully. Caller
+  // routes based on the snapshot — DoneState (wizard, previewId=null)
+  // or /regen?preview=<id> (regen, previewId set).
   onComplete: (snapshot: JobStatusSnapshot) => void;
-  // Fired exactly once when polled status first flips to 'failed'
-  // or 'cancelled'. The caller renders the branded error UX.
+  // Fired exactly once when a phase fails. Caller renders the
+  // branded error UX with a Resume CTA that re-enters this loop.
   onFailed: (snapshot: JobStatusSnapshot) => void;
-  // Optional: override the poll cadence in milliseconds. Default 2s
-  // matches the spec recommendation (fast enough that progress feels
-  // live, slow enough that polling isn't a load concern).
-  pollIntervalMs?: number;
 }
 
 // Per-phase status copy. Mirrors the methodology in the system prompt
@@ -64,48 +65,125 @@ export function GeneratingPhaseState({
   jobId,
   onComplete,
   onFailed,
-  pollIntervalMs = 2000,
 }: Props) {
   const [snapshot, setSnapshot] = useState<JobStatusSnapshot | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
+  // Terminal handlers are stored in a ref so the advance loop's
+  // effect doesn't re-fire when the parent passes new function
+  // identities. The component fires each handler at most once per
+  // mount (terminalFired flag in the effect).
+  const onCompleteRef = useRef(onComplete);
+  const onFailedRef = useRef(onFailed);
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+  useEffect(() => {
+    onFailedRef.current = onFailed;
+  }, [onFailed]);
 
-  // Poll the job status. Single interval driving both the snapshot
-  // updates and the elapsed timer (the timer ticks every second
-  // independently of the poll cadence).
+  // The advance loop. Drives one phase per iteration; exits when
+  // status flips to "complete" or "failed" or the component unmounts.
+  // Sequential — each advanceJob awaits the previous one.
   useEffect(() => {
     let cancelled = false;
     let terminalFired = false;
     const startedAt = Date.now();
 
-    async function poll() {
-      try {
-        const next = await getGenerationJobStatus(jobId);
+    const fireComplete = (s: JobStatusSnapshot) => {
+      if (terminalFired || cancelled) return;
+      terminalFired = true;
+      onCompleteRef.current(s);
+    };
+    const fireFailed = (s: JobStatusSnapshot) => {
+      if (terminalFired || cancelled) return;
+      terminalFired = true;
+      onFailedRef.current(s);
+    };
+
+    async function loop() {
+      // Sync to current state — covers resume cases where the user
+      // refreshed mid-pipeline. The job row already has whatever
+      // phases landed before; the loop picks up at the next pending.
+      const initial = await getGenerationJobStatus(jobId);
+      if (cancelled) return;
+      if (!initial) {
+        // Job not found / cross-user → treat as unknown failure.
+        fireFailed({
+          jobId,
+          status: "failed",
+          trigger: "regen",
+          metaPlan: { meta_summary: "", phases: [] },
+          completedPhases: [],
+          workoutCount: 0,
+          previewId: null,
+          failureCode: "unknown",
+          failurePhase: null,
+        });
+        return;
+      }
+      setSnapshot(initial);
+      if (initial.status === "complete") {
+        fireComplete(initial);
+        return;
+      }
+      if (initial.status === "failed" || initial.status === "cancelled") {
+        fireFailed(initial);
+        return;
+      }
+
+      // Run phases until terminal. Each advanceJob lands one phase
+      // (or the finalize step) and returns the updated state.
+      while (!cancelled) {
+        const result = await advanceJob(jobId);
         if (cancelled) return;
-        if (next) {
-          setSnapshot(next);
-          // Terminal-state routing — fire exactly once per mount.
-          if (!terminalFired) {
-            if (next.status === "complete") {
-              terminalFired = true;
-              onComplete(next);
-            } else if (
-              next.status === "failed" ||
-              next.status === "cancelled"
-            ) {
-              terminalFired = true;
-              onFailed(next);
-            }
-          }
+        if (!result.ok) {
+          // Build a synthetic snapshot so the caller's onFailed has
+          // enough data to render code-specific copy. The real job
+          // row was marked failed by runOnePhase / runFinalize.
+          const latest = await getGenerationJobStatus(jobId);
+          if (cancelled) return;
+          if (latest) setSnapshot(latest);
+          fireFailed(
+            latest ?? {
+              jobId,
+              status: "failed",
+              trigger: initial.trigger,
+              metaPlan: initial.metaPlan,
+              completedPhases: result.code === "unknown" ? [] : initial.completedPhases,
+              workoutCount: 0,
+              previewId: null,
+              failureCode: result.code,
+              failurePhase: null,
+            },
+          );
+          return;
         }
-      } catch (e) {
-        // Polling failure is non-fatal — the next tick will likely
-        // succeed. Log so production-debugging has a breadcrumb.
-        console.warn("[GeneratingPhaseState] poll failed:", e);
+        // Update snapshot with the latest completed phases + previewId.
+        // Refetch the full snapshot so the UI gets workoutCount + any
+        // server-side field deltas we don't return in advanceJob.
+        const refreshed = await getGenerationJobStatus(jobId);
+        if (cancelled) return;
+        if (refreshed) setSnapshot(refreshed);
+        if (result.status === "complete") {
+          fireComplete(
+            refreshed ?? {
+              jobId,
+              status: "complete",
+              trigger: initial.trigger,
+              metaPlan: initial.metaPlan,
+              completedPhases: result.completedPhases,
+              workoutCount: 0,
+              previewId: result.previewId,
+              failureCode: null,
+              failurePhase: null,
+            },
+          );
+          return;
+        }
       }
     }
 
-    poll();
-    const pollHandle = window.setInterval(poll, pollIntervalMs);
+    void loop();
     const tickHandle = window.setInterval(() => {
       if (cancelled) return;
       setElapsedSec(Math.floor((Date.now() - startedAt) / 1000));
@@ -113,18 +191,15 @@ export function GeneratingPhaseState({
 
     return () => {
       cancelled = true;
-      window.clearInterval(pollHandle);
       window.clearInterval(tickHandle);
     };
-  }, [jobId, onComplete, onFailed, pollIntervalMs]);
+  }, [jobId]);
 
   // Render before the first poll lands — show the atmospheric loader
   // shell without phase detail. Same vibe as the legacy GeneratingState
   // so the user doesn't see a flash of empty content.
   const phases = snapshot?.metaPlan.phases ?? [];
   const completedSet = new Set(snapshot?.completedPhases ?? []);
-  // The "active" phase is the first not-yet-completed one. Anything
-  // after it stays dim.
   const activeIdx = phases.findIndex((p) => !completedSet.has(p.phase));
 
   return (
@@ -158,8 +233,8 @@ export function GeneratingPhaseState({
         </div>
 
         {phases.length === 0 ? (
-          // Pre-first-poll: show only the pulse dots so the screen
-          // doesn't look blank.
+          // Pre-first-sync: show only the pulse dots so the screen
+          // doesn't look blank during the ~1s status read.
           <div className="mt-8 flex gap-2">
             {[0, 1, 2].map((i) => (
               <span
@@ -210,10 +285,6 @@ interface LineProps {
 }
 
 function PhaseLine({ eyebrow, tagline, isDone, isActive }: LineProps) {
-  // Three visual states:
-  //   • done — emerald check + dim text
-  //   • active — pulse dot + accent text
-  //   • queued — dim everything
   const eyebrowTone = isDone
     ? "text-emerald-600 dark:text-emerald-400"
     : isActive

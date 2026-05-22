@@ -10,6 +10,7 @@ import {
   autoPhaseSummary,
   buildPriorPhaseSummaries,
   combineSummaries,
+  pickNextPhase,
 } from "@/lib/plan-generation-helpers";
 import type { GeneratedWorkout, GenerationSummary } from "@/lib/claude";
 import type { MetaPlan } from "@/lib/plan-generation-types";
@@ -157,5 +158,59 @@ describe("combineSummaries", () => {
       "added:tempo intervals",
       "reduced:weekly volume −8%",
     ]);
+  });
+});
+
+describe("pickNextPhase", () => {
+  const fullMeta: MetaPlan = {
+    meta_summary: "test",
+    phases: [
+      { phase: "base", weekStartIso: "2026-05-20", weekEndIso: "2026-06-09", weeks: 3 },
+      { phase: "build", weekStartIso: "2026-06-10", weekEndIso: "2026-06-30", weeks: 3 },
+      { phase: "peak", weekStartIso: "2026-07-01", weekEndIso: "2026-07-14", weeks: 2 },
+      { phase: "taper", weekStartIso: "2026-07-15", weekEndIso: "2026-07-28", weeks: 2 },
+    ],
+  };
+
+  it("returns the first phase on a fresh job", () => {
+    expect(pickNextPhase(fullMeta, [])?.phase).toBe("base");
+  });
+
+  it("skips already-completed phases in meta-plan order", () => {
+    expect(pickNextPhase(fullMeta, ["base"])?.phase).toBe("build");
+    expect(pickNextPhase(fullMeta, ["base", "build"])?.phase).toBe("peak");
+    expect(pickNextPhase(fullMeta, ["base", "build", "peak"])?.phase).toBe(
+      "taper",
+    );
+  });
+
+  it("returns null when every phase has completed (finalize signal)", () => {
+    expect(
+      pickNextPhase(fullMeta, ["base", "build", "peak", "taper"]),
+    ).toBeNull();
+  });
+
+  it("respects meta-plan order, not the order phases land in completedPhases", () => {
+    // Defensive: if completedPhases somehow includes a later phase
+    // out-of-order (shouldn't happen in practice but worth pinning),
+    // we still return the first-not-completed phase by meta-plan
+    // order.
+    expect(pickNextPhase(fullMeta, ["build"])?.phase).toBe("base");
+  });
+
+  it("handles compressed-window plans that omit BASE", () => {
+    // Compressed-window plans (< 6 wks) skip BASE per the
+    // META_PLAN_SYSTEM_PROMPT. pickNextPhase shouldn't care — it
+    // walks whatever phases the meta-plan provides.
+    const compressed: MetaPlan = {
+      meta_summary: "compressed",
+      phases: [
+        { phase: "build", weekStartIso: "2026-07-15", weekEndIso: "2026-08-04", weeks: 3 },
+        { phase: "taper", weekStartIso: "2026-08-05", weekEndIso: "2026-08-26", weeks: 3 },
+      ],
+    };
+    expect(pickNextPhase(compressed, [])?.phase).toBe("build");
+    expect(pickNextPhase(compressed, ["build"])?.phase).toBe("taper");
+    expect(pickNextPhase(compressed, ["build", "taper"])).toBeNull();
   });
 });

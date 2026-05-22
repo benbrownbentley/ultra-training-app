@@ -19,9 +19,18 @@ import {
 } from "@/lib/plan-gen-result";
 import {
   getJobStatus,
+  loadJob,
+  reopenJobForResume,
+  runFinalize,
   runGenerationPipeline,
+  runKickoff,
+  runOnePhase,
 } from "@/lib/plan-generation-orchestrator";
-import type { JobStatusSnapshot } from "@/lib/plan-generation-types";
+import { pickNextPhase } from "@/lib/plan-generation-helpers";
+import type {
+  GenerationPhase,
+  JobStatusSnapshot,
+} from "@/lib/plan-generation-types";
 import { blankToNull, getTodayISO } from "@/lib/utils";
 import type {
   GymAccess,
@@ -323,13 +332,13 @@ export async function previewPlan(notes?: string): Promise<
   // this in-app discard is just defense.
   await discardAllPendingPreviews(user.id);
 
-  // Phase 2.5 chunked path. Behind a feature flag so we can flip back
-  // to the legacy single-call path without redeploying. The
-  // orchestrator runs the meta-plan + per-phase pipeline, persists a
-  // plan_generation_jobs row, and on success returns the jobId +
-  // (regen-only) previewId the client routes to.
+  // Phase 2.5.1 chunked path. Returns after the fast meta-plan kickoff
+  // (~10-15s) — the per-phase loop is driven by the client via
+  // advanceJob, so this action stays well inside any function-timeout
+  // budget. The jobId routes the user to /regen?job=<id> where the
+  // GeneratingPhaseState component takes over.
   if (planChunkingEnabled()) {
-    const result = await runGenerationPipeline({
+    const kickoff = await runKickoff({
       user,
       race,
       otherRaces,
@@ -341,21 +350,19 @@ export async function previewPlan(notes?: string): Promise<
       previousSummary,
       trigger: "regen",
     });
-    if (!result.ok) {
+    if (!kickoff.ok) {
       return {
         ok: false,
-        code: result.code,
-        requestId: result.requestId,
+        code: kickoff.code,
+        requestId: kickoff.requestId,
       };
     }
-    // Chunked happy path: hand the client the jobId so it routes to
-    // the progress page. previewId may be set already if the
-    // orchestrator finished synchronously fast enough — currently it
-    // always does because the orchestrator is synchronous server-side.
     return {
       ok: true,
-      jobId: result.jobId,
-      previewId: result.previewId,
+      jobId: kickoff.jobId,
+      // previewId is null at kickoff — it lands on the final
+      // advanceJob call after the last phase commits.
+      previewId: null,
     };
   }
 
@@ -1088,11 +1095,12 @@ export async function submitWizard(
   if (!race) throw new Error("No race configured.");
   if (!profile) throw new Error("No athlete profile configured.");
 
-  // Phase 2.5 chunked path. Wizard returns { ok: true, jobId } so the
-  // client transitions to the per-phase progress UI. Feature flag
-  // keeps the legacy single-call path active for fallback.
+  // Phase 2.5.1 chunked path. Wizard returns after the fast meta-plan
+  // kickoff (~10-15s) — the client transitions to GeneratingPhaseState
+  // and drives the per-phase loop via advanceJob, so this action stays
+  // well inside any function-timeout budget.
   if (planChunkingEnabled()) {
-    const result = await runGenerationPipeline({
+    const kickoff = await runKickoff({
       user,
       race,
       otherRaces,
@@ -1102,11 +1110,10 @@ export async function submitWizard(
       journalEntries: [],
       trigger: "wizard",
     });
-    if (!result.ok) {
-      return { ok: false, code: result.code, requestId: result.requestId };
+    if (!kickoff.ok) {
+      return { ok: false, code: kickoff.code, requestId: kickoff.requestId };
     }
-    revalidatePath("/");
-    return { ok: true, jobId: result.jobId };
+    return { ok: true, jobId: kickoff.jobId };
   }
 
   // Legacy single-call path. Wrap in try/catch so a 504 / Anthropic
@@ -1155,6 +1162,185 @@ export async function getGenerationJobStatus(
 ): Promise<JobStatusSnapshot | null> {
   const { user } = await requireUser();
   return getJobStatus(user.id, jobId);
+}
+
+/**
+ * Phase 2.5.1: client-driven phase loop. Runs ONE phase per call,
+ * then returns the updated job state so the caller can decide
+ * whether to advance again. Idempotent — checks completed_phases
+ * before running, so a double-click or React StrictMode double-mount
+ * picks the NEXT pending phase rather than re-running the last one.
+ *
+ * Wall-clock budget per call: ~20-60s for a phase chunk; ~2s for the
+ * finalize step. Both fit comfortably inside any function timeout.
+ *
+ * Returns:
+ * - `{ ok: true, status: "pending", completedPhases }` after a phase
+ *   chunk lands but more phases remain — client fires advanceJob again.
+ * - `{ ok: true, status: "complete", completedPhases, previewId }`
+ *   when the final phase committed. previewId is null on wizard
+ *   trigger (direct commit), set on regen trigger (preview row).
+ * - `PlanGenFailure & { jobId }` on any failure — the client routes
+ *   to the branded error UX with a Resume CTA.
+ */
+export async function advanceJob(jobId: number): Promise<
+  | {
+      ok: true;
+      status: "pending" | "complete";
+      completedPhases: GenerationPhase[];
+      previewId: number | null;
+    }
+  | (PlanGenFailure & { jobId: number })
+> {
+  const today = getTodayISO();
+  const { user } = await requireUser();
+
+  // Load the job + the pipeline context the orchestrator helpers
+  // need. Both reads happen unconditionally because a phase chunk
+  // needs the full race/profile/history fan-in to build the prompt.
+  const [job, raceData, profile, journal, previousSummary] = await Promise.all([
+    loadJob(user.id, jobId),
+    getRaceAndHistory(today),
+    getAthleteProfile(),
+    listJournalEntries(),
+    getLatestAcceptedSummary(),
+  ]);
+  if (!job) {
+    return {
+      ok: false,
+      code: "unknown",
+      requestId: makeRequestId(),
+      jobId,
+    };
+  }
+  // Reject if the job is in a terminal state. The client shouldn't
+  // be calling advanceJob on a complete/cancelled job — but if it
+  // does (e.g. stale tab, double-fire), we surface a typed failure
+  // rather than re-running work.
+  if (job.status === "complete") {
+    return {
+      ok: true,
+      status: "complete",
+      completedPhases: job.completed_phases,
+      previewId: job.preview_id,
+    };
+  }
+  if (job.status === "cancelled") {
+    return {
+      ok: false,
+      code: "unknown",
+      requestId: makeRequestId(),
+      jobId,
+    };
+  }
+  // Failed → flip back to pending so the Resume path's first
+  // advanceJob picks up at the failed phase (or its successor if
+  // failure_phase was already retried).
+  if (job.status === "failed") {
+    await reopenJobForResume(user.id, jobId);
+  }
+
+  if (!raceData.race || !profile) {
+    return {
+      ok: false,
+      code: "unknown",
+      requestId: makeRequestId(),
+      jobId,
+    };
+  }
+
+  const journalContext = journal.map((e) => ({
+    type: e.type,
+    entry_date: e.entry_date,
+    title: e.title,
+    body: e.body,
+    details_lines: formatJournalDetails(e),
+    consumed: e.consumed,
+  }));
+  const pipelineArgs = {
+    user,
+    race: raceData.race,
+    otherRaces: raceData.otherRaces,
+    profile,
+    startDate: today,
+    history: raceData.history,
+    notes: job.notes ?? null,
+    journalEntries: journalContext,
+    previousSummary,
+    trigger: job.trigger,
+  } as const;
+
+  // Pick the next pending phase: first entry in meta_plan.phases
+  // whose name isn't already in completed_phases. Helper extracted
+  // to lib/plan-generation-helpers.ts so the logic is unit-testable.
+  const nextPhase = pickNextPhase(job.meta_plan, job.completed_phases);
+
+  if (nextPhase) {
+    const phaseResult = await runOnePhase({
+      pipelineArgs,
+      jobId,
+      phase: nextPhase,
+      metaPlan: job.meta_plan,
+      completedPhases: job.completed_phases,
+      partialWorkouts: job.partial_workouts,
+    });
+    if (!phaseResult.ok) {
+      return {
+        ok: false,
+        code: phaseResult.code,
+        requestId: phaseResult.requestId,
+        jobId,
+      };
+    }
+    // After a successful phase chunk, return "pending" so the client
+    // fires one more advanceJob — that call sees no remaining phases
+    // and runs the finalize step (assembled-plan validator + commit).
+    // Cleaner than splitting the commit into the same call as the
+    // last phase chunk; one call per discrete step.
+    return {
+      ok: true,
+      status: "pending",
+      completedPhases: phaseResult.completedPhases,
+      previewId: null,
+    };
+  }
+
+  // No pending phases left → run the finalize step. We need the
+  // per-phase summaries to compose the regen summary, but we don't
+  // persist them across advanceJob calls (each call is stateless).
+  // For Phase 2.5.1 we synthesize a single combined summary from
+  // the job's meta_plan + workouts; the explicit per-phase summary
+  // arrays from each generatePhase call don't survive between
+  // advanceJob calls, which is fine because the regen result page's
+  // FROM YOUR COACH card uses meta_plan.meta_summary anyway.
+  const finalize = await runFinalize({
+    pipelineArgs,
+    jobId,
+    metaPlan: job.meta_plan,
+    workouts: job.partial_workouts,
+    summaries: [],
+    completedPhases: job.completed_phases,
+  });
+  if (!finalize.ok) {
+    return {
+      ok: false,
+      code: finalize.code,
+      requestId: finalize.requestId,
+      jobId,
+    };
+  }
+  // Wizard's final commit publishes new workouts to the live plan —
+  // bust the Today / Plan caches so the user lands on fresh data.
+  if (job.trigger === "wizard") {
+    revalidatePath("/");
+    revalidatePath("/plan");
+  }
+  return {
+    ok: true,
+    status: "complete",
+    completedPhases: job.completed_phases,
+    previewId: finalize.previewId,
+  };
 }
 
 /**

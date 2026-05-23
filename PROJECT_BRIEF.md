@@ -1529,6 +1529,61 @@ Sequenced after Phase 2.1 lands because the logging data from Phase 2.1 informs 
 
 Spec will be written in a dedicated session after Phase 2.1 logging data lands. Likely implementation: 2-3 focused Claude Code sessions.
 
+**Phase 2.5.1 shipped 2026-05-22 (commit `b5c8065`).** Kickoff/advance refactor merged to main. Verified end-to-end: sheet closes within ~15s (the meta-plan call), `GeneratingPhaseState` renders with per-phase progress (BASE/BUILD/PEAK/TAPER rows updating live), 172 tests passing. Ben confirmed visual: per-phase checkmarks land as phases complete, then routes to the regen preview diff.
+
+### Phase 2.5.2 — Generating-screen polish (next, ~3 hr work)
+
+Goal: tighten the generating UX based on Ben's 2026-05-22 post-Phase-2.5.1 feedback. Five items bundled in one focused PR.
+
+- **Trim the meta-plan prompt to its decision-relevant inputs.** The meta-plan call decides periodization phase breakdowns; it does not generate per-workout content. Currently the prompt sends the full athlete profile (~30 fields), full journal context, and full workout history — same fan-in as `generatePhase`. The decision-relevant subset is much smaller: race date, current date, race intent, coarse fitness signal (current weekly volume + longest recent run), severe injury notes, total available weeks. Pull only that subset for `generateMetaPlan` in `lib/claude.ts`. Per-phase calls keep getting the full fan-in (they need it). Expected savings: ~5–7s off the kickoff (15s → 8–10s). Important framing: this is NOT a "stop collecting data" change — the wizard keeps collecting everything because per-phase generation needs it. It's a "send less to the specific Claude call that needs less" change.
+- **Optimistic routing: sheet closes immediately on click, building page renders kicking-off state.** Currently the regen sheet waits ~15s for the meta-plan call before closing and routing to `/regen?job=<id>`. Ben wants the page change to feel instant. Architecture: split kickoff into two server actions — (1) `precreateGenerationJob(args)` returns a jobId from a single DB insert (~50ms) with `status: kicking-off`, (2) `runMetaPlanForJob(jobId)` runs the meta-plan and updates the job row. The sheet routes to `/regen?job=<id>` after the first action. The page handles the new `kicking-off` status by showing a "Designing your training arc…" screen (atmospheric topo, no phase rows yet). When the second action lands, the page transitions to the normal phase-progress view. Same change applies to the wizard's submit path. ~2 hours of work, biggest UX win in the bundle.
+- **Phase-aware rotating flavour text on `GeneratingPhaseState`.** Five lines per phase that cycle every ~3s while that phase is the active one. Ties each line to the periodization role:
+  - BASE: "Mapping your aerobic foundation.", "Setting cutback weeks.", "Sizing the long run progression.", "Honouring your recovery days.", "Reading recent volume."
+  - BUILD: "Adding race-specific intensity.", "Placing the first quality sessions.", "Balancing hard days with easy days.", "Spacing tempo and threshold work.", "Watching for recent injury signals."
+  - PEAK: "Sharpening race fitness.", "Sequencing peak-week sessions.", "Holding volume, raising intensity.", "Protecting the long run.", "Tuning brick sessions."
+  - TAPER: "Locking in fitness, shedding fatigue.", "Cutting volume thoughtfully.", "Keeping intensity, dropping duration.", "Planning your shakeout days.", "Easing into race readiness."
+  Replaces the static `PhaseLine` tagline (or appears alongside it — designer's call). Position: subtle text just under the phase list, mono small, fades in/out as it rotates. Same animation pattern as the legacy `GeneratingState`'s 4-line rotation.
+- **Replace "USUALLY 5–15 SECONDS" footer with honest estimate.** Bottom-center mono small text: `USUALLY 3–5 MINUTES`. Pair with the elapsed timer in a single line so the user sees both at once: `1:43 elapsed · usually 3–5 minutes`. Apply the same update to the wizard's `GeneratingState` for parity (until that component goes away in Phase 2.6 cleanup).
+- **More prominent elapsed timer + alive signal.** Current implementation is 10px mono in the bottom-right corner, low-contrast zinc-400 — easy to miss. Make it (a) larger (~14–16px), (b) higher contrast (zinc-500/600), (c) positioned center-bottom alongside the "usually" text per above, (d) pulse the colon (`1:43`'s `:` blinks each second) so the user sees a per-second tick confirming the page isn't frozen. With the phase-aware rotating text rotating every 3s, the active-phase pulse dot animating continuously, and the timer ticking visibly, the page should never feel frozen.
+
+**Bundle in deferred Phase 2.5.1 review suggestions:**
+
+- Add a comment in `runFinalize`'s validation-failure path noting that Resume won't help in that edge case (the assembled-plan validator failing on the same data twice produces a loop). Document the failure mode so future debuggers see it.
+- Have `advanceJob` return `workoutCount` in its success envelope so `GeneratingPhaseState` can skip the extra `getGenerationJobStatus` refetch per phase. Tiny perf optimization (4 fewer DB reads per regen).
+- Per-phase summaries persistence — DEFERRED. Wait until we see the FROM YOUR COACH card on a real chunked regen and judge if the assembled summary feels thin. If yes, separate small PR adds a `partial_summaries jsonb` column to `plan_generation_jobs` and threads it through `advanceJob` → `runFinalize`.
+
+**Concurrent investigation (not blocking the PR):**
+
+- **Prompt caching audit.** The Anthropic SDK already gets `cache_control: { type: "ephemeral" }` on the system prompt (`lib/claude.ts:1320`). Verify the cache is actually hitting on per-phase calls by inspecting `usage.cache_read_input_tokens` on the Anthropic response. Non-zero = cache hit; zero = something is invalidating the cache key (e.g., per-phase prompt addendum varies in a way that breaks caching). If the audit shows misses, restructure prompts so the cacheable portion is bounded above the per-phase addendum.
+
+**Implementation order (one PR, ~1 focused Claude Code session):**
+
+1. Trim meta-plan prompt — `lib/claude.ts` `META_PLAN_SYSTEM_PROMPT` and the builder that constructs the per-call message.
+2. Split kickoff into `precreateGenerationJob` + `runMetaPlanForJob` server actions in `app/actions.ts`. Update sheet + wizard submit handlers to route immediately after precreate.
+3. Add `kicking-off` status to `plan_generation_jobs.status` check constraint (migration needed — small one-line change).
+4. Extend `GeneratingPhaseState` to handle the kicking-off status with a pre-meta-plan UI variant.
+5. Add the phase-aware rotating text component. Five lines per phase. ~3s rotation. Fade in/out.
+6. Update the footer copy and elapsed-timer prominence per design above.
+7. Apply matching updates to the legacy wizard `GeneratingState` (will be deleted in Phase 2.6, but until then it should match).
+8. Bundle the two Phase 2.5.1 deferred review fixes (the runFinalize comment + `advanceJob` returning `workoutCount`).
+9. **Add cache-hit instrumentation.** Extend the `[plan-gen-metrics]` log line to include `cache_read_input_tokens` and `cache_creation_input_tokens` from the Anthropic SDK's `message.usage` field. Lets Ben verify the system-prompt cache is actually hitting on per-phase calls after the next regen. See "Prompt-caching audit" below for what to look for.
+10. Tests: update existing orchestrator + GeneratingPhaseState specs to cover the kicking-off state. New test for the phase-aware rotating text component (which line is active given which phase). Extend `plan-gen-metrics.test.ts` for the new cache-read fields.
+11. Manual smoke: wizard run + regen, verify sheet closes in <2s, kicking-off screen renders, meta-plan transitions smoothly to phase list, all four phases progress visibly with rotating text changing per phase.
+
+**Operational deploy:** new migration (kicking-off status). One-line `alter table` to relax the status check constraint. No env var changes. No data migration.
+
+### Prompt-caching audit (concurrent, ~5 min)
+
+Action item to verify after the next chunked regen: confirm that the system-prompt `cache_control: ephemeral` is actually hitting on per-phase calls.
+
+**How to check:** open Vercel logs → filter for `[plan-gen-metrics]` → each line includes `tokens_in` and (in a future Phase 2.5.2 enhancement, after explicit instrumentation) `cache_read_input_tokens`. For now, the SDK response surfaces `usage.cache_read_input_tokens` and `usage.cache_creation_input_tokens` on each Anthropic message. Add a small log emission in `lib/claude.ts` `callClaudeOnce` (or in `generateMetaPlan` / `generatePhase`) that surfaces these counters.
+
+**What we expect to see:** the first phase call of a regen should show `cache_creation_input_tokens > 0` (cache being populated). Subsequent phase calls (2, 3, 4) should show `cache_read_input_tokens > 0` (cache being hit) — ideally close to the full system-prompt token count.
+
+**If we see zero cache reads on phases 2–4:** something invalidates the cache key. Likely culprits: the per-phase prompt addendum changes order/whitespace; the journal context or athlete profile content shifts between calls; the SDK version doesn't support caching the way we think. Diagnosis is straightforward — log the prompt structure and compare phase-1 vs. phase-2 cache headers.
+
+**This work bundles into Phase 2.5.2** as a small instrumentation add: log `cache_read_input_tokens` and `cache_creation_input_tokens` alongside the existing `[plan-gen-metrics]` line. Ben reviews after one regen post-deploy.
+
 ### Phase 2.6 — Chunked-generation cleanup (deferred)
 
 Sequenced ~4 weeks after Phase 2.5 lands and the `PLAN_CHUNKING_ENABLED` flag has been on in prod without incident. One small PR:
@@ -1621,6 +1676,8 @@ Goal: build only what early-user feedback validates, then transition into the v3
 - Model selection eval (Haiku / Sonnet / Opus per call site)
 - Lifestyle fields (family load, travel frequency, climate, time zone override)
 - Distinct WeekStrip pill glyphs for cross-training and physio
+- **Parallel phase generation** (moved here from Phase 2.5.3 on 2026-05-22 per Ben's "not in phase 2" call). Fire all four `generatePhase` calls concurrently after meta-plan returns; cuts total regen wall-clock from ~4 min to ~1.5 min. Quality risk: each phase generates without seeing prior-phase summaries (because no prior phase is complete when each call starts). Eval plan before shipping: generate 5–10 plans sequential and 5–10 parallel, eyeball compare for inter-phase smoothness (volume transitions, quality session spacing, "Claude forgot what BASE did" artifacts). Ship behind sub-flag `PLAN_PHASE_PARALLEL_ENABLED` for A/B-style toggling. Implementation: ~1 session for code in `lib/plan-generation-orchestrator.ts` (`Promise.all` instead of sequential await loop) + ~1 session for the eval.
+- **Differential `why` length caps by workout kind** (moved here from Phase 2.5.3 on 2026-05-22). Cap quality runs at 500 chars, easy/recovery at 200 chars, mobility/cross-training at 100 chars. Implementation: extend `WHY_MAX_CHARS` from constant into per-kind lookup keyed by `WorkoutKind`; small validator change to apply the right cap. Sized first using `[plan-gen-metrics]` `why_avg` / `why_over_400` data from prod regens — if mobility consistently hits 400+ chars, differential caps cut ~20–30% of per-phase output tokens with no quality loss. Expected speedup contribution: small per phase (Claude already self-regulates somewhat), bigger compound effect when combined with parallel phase generation.
 
 **v3 era (native mobile + role expansion):**
 

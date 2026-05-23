@@ -1448,13 +1448,19 @@ export async function generateTrainingPlan(
   const startedAt = Date.now();
   // Token accumulators — summed across the first attempt and (if it
   // fires) the retry so the metrics line reflects total API spend.
+  // Phase 2.5.2: also accumulate cache_read/creation so post-deploy
+  // audit can confirm the system-prompt ephemeral cache is hitting.
   let tokensIn = 0;
   let tokensOut = 0;
+  let cacheReadInputTokens = 0;
+  let cacheCreationInputTokens = 0;
 
   // First attempt.
   const firstMessage = await callClaudeOnce(args);
   tokensIn += firstMessage.usage.input_tokens;
   tokensOut += firstMessage.usage.output_tokens;
+  cacheReadInputTokens += firstMessage.usage.cache_read_input_tokens ?? 0;
+  cacheCreationInputTokens += firstMessage.usage.cache_creation_input_tokens ?? 0;
   const firstResult = parsePlanFromMessage(firstMessage);
 
   const firstIssues = validateGeneratedPlan({
@@ -1471,6 +1477,8 @@ export async function generateTrainingPlan(
       workouts: firstResult.workouts,
       tokensIn,
       tokensOut,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
       durationMs: Date.now() - startedAt,
       isWizard: args.isWizard ?? false,
       retried: false,
@@ -1519,6 +1527,8 @@ export async function generateTrainingPlan(
   const secondMessage = await callClaudeOnce(args, retryMessages);
   tokensIn += secondMessage.usage.input_tokens;
   tokensOut += secondMessage.usage.output_tokens;
+  cacheReadInputTokens += secondMessage.usage.cache_read_input_tokens ?? 0;
+  cacheCreationInputTokens += secondMessage.usage.cache_creation_input_tokens ?? 0;
   const secondResult = parsePlanFromMessage(secondMessage);
 
   const secondIssues = validateGeneratedPlan({
@@ -1545,6 +1555,8 @@ export async function generateTrainingPlan(
       workouts: secondResult.workouts,
       tokensIn,
       tokensOut,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
       durationMs: Date.now() - startedAt,
       isWizard: args.isWizard ?? false,
       retried: true,
@@ -1560,6 +1572,8 @@ export async function generateTrainingPlan(
     workouts: secondResult.workouts,
     tokensIn,
     tokensOut,
+    cacheReadInputTokens,
+    cacheCreationInputTokens,
     durationMs: Date.now() - startedAt,
     isWizard: args.isWizard ?? false,
     retried: true,
@@ -1575,6 +1589,8 @@ function logMetrics(args: {
   workouts: GeneratedWorkout[];
   tokensIn: number;
   tokensOut: number;
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   durationMs: number;
   isWizard: boolean;
   retried: boolean;
@@ -1582,6 +1598,8 @@ function logMetrics(args: {
   const metrics = buildPlanGenMetrics({
     tokensIn: args.tokensIn,
     tokensOut: args.tokensOut,
+    cacheReadInputTokens: args.cacheReadInputTokens,
+    cacheCreationInputTokens: args.cacheCreationInputTokens,
     durationMs: args.durationMs,
     whys: args.workouts.map((w) => w.why ?? ""),
     isWizard: args.isWizard,
@@ -1818,14 +1836,48 @@ export function buildMetaPlanUserPrompt(args: GenerateMetaPlanArgs): string {
 RACE
 ${formatRace(args.race, args.profile.unit_system)}
 
-RUNNER PROFILE (relevant slice — only fields that should influence phase sizing)
-${formatProfile(args.profile)}
+RUNNER PROFILE (decision-relevant slice — full profile is sent to per-phase calls; here we send only fields that affect phase sizing)
+${formatProfileForMetaPlan(args.profile)}
 
 PLAN PARAMETERS
 - Start date (today): ${args.startDate}
 - End date (race day): ${args.race.date}
 
 Submit the periodization breakdown via the submit_meta_plan tool. Include a short coach-voice meta_summary the athlete will see, and a per-phase rationale (server-side only).`;
+}
+
+/**
+ * Phase 2.5.2: narrow subset of AthleteProfile fields that influence
+ * the periodization decision. Drops equipment, scheduling, body
+ * biometrics, sleep/stress baseline, training-day arrays — those
+ * fields matter for per-workout prescription (generatePhase) but
+ * don't affect phase-boundary choices. The drop is a prompt-size /
+ * latency win on the meta-plan call only; the wizard still collects
+ * every field for downstream use. See PROJECT_BRIEF.md Phase 2.5.2.
+ */
+export function formatProfileForMetaPlan(p: AthleteProfile): string {
+  const distUnit = p.unit_system === "metric" ? "km" : "mi";
+  const lines: string[] = [
+    `- Preferred units: ${p.unit_system}`,
+    `- Current weekly running volume: ${p.weekly_volume}`,
+    `- Longest run in past 4 weeks: ${p.longest_run_distance} ${distUnit}`,
+    `- Injuries / things to manage carefully: ${p.injury_notes ?? "none reported"}`,
+  ];
+  if (p.fitness_rating != null && FITNESS_LABELS[p.fitness_rating]) {
+    lines.push(
+      `- Self-rated fitness: ${p.fitness_rating}/5 (${FITNESS_LABELS[p.fitness_rating]})`,
+    );
+  }
+  // Training-time signal — affects compressed-window handling. We
+  // surface "current" hours (what they're actually doing now) since
+  // that drives realistic phase sizing more than ambitious "available"
+  // hours.
+  if (p.weekly_hours_current != null) {
+    lines.push(`- Currently training: ${p.weekly_hours_current} hrs/week`);
+  } else if (p.weekly_hours != null) {
+    lines.push(`- Weekly training time: ${p.weekly_hours} hrs/week`);
+  }
+  return lines.join("\n");
 }
 
 export interface GeneratePhaseArgs {
@@ -1849,6 +1901,15 @@ export interface GeneratePhaseArgs {
 export interface PhaseGenerationOutput {
   workouts: GeneratedWorkout[];
   summary: GenerationSummary;
+  // Phase 2.5.2: Anthropic SDK usage data for the per-phase
+  // [plan-gen-metrics] log line. Summed across the first attempt
+  // and (if it fires) the auto-retry-once attempt.
+  usage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadInputTokens: number;
+    cacheCreationInputTokens: number;
+  };
 }
 
 /**
@@ -1868,7 +1929,18 @@ export interface PhaseGenerationOutput {
 export async function generatePhase(
   args: GeneratePhaseArgs,
 ): Promise<PhaseGenerationOutput> {
+  // Phase 2.5.2: usage accumulators so the orchestrator's per-phase
+  // metrics line includes cache_read / cache_creation counters.
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let cacheReadInputTokens = 0;
+  let cacheCreationInputTokens = 0;
+
   const firstMessage = await callPhaseOnce(args);
+  inputTokens += firstMessage.usage.input_tokens;
+  outputTokens += firstMessage.usage.output_tokens;
+  cacheReadInputTokens += firstMessage.usage.cache_read_input_tokens ?? 0;
+  cacheCreationInputTokens += firstMessage.usage.cache_creation_input_tokens ?? 0;
   const firstResult = parsePlanFromMessage(firstMessage);
   const firstIssues = validatePhaseChunk({
     workouts: firstResult.workouts,
@@ -1878,7 +1950,16 @@ export async function generatePhase(
   });
   const firstErrors = errorsOnly(firstIssues);
   if (firstErrors.length === 0) {
-    return { workouts: firstResult.workouts, summary: firstResult.summary };
+    return {
+      workouts: firstResult.workouts,
+      summary: firstResult.summary,
+      usage: {
+        inputTokens,
+        outputTokens,
+        cacheReadInputTokens,
+        cacheCreationInputTokens,
+      },
+    };
   }
 
   console.warn(
@@ -1909,6 +1990,10 @@ export async function generatePhase(
     },
   ];
   const secondMessage = await callPhaseOnce(args, retryMessages);
+  inputTokens += secondMessage.usage.input_tokens;
+  outputTokens += secondMessage.usage.output_tokens;
+  cacheReadInputTokens += secondMessage.usage.cache_read_input_tokens ?? 0;
+  cacheCreationInputTokens += secondMessage.usage.cache_creation_input_tokens ?? 0;
   const secondResult = parsePlanFromMessage(secondMessage);
   const secondIssues = validatePhaseChunk({
     workouts: secondResult.workouts,
@@ -1928,7 +2013,16 @@ export async function generatePhase(
     );
   }
   console.info(`[generatePhase:${args.phase.phase}] retry succeeded.`);
-  return { workouts: secondResult.workouts, summary: secondResult.summary };
+  return {
+    workouts: secondResult.workouts,
+    summary: secondResult.summary,
+    usage: {
+      inputTokens,
+      outputTokens,
+      cacheReadInputTokens,
+      cacheCreationInputTokens,
+    },
+  };
 }
 
 // One per-phase API call. Wraps callClaudeOnce's pattern with a

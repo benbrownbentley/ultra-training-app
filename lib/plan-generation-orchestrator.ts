@@ -83,12 +83,16 @@ interface JobRow {
   id: number;
   user_id: string;
   trigger: "wizard" | "regen";
+  // `meta_plan` may be the empty-shape `{ phases: [], meta_summary: "" }`
+  // immediately after precreate (status='kicking-off') and before
+  // runMetaPlanForJob has run. Phase-loop helpers should never see a
+  // job in that state; advanceJob short-circuits on kicking-off.
   meta_plan: MetaPlan;
   completed_phases: GenerationPhase[];
   partial_workouts: GeneratedWorkout[];
   notes: string | null;
   preview_id: number | null;
-  status: "pending" | "complete" | "failed" | "cancelled";
+  status: "kicking-off" | "pending" | "complete" | "failed" | "cancelled";
   failure_code: PlanGenErrorCode | null;
   failure_phase: GenerationPhase | "meta" | null;
 }
@@ -101,25 +105,85 @@ const JOB_COLUMNS =
 // =============================================================
 
 /**
- * Step 0 of the chunked pipeline. Cancels any pending job for this
- * user, runs the meta-plan call, validates it, and inserts a new
- * `plan_generation_jobs` row. Returns the new jobId so the client
- * can route to /regen?job=<id> and start the advance loop.
- *
- * Wall-clock budget: ~10-15s. The fast handoff that makes the
- * progress UI feel responsive (Phase 2.5.1).
+ * Phase 2.5.2: fast precreate step. Single DB write (~50ms). Cancels
+ * any prior pending/kicking-off job and inserts a new row with
+ * `status: 'kicking-off'` and an empty meta-plan. Returns the jobId
+ * so the client can route to /regen?job=<id> immediately — the
+ * building page handles the kicking-off state with a "designing your
+ * training arc" UI variant while the meta-plan call runs in the
+ * background. See PROJECT_BRIEF.md → Phase 2.5.2.
  */
-export async function runKickoff(args: RunGenerationArgs): Promise<
-  | { ok: true; jobId: number; metaPlan: MetaPlan }
-  | RunGenerationFailure
+export async function precreateGenerationJob(args: {
+  user: { id: string };
+  trigger: "wizard" | "regen";
+  notes?: string | null;
+}): Promise<
+  { ok: true; jobId: number } | RunGenerationFailure
 > {
-  // 1. Cancel any prior pending job for this user. Same defense-in-
-  //    depth pattern as plan_previews — at most one pending job at a
-  //    time per user. Done before the meta-plan call so a fast-clicker
-  //    can't end up with two pending rows even briefly.
   await cancelAllPendingJobs(args.user.id);
+  const insert = await supabaseAdmin
+    .from("plan_generation_jobs")
+    .insert({
+      user_id: args.user.id,
+      trigger: args.trigger,
+      // Placeholder meta-plan — populated by runMetaPlanForJob below.
+      // The empty-phases shape passes the column's NOT NULL constraint
+      // while making it obvious the job hasn't designed its arc yet.
+      meta_plan: { phases: [], meta_summary: "" },
+      completed_phases: [],
+      partial_workouts: [],
+      notes: args.notes ?? null,
+      status: "kicking-off" as const,
+    })
+    .select("id")
+    .single();
+  if (insert.error || !insert.data) {
+    const requestId = makeRequestId();
+    console.error(
+      `[orchestrator] precreate insert failed (req=${requestId})`,
+      insert.error,
+    );
+    return { ok: false, code: "unknown", requestId };
+  }
+  return { ok: true, jobId: insert.data.id };
+}
 
-  // 2. Meta-plan call.
+/**
+ * Phase 2.5.2: runs the meta-plan call for an already-precreated
+ * job. Loads the row, calls generateMetaPlan with the trimmed
+ * decision-relevant inputs, validates the result, and UPDATEs the
+ * job row with the meta-plan + flips status to 'pending'. Idempotent
+ * on a job that's already past 'kicking-off' — returns the existing
+ * meta-plan without re-running the Claude call.
+ *
+ * Wall-clock budget: ~8-10s (down from ~15s pre-trim).
+ */
+export async function runMetaPlanForJob(args: {
+  jobId: number;
+  // Pipeline context needed by generateMetaPlan. The narrow subset
+  // (race + profile + startDate) is all the meta-plan call uses; the
+  // rest of the RunGenerationArgs fan-in is irrelevant here. The
+  // action layer reconstitutes the pipeline args from DB reads when
+  // it calls this helper.
+  user: { id: string };
+  race: Race;
+  otherRaces?: Race[];
+  profile: AthleteProfile;
+  startDate: string;
+}): Promise<
+  { ok: true; metaPlan: MetaPlan } | RunGenerationFailure
+> {
+  // Idempotency: if the job already advanced past kicking-off,
+  // return whatever meta-plan is on the row without re-running the
+  // Claude call. Lets the client safely re-fire on remount.
+  const row = await loadJob(args.user.id, args.jobId);
+  if (!row) {
+    return { ok: false, code: "unknown", requestId: makeRequestId() };
+  }
+  if (row.status !== "kicking-off") {
+    return { ok: true, metaPlan: row.meta_plan };
+  }
+
   let metaPlan: MetaPlan;
   try {
     metaPlan = await generateMetaPlan({
@@ -135,38 +199,58 @@ export async function runKickoff(args: RunGenerationArgs): Promise<
       `[orchestrator] meta-plan failed (code=${code}, req=${requestId})`,
       err,
     );
-    return { ok: false, code, requestId };
+    // Mark the job failed so the friendly error UX can render the
+    // Resume CTA — though resume on meta-plan-failure means re-running
+    // the meta-plan, which is what runMetaPlanForJob does anyway.
+    await markJobFailed(args.jobId, code, "meta", [], []);
+    return { ok: false, code, requestId, jobId: args.jobId };
   }
-  // Normalise + enrich so downstream readers see weeks counts.
   const enrichedMeta: MetaPlan = {
     ...metaPlan,
     phases: enrichPhaseWeeks(metaPlan.phases),
   };
-
-  // 3. Insert the job row. partial_workouts + completed_phases start
-  //    empty; the advance loop populates them per phase.
-  const insert = await supabaseAdmin
+  await supabaseAdmin
     .from("plan_generation_jobs")
-    .insert({
-      user_id: args.user.id,
-      trigger: args.trigger,
+    .update({
       meta_plan: enrichedMeta,
-      completed_phases: [],
-      partial_workouts: [],
-      notes: args.notes ?? null,
-      status: "pending" as const,
+      status: "pending",
+      updated_at: new Date().toISOString(),
     })
-    .select("id")
-    .single();
-  if (insert.error || !insert.data) {
-    const requestId = makeRequestId();
-    console.error(
-      `[orchestrator] failed to insert job row (req=${requestId})`,
-      insert.error,
-    );
-    return { ok: false, code: "unknown", requestId };
+    .eq("id", args.jobId)
+    .eq("user_id", args.user.id);
+  return { ok: true, metaPlan: enrichedMeta };
+}
+
+/**
+ * Legacy single-call kickoff. Phase 2.5 shipped this; Phase 2.5.2
+ * splits it into `precreateGenerationJob` + `runMetaPlanForJob` so
+ * the client gets the jobId in ~50ms. This composition wrapper
+ * stays callable so legacy synchronous-pipeline code paths
+ * (resumeGenerationJob, runGenerationPipeline) keep working
+ * unchanged. The fast-handoff path skips this wrapper entirely.
+ */
+export async function runKickoff(args: RunGenerationArgs): Promise<
+  | { ok: true; jobId: number; metaPlan: MetaPlan }
+  | RunGenerationFailure
+> {
+  const precreate = await precreateGenerationJob({
+    user: args.user,
+    trigger: args.trigger,
+    notes: args.notes,
+  });
+  if (!precreate.ok) return precreate;
+  const meta = await runMetaPlanForJob({
+    jobId: precreate.jobId,
+    user: args.user,
+    race: args.race,
+    otherRaces: args.otherRaces,
+    profile: args.profile,
+    startDate: args.startDate,
+  });
+  if (!meta.ok) {
+    return { ...meta, jobId: precreate.jobId };
   }
-  return { ok: true, jobId: insert.data.id, metaPlan: enrichedMeta };
+  return { ok: true, jobId: precreate.jobId, metaPlan: meta.metaPlan };
 }
 
 /**
@@ -264,11 +348,17 @@ export async function runOnePhase(args: {
   // Emit the per-phase metrics line. Stays at the orchestrator layer
   // so Phase 2.5.1's move to client-driven looping doesn't lose the
   // structured logging — the call site moved, the shape didn't.
+  // Phase 2.5.2: forwards the SDK's cache fields so per-phase rows
+  // include cache_read/creation counters for the prompt-cache audit.
   logPhaseMetrics({
     phase: phase.phase,
     workouts: phaseResult.workouts,
     durationMs: Date.now() - startedAt,
     isWizard: pipelineArgs.trigger === "wizard",
+    tokensIn: phaseResult.usage.inputTokens,
+    tokensOut: phaseResult.usage.outputTokens,
+    cacheReadInputTokens: phaseResult.usage.cacheReadInputTokens,
+    cacheCreationInputTokens: phaseResult.usage.cacheCreationInputTokens,
   });
 
   return {
@@ -319,6 +409,14 @@ export async function runFinalize(args: {
   });
   const finalErrors = errorsOnly(finalIssues);
   if (finalErrors.length > 0) {
+    // EDGE CASE: if the assembled-plan validator fails here (rare —
+    // indicates an inter-phase gap that the per-phase validator
+    // didn't catch), Resume from this point would re-run runFinalize
+    // against the same workouts and fail the same way. The user
+    // effectively needs a fresh regen, not a resume. Worth tracking
+    // if we see this in production logs; the per-phase validators
+    // should catch most gap cases before we reach here. Phase 2.5.1
+    // code review surfaced this as a follow-up to document.
     const requestId = makeRequestId();
     console.warn(
       `[orchestrator] assembled-plan validation failed (req=${requestId})`,
@@ -619,6 +717,10 @@ export async function reopenJobForResume(
 // =============================================================
 
 async function cancelAllPendingJobs(userId: string): Promise<void> {
+  // Cancel anything not yet terminal — both `kicking-off` (Phase
+  // 2.5.2 pre-meta state) and `pending` (post-meta, mid-phase loop).
+  // A fast re-click during the precreate would otherwise orphan the
+  // first row in `kicking-off` forever.
   const { error } = await supabaseAdmin
     .from("plan_generation_jobs")
     .update({
@@ -626,7 +728,7 @@ async function cancelAllPendingJobs(userId: string): Promise<void> {
       updated_at: new Date().toISOString(),
     })
     .eq("user_id", userId)
-    .eq("status", "pending");
+    .in("status", ["kicking-off", "pending"]);
   if (error) {
     console.warn("[orchestrator] cancelAllPendingJobs failed:", error);
   }
@@ -654,22 +756,25 @@ async function markJobFailed(
 
 // Emits a [plan-gen-metrics] line per phase chunk. Same shape as the
 // legacy generateTrainingPlan emission so Vercel-log greps still
-// work — the only change is `phase` + `chunked: true` markers so
-// per-phase rows can be distinguished from full-plan rows in logs.
+// work — `phase` + `chunked: true` markers distinguish per-phase rows
+// from full-plan rows. Phase 2.5.2: forwards token counts + cache
+// fields from the Claude SDK so the prompt-cache audit can read
+// per-phase reads/creations directly off the log lines.
 function logPhaseMetrics(args: {
   phase: GenerationPhase;
   workouts: GeneratedWorkout[];
   durationMs: number;
   isWizard: boolean;
+  tokensIn: number;
+  tokensOut: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
 }): void {
-  // tokens_in / tokens_out aren't accumulated at this layer — the
-  // SDK call lives inside generatePhase. We pass 0/0; the per-phase
-  // duration + workout count + why distribution carry the load.
-  // Downstream metric scripts already tolerate zeros (see Phase 2.1
-  // distribution test fixtures).
   const metrics = buildPlanGenMetrics({
-    tokensIn: 0,
-    tokensOut: 0,
+    tokensIn: args.tokensIn,
+    tokensOut: args.tokensOut,
+    cacheReadInputTokens: args.cacheReadInputTokens,
+    cacheCreationInputTokens: args.cacheCreationInputTokens,
     durationMs: args.durationMs,
     whys: args.workouts.map((w) => w.why ?? ""),
     isWizard: args.isWizard,

@@ -74,6 +74,14 @@ export function computeWhyDistribution(whys: string[]): WhyDistribution {
 export interface PlanGenMetrics {
   tokens_in: number;
   tokens_out: number;
+  // Phase 2.5.2: Anthropic SDK surfaces cache fields on every
+  // response. `cache_read_input_tokens > 0` confirms the
+  // `cache_control: ephemeral` system-prompt cache is hitting on
+  // per-phase calls; `cache_creation_input_tokens > 0` indicates
+  // the cache was populated on this call. Zero on both is the
+  // diagnostic signal that the cache key is being invalidated.
+  cache_read_input_tokens: number;
+  cache_creation_input_tokens: number;
   duration_s: number;
   workouts: number;
   why_avg: number;
@@ -98,6 +106,12 @@ export interface PlanGenMetrics {
 export function buildPlanGenMetrics(args: {
   tokensIn: number;
   tokensOut: number;
+  // Phase 2.5.2: optional so callers that don't have cache data
+  // (legacy call sites pre-instrumentation) can omit and get zeros.
+  // New call sites in lib/claude.ts thread the SDK's
+  // usage.cache_read_input_tokens / cache_creation_input_tokens.
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   durationMs: number;
   whys: string[];
   isWizard: boolean;
@@ -107,6 +121,8 @@ export function buildPlanGenMetrics(args: {
   return {
     tokens_in: args.tokensIn,
     tokens_out: args.tokensOut,
+    cache_read_input_tokens: args.cacheReadInputTokens ?? 0,
+    cache_creation_input_tokens: args.cacheCreationInputTokens ?? 0,
     duration_s: Math.round(args.durationMs / 1000),
     workouts: args.whys.length,
     why_avg: dist.avg,

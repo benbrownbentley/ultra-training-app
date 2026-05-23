@@ -76,7 +76,7 @@ export function GeneratingState() {
           className="absolute bottom-9 font-mono text-[10px] uppercase text-zinc-400 dark:text-zinc-600"
           style={{ letterSpacing: "0.18em" }}
         >
-          USUALLY 5–15 SECONDS
+          USUALLY 3–5 MINUTES
         </p>
       </div>
     </div>

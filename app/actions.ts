@@ -20,10 +20,11 @@ import {
 import {
   getJobStatus,
   loadJob,
+  precreateGenerationJob as precreateGenerationJobHelper,
   reopenJobForResume,
   runFinalize,
   runGenerationPipeline,
-  runKickoff,
+  runMetaPlanForJob as runMetaPlanForJobHelper,
   runOnePhase,
 } from "@/lib/plan-generation-orchestrator";
 import { pickNextPhase } from "@/lib/plan-generation-helpers";
@@ -332,36 +333,29 @@ export async function previewPlan(notes?: string): Promise<
   // this in-app discard is just defense.
   await discardAllPendingPreviews(user.id);
 
-  // Phase 2.5.1 chunked path. Returns after the fast meta-plan kickoff
-  // (~10-15s) — the per-phase loop is driven by the client via
-  // advanceJob, so this action stays well inside any function-timeout
-  // budget. The jobId routes the user to /regen?job=<id> where the
-  // GeneratingPhaseState component takes over.
+  // Phase 2.5.2 chunked path. Returns in ~50ms (single DB insert)
+  // so the sheet closes immediately and the user lands on the
+  // building page. The meta-plan call fires in the background via
+  // GeneratingPhaseState's onMount → runMetaPlanForJob; the
+  // per-phase loop then takes over.
   if (planChunkingEnabled()) {
-    const kickoff = await runKickoff({
+    const precreate = await precreateGenerationJobHelper({
       user,
-      race,
-      otherRaces,
-      profile,
-      startDate: today,
-      history,
-      journalEntries: journalContext,
-      notes: blankToNull(notes ?? ""),
-      previousSummary,
       trigger: "regen",
+      notes: blankToNull(notes ?? ""),
     });
-    if (!kickoff.ok) {
+    if (!precreate.ok) {
       return {
         ok: false,
-        code: kickoff.code,
-        requestId: kickoff.requestId,
+        code: precreate.code,
+        requestId: precreate.requestId,
       };
     }
     return {
       ok: true,
-      jobId: kickoff.jobId,
-      // previewId is null at kickoff — it lands on the final
-      // advanceJob call after the last phase commits.
+      jobId: precreate.jobId,
+      // previewId lands on the final advanceJob call after the last
+      // phase commits.
       previewId: null,
     };
   }
@@ -1095,25 +1089,24 @@ export async function submitWizard(
   if (!race) throw new Error("No race configured.");
   if (!profile) throw new Error("No athlete profile configured.");
 
-  // Phase 2.5.1 chunked path. Wizard returns after the fast meta-plan
-  // kickoff (~10-15s) — the client transitions to GeneratingPhaseState
-  // and drives the per-phase loop via advanceJob, so this action stays
-  // well inside any function-timeout budget.
+  // Phase 2.5.2 chunked path. Wizard returns in ~50ms so the
+  // generating screen renders immediately. Meta-plan runs in the
+  // background via GeneratingPhaseState's mount handler, and the
+  // per-phase loop takes over from there.
   if (planChunkingEnabled()) {
-    const kickoff = await runKickoff({
+    const precreate = await precreateGenerationJobHelper({
       user,
-      race,
-      otherRaces,
-      profile,
-      startDate: today,
-      history: [],
-      journalEntries: [],
       trigger: "wizard",
+      notes: null,
     });
-    if (!kickoff.ok) {
-      return { ok: false, code: kickoff.code, requestId: kickoff.requestId };
+    if (!precreate.ok) {
+      return {
+        ok: false,
+        code: precreate.code,
+        requestId: precreate.requestId,
+      };
     }
-    return { ok: true, jobId: kickoff.jobId };
+    return { ok: true, jobId: precreate.jobId };
   }
 
   // Legacy single-call path. Wrap in try/catch so a 504 / Anthropic
@@ -1165,6 +1158,74 @@ export async function getGenerationJobStatus(
 }
 
 /**
+ * Phase 2.5.2 optimistic-routing entry point. Returns a jobId in
+ * ~50ms (single DB insert) so the regen sheet / wizard can close
+ * and route to the building page immediately. The slow meta-plan
+ * call runs separately via `runMetaPlanForJob`, fired by
+ * GeneratingPhaseState on mount. See PROJECT_BRIEF.md → Phase 2.5.2.
+ */
+export async function precreateGenerationJob(args: {
+  trigger: "wizard" | "regen";
+  notes?: string | null;
+}): Promise<{ ok: true; jobId: number } | PlanGenFailure> {
+  const { user } = await requireUser();
+  const result = await precreateGenerationJobHelper({
+    user,
+    trigger: args.trigger,
+    notes: args.notes,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      code: result.code,
+      requestId: result.requestId,
+    };
+  }
+  return { ok: true, jobId: result.jobId };
+}
+
+/**
+ * Phase 2.5.2: runs the meta-plan call for an already-precreated
+ * job. The building page fires this on mount when the job's status
+ * is `kicking-off`; once it returns ok, the status is `pending` and
+ * the advance loop takes over. Idempotent — safe under
+ * React StrictMode double-mount.
+ */
+export async function runMetaPlanForJob(jobId: number): Promise<
+  { ok: true } | PlanGenFailure
+> {
+  const today = getTodayISO();
+  const { user } = await requireUser();
+  const [{ race, otherRaces }, profile] = await Promise.all([
+    getRaceAndHistory(today),
+    getAthleteProfile(),
+  ]);
+  if (!race || !profile) {
+    return {
+      ok: false,
+      code: "unknown",
+      requestId: makeRequestId(),
+    };
+  }
+  const result = await runMetaPlanForJobHelper({
+    jobId,
+    user,
+    race,
+    otherRaces,
+    profile,
+    startDate: today,
+  });
+  if (!result.ok) {
+    return {
+      ok: false,
+      code: result.code,
+      requestId: result.requestId,
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * Phase 2.5.1: client-driven phase loop. Runs ONE phase per call,
  * then returns the updated job state so the caller can decide
  * whether to advance again. Idempotent — checks completed_phases
@@ -1188,6 +1249,12 @@ export async function advanceJob(jobId: number): Promise<
       ok: true;
       status: "pending" | "complete";
       completedPhases: GenerationPhase[];
+      // Phase 2.5.2: returned alongside completedPhases so
+      // GeneratingPhaseState can skip the extra
+      // getGenerationJobStatus refetch per phase. Reflects the
+      // total workouts accumulated across all phases that have
+      // landed (NOT just this phase's contribution).
+      workoutCount: number;
       previewId: number | null;
     }
   | (PlanGenFailure & { jobId: number })
@@ -1213,6 +1280,17 @@ export async function advanceJob(jobId: number): Promise<
       jobId,
     };
   }
+  // Kicking-off jobs haven't received their meta-plan yet — the
+  // client should call runMetaPlanForJob first. Surface a typed
+  // failure rather than try to run a phase against an empty meta.
+  if (job.status === "kicking-off") {
+    return {
+      ok: false,
+      code: "unknown",
+      requestId: makeRequestId(),
+      jobId,
+    };
+  }
   // Reject if the job is in a terminal state. The client shouldn't
   // be calling advanceJob on a complete/cancelled job — but if it
   // does (e.g. stale tab, double-fire), we surface a typed failure
@@ -1222,6 +1300,9 @@ export async function advanceJob(jobId: number): Promise<
       ok: true,
       status: "complete",
       completedPhases: job.completed_phases,
+      workoutCount: Array.isArray(job.partial_workouts)
+        ? job.partial_workouts.length
+        : 0,
       previewId: job.preview_id,
     };
   }
@@ -1301,6 +1382,7 @@ export async function advanceJob(jobId: number): Promise<
       ok: true,
       status: "pending",
       completedPhases: phaseResult.completedPhases,
+      workoutCount: phaseResult.workouts.length,
       previewId: null,
     };
   }
@@ -1339,6 +1421,9 @@ export async function advanceJob(jobId: number): Promise<
     ok: true,
     status: "complete",
     completedPhases: job.completed_phases,
+    workoutCount: Array.isArray(job.partial_workouts)
+      ? job.partial_workouts.length
+      : 0,
     previewId: finalize.previewId,
   };
 }

@@ -70,7 +70,7 @@ export interface PhaseGenerationResult {
  */
 export interface JobStatusSnapshot {
   jobId: number;
-  status: "pending" | "complete" | "failed" | "cancelled";
+  status: "kicking-off" | "pending" | "complete" | "failed" | "cancelled";
   trigger: "wizard" | "regen";
   metaPlan: MetaPlan;
   completedPhases: GenerationPhase[];

@@ -1,25 +1,33 @@
 "use client";
 
-// Phase 2.5.1 progress UI. **Drives** the per-phase advance loop
-// client-side via sequential `advanceJob` calls — the server actions
-// stayed synchronous in Phase 2.5 which meant `previewPlan` /
-// `submitWizard` blocked for the full ~4 minutes and this component
-// never got a jobId to render against. Now the server returns after
-// the fast meta-plan kickoff (~15s); this component takes the jobId
-// and runs the loop, re-rendering progress between each phase call.
+// Phase 2.5.1 + 2.5.2 progress UI. Drives the per-phase advance loop
+// client-side via sequential `advanceJob` calls. As of Phase 2.5.2:
 //
-// Outcome routing is owned by the caller — when the loop completes,
-// the parent decides where to send the user (DoneState on wizard,
-// /regen?preview=<id> on regen). On failure, the parent renders the
-// branded error UX.
+// 1. Handles a new `kicking-off` job status (server returns the
+//    jobId in ~50ms before the meta-plan call runs — this component
+//    fires runMetaPlanForJob on mount and renders a pre-meta UI
+//    variant while it waits).
+// 2. Skips the per-phase getGenerationJobStatus refetch — advanceJob
+//    now returns workoutCount inline so we compose the next snapshot
+//    locally instead of round-tripping the DB.
+// 3. Rotating phase-flavour text under the active phase, fading on a
+//    ~3s cycle. Mirrors the legacy GeneratingState's vert-fade-rotate
+//    pattern.
+// 4. Prominent center-bottom timer with pulsing colon paired with
+//    honest "usually 3–5 minutes" copy.
+//
+// Outcome routing is owned by the caller — onComplete and onFailed
+// callbacks fire exactly once when the loop reaches a terminal state.
 
 import { useEffect, useRef, useState } from "react";
 import {
   advanceJob,
   getGenerationJobStatus,
+  runMetaPlanForJob,
 } from "@/app/actions";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { VertLogo } from "@/app/_components/today/icons";
+import { PHASE_COPY, PHASE_FLAVOUR } from "@/lib/phase-flavour";
 import type {
   GenerationPhase,
   JobStatusSnapshot,
@@ -36,31 +44,6 @@ interface Props {
   onFailed: (snapshot: JobStatusSnapshot) => void;
 }
 
-// Per-phase status copy. Mirrors the methodology in the system prompt
-// + Ben's "Building base / Building build / Building peak / Building
-// taper" framing from the design session.
-const PHASE_COPY: Record<
-  GenerationPhase,
-  { eyebrow: string; tagline: string }
-> = {
-  base: {
-    eyebrow: "BASE PHASE",
-    tagline: "Building the aerobic foundation.",
-  },
-  build: {
-    eyebrow: "BUILD PHASE",
-    tagline: "Adding race-specific intensity.",
-  },
-  peak: {
-    eyebrow: "PEAK PHASE",
-    tagline: "Sharpening the engine.",
-  },
-  taper: {
-    eyebrow: "TAPER PHASE",
-    tagline: "Locking in fitness, shedding fatigue.",
-  },
-};
-
 export function GeneratingPhaseState({
   jobId,
   onComplete,
@@ -68,10 +51,6 @@ export function GeneratingPhaseState({
 }: Props) {
   const [snapshot, setSnapshot] = useState<JobStatusSnapshot | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
-  // Terminal handlers are stored in a ref so the advance loop's
-  // effect doesn't re-fire when the parent passes new function
-  // identities. The component fires each handler at most once per
-  // mount (terminalFired flag in the effect).
   const onCompleteRef = useRef(onComplete);
   const onFailedRef = useRef(onFailed);
   useEffect(() => {
@@ -81,9 +60,9 @@ export function GeneratingPhaseState({
     onFailedRef.current = onFailed;
   }, [onFailed]);
 
-  // The advance loop. Drives one phase per iteration; exits when
-  // status flips to "complete" or "failed" or the component unmounts.
-  // Sequential — each advanceJob awaits the previous one.
+  // Lifecycle: sync state → if kicking-off, fire runMetaPlanForJob →
+  // then loop advanceJob until terminal. Each step short-circuits if
+  // cancelled (component unmounted) or already-fired (terminal).
   useEffect(() => {
     let cancelled = false;
     let terminalFired = false;
@@ -101,13 +80,12 @@ export function GeneratingPhaseState({
     };
 
     async function loop() {
-      // Sync to current state — covers resume cases where the user
-      // refreshed mid-pipeline. The job row already has whatever
-      // phases landed before; the loop picks up at the next pending.
-      const initial = await getGenerationJobStatus(jobId);
+      // Sync to current state — covers Phase 2.5.2 kicking-off case
+      // (we just precreated the job and need to fire the meta-plan)
+      // plus resume cases where the user refreshed mid-pipeline.
+      let initial = await getGenerationJobStatus(jobId);
       if (cancelled) return;
       if (!initial) {
-        // Job not found / cross-user → treat as unknown failure.
         fireFailed({
           jobId,
           status: "failed",
@@ -130,16 +108,65 @@ export function GeneratingPhaseState({
         fireFailed(initial);
         return;
       }
+      // Phase 2.5.2: fire the meta-plan call if it hasn't run yet.
+      // runMetaPlanForJob is idempotent — safe under StrictMode
+      // double-mount or remount-then-resume.
+      if (initial.status === "kicking-off") {
+        const meta = await runMetaPlanForJob(jobId);
+        if (cancelled) return;
+        if (!meta.ok) {
+          const latest = await getGenerationJobStatus(jobId);
+          if (cancelled) return;
+          fireFailed(
+            latest ?? {
+              jobId,
+              status: "failed",
+              trigger: initial.trigger,
+              metaPlan: { meta_summary: "", phases: [] },
+              completedPhases: [],
+              workoutCount: 0,
+              previewId: null,
+              failureCode: meta.code,
+              failurePhase: "meta",
+            },
+          );
+          return;
+        }
+        // Re-sync so we have the meta_plan + flipped status before
+        // starting the advance loop. Single refetch — the advance
+        // loop below avoids them per-phase via the workoutCount the
+        // action returns.
+        const refreshed = await getGenerationJobStatus(jobId);
+        if (cancelled) return;
+        if (!refreshed) {
+          fireFailed({
+            jobId,
+            status: "failed",
+            trigger: initial.trigger,
+            metaPlan: { meta_summary: "", phases: [] },
+            completedPhases: [],
+            workoutCount: 0,
+            previewId: null,
+            failureCode: "unknown",
+            failurePhase: null,
+          });
+          return;
+        }
+        setSnapshot(refreshed);
+        initial = refreshed;
+      }
 
-      // Run phases until terminal. Each advanceJob lands one phase
-      // (or the finalize step) and returns the updated state.
+      // Run phases sequentially until terminal. We compose the next
+      // snapshot locally from advanceJob's return so we don't
+      // round-trip the DB per phase (Phase 2.5.2 optimization).
+      let working: JobStatusSnapshot = initial;
       while (!cancelled) {
         const result = await advanceJob(jobId);
         if (cancelled) return;
         if (!result.ok) {
-          // Build a synthetic snapshot so the caller's onFailed has
-          // enough data to render code-specific copy. The real job
-          // row was marked failed by runOnePhase / runFinalize.
+          // Refetch the row's authoritative failure state — the
+          // helpers already wrote failure_code + failure_phase on the
+          // row, so the UI's error copy can lean on that.
           const latest = await getGenerationJobStatus(jobId);
           if (cancelled) return;
           if (latest) setSnapshot(latest);
@@ -147,10 +174,10 @@ export function GeneratingPhaseState({
             latest ?? {
               jobId,
               status: "failed",
-              trigger: initial.trigger,
-              metaPlan: initial.metaPlan,
-              completedPhases: result.code === "unknown" ? [] : initial.completedPhases,
-              workoutCount: 0,
+              trigger: working.trigger,
+              metaPlan: working.metaPlan,
+              completedPhases: working.completedPhases,
+              workoutCount: working.workoutCount,
               previewId: null,
               failureCode: result.code,
               failurePhase: null,
@@ -158,26 +185,19 @@ export function GeneratingPhaseState({
           );
           return;
         }
-        // Update snapshot with the latest completed phases + previewId.
-        // Refetch the full snapshot so the UI gets workoutCount + any
-        // server-side field deltas we don't return in advanceJob.
-        const refreshed = await getGenerationJobStatus(jobId);
-        if (cancelled) return;
-        if (refreshed) setSnapshot(refreshed);
+        // Compose the next snapshot from advanceJob's return data —
+        // no DB refetch per phase.
+        const next: JobStatusSnapshot = {
+          ...working,
+          status: result.status,
+          completedPhases: result.completedPhases,
+          workoutCount: result.workoutCount,
+          previewId: result.previewId,
+        };
+        setSnapshot(next);
+        working = next;
         if (result.status === "complete") {
-          fireComplete(
-            refreshed ?? {
-              jobId,
-              status: "complete",
-              trigger: initial.trigger,
-              metaPlan: initial.metaPlan,
-              completedPhases: result.completedPhases,
-              workoutCount: 0,
-              previewId: result.previewId,
-              failureCode: null,
-              failurePhase: null,
-            },
-          );
+          fireComplete(next);
           return;
         }
       }
@@ -195,12 +215,17 @@ export function GeneratingPhaseState({
     };
   }, [jobId]);
 
-  // Render before the first poll lands — show the atmospheric loader
-  // shell without phase detail. Same vibe as the legacy GeneratingState
-  // so the user doesn't see a flash of empty content.
+  // Two top-level render modes:
+  //   • kicking-off / no phases yet → "designing your training arc"
+  //     atmospheric panel (no phase rows). Bridges the ~8s gap
+  //     between precreate and meta-plan completion.
+  //   • normal → phase rows + active-phase rotating flavour text.
+  const isKickingOff =
+    !snapshot || snapshot.status === "kicking-off" || snapshot.metaPlan.phases.length === 0;
   const phases = snapshot?.metaPlan.phases ?? [];
   const completedSet = new Set(snapshot?.completedPhases ?? []);
   const activeIdx = phases.findIndex((p) => !completedSet.has(p.phase));
+  const activePhase = activeIdx >= 0 ? phases[activeIdx]?.phase : null;
 
   return (
     <div className="relative flex min-h-svh w-full flex-col overflow-hidden bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
@@ -225,53 +250,73 @@ export function GeneratingPhaseState({
         <div className="mb-7">
           <VertLogo size="lg" accent="#10b981" textColor="currentColor" />
         </div>
-        <div
-          className="font-mono text-[12px] font-semibold uppercase text-emerald-500"
-          style={{ letterSpacing: "0.22em" }}
-        >
-          — BUILDING YOUR PLAN
-        </div>
 
-        {phases.length === 0 ? (
-          // Pre-first-sync: show only the pulse dots so the screen
-          // doesn't look blank during the ~1s status read.
-          <div className="mt-8 flex gap-2">
-            {[0, 1, 2].map((i) => (
-              <span
-                key={i}
-                className="vert-pulse-dot inline-block h-2 w-2 rounded-full bg-emerald-500"
-                style={{ animationDelay: `${i * 0.25}s` }}
-              />
-            ))}
-          </div>
-        ) : (
-          <div className="mt-6 flex w-full max-w-[340px] flex-col gap-2">
-            {phases.map((p, i) => {
-              const isDone = completedSet.has(p.phase);
-              const isActive = i === activeIdx;
-              const copy = PHASE_COPY[p.phase];
-              return (
-                <PhaseLine
-                  key={p.phase}
-                  eyebrow={copy.eyebrow}
-                  tagline={copy.tagline}
-                  isDone={isDone}
-                  isActive={isActive}
+        {isKickingOff ? (
+          <>
+            <div
+              className="font-mono text-[12px] font-semibold uppercase text-emerald-500"
+              style={{ letterSpacing: "0.22em" }}
+            >
+              — DESIGNING YOUR TRAINING ARC
+            </div>
+            <p
+              className="mt-3 max-w-[300px] text-center font-mono text-[12px] text-zinc-500 dark:text-zinc-500"
+              style={{ letterSpacing: "0.02em" }}
+            >
+              Mapping the periodization phases for your race window.
+            </p>
+            <div className="mt-7 flex gap-2">
+              {[0, 1, 2].map((i) => (
+                <span
+                  key={i}
+                  className="vert-pulse-dot inline-block h-2 w-2 rounded-full bg-emerald-500"
+                  style={{ animationDelay: `${i * 0.25}s` }}
                 />
-              );
-            })}
-          </div>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div
+              className="font-mono text-[12px] font-semibold uppercase text-emerald-500"
+              style={{ letterSpacing: "0.22em" }}
+            >
+              — BUILDING YOUR PLAN
+            </div>
+            <div className="mt-6 flex w-full max-w-[340px] flex-col gap-2">
+              {phases.map((p, i) => {
+                const isDone = completedSet.has(p.phase);
+                const isActive = i === activeIdx;
+                const copy = PHASE_COPY[p.phase];
+                return (
+                  <PhaseLine
+                    key={p.phase}
+                    eyebrow={copy.eyebrow}
+                    tagline={copy.tagline}
+                    isDone={isDone}
+                    isActive={isActive}
+                  />
+                );
+              })}
+            </div>
+            {activePhase && (
+              <PhaseFlavourRotator phase={activePhase} />
+            )}
+          </>
         )}
 
-        {/* Elapsed timer — honest signal without a hard expectation.
-            Lives bottom-right so it doesn't compete visually with the
-            phase column. */}
-        <p
-          className="absolute bottom-9 right-9 font-mono text-[10px] uppercase text-zinc-400 dark:text-zinc-600"
-          style={{ letterSpacing: "0.18em" }}
+        {/* Center-bottom paired timer + honest copy. Pulsing colon
+            ticks once per second so the page never feels frozen. */}
+        <div
+          className="absolute bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap font-mono text-[13px] uppercase tracking-[0.16em] text-zinc-500 dark:text-zinc-500"
+          aria-live="polite"
         >
-          {formatElapsed(elapsedSec)}
-        </p>
+          <span className="text-zinc-700 dark:text-zinc-300">
+            {formatElapsedWithPulse(elapsedSec)}
+          </span>
+          <span className="mx-2 text-zinc-300 dark:text-zinc-700">·</span>
+          <span>usually 3–5 minutes</span>
+        </div>
       </div>
     </div>
   );
@@ -334,9 +379,66 @@ function PhaseLine({ eyebrow, tagline, isDone, isActive }: LineProps) {
   );
 }
 
-/** Formats an elapsed-seconds counter as `M:SS` (e.g. `1:43`). */
-function formatElapsed(totalSeconds: number): string {
+/**
+ * Rotating five-line flavour text per active phase. Crossfades on a
+ * ~3s cycle using the same animation pattern as the legacy
+ * `GeneratingState`. Keyed on `phase` so the rotation resets cleanly
+ * when the active phase advances.
+ */
+function PhaseFlavourRotator({ phase }: { phase: GenerationPhase }) {
+  const lines = PHASE_FLAVOUR[phase];
+  return (
+    <div
+      key={phase}
+      className="relative mt-4 h-[18px] w-full max-w-[340px]"
+      aria-live="polite"
+    >
+      {lines.map((line, i) => (
+        <div
+          key={i}
+          className="vert-fade-rotate absolute inset-0 flex items-center justify-center text-center font-mono text-[11.5px] text-zinc-500 dark:text-zinc-500"
+          style={{
+            letterSpacing: "0.02em",
+            animationDelay: `${i * 3}s`,
+            animationDuration: `${lines.length * 3}s`,
+          }}
+        >
+          {line}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Returns the `M:SS` elapsed timer with a per-second pulsing colon.
+ * Even seconds show `:`; odd seconds show ` ` (a non-breaking
+ * full-width-equivalent). The colon's perceived blink confirms the
+ * page is alive — no JS animation needed beyond the existing tick.
+ */
+function formatElapsedWithPulse(totalSeconds: number): React.ReactNode {
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+  const colonVisible = totalSeconds % 2 === 0;
+  return (
+    <>
+      {m}
+      <span
+        aria-hidden
+        style={{
+          // Reserve the colon's width on the off-tick so the timer
+          // doesn't shift horizontally.
+          display: "inline-block",
+          width: "0.32em",
+          textAlign: "center",
+          opacity: colonVisible ? 1 : 0.25,
+          transition: "opacity 0.18s linear",
+        }}
+      >
+        :
+      </span>
+      {s.toString().padStart(2, "0")}
+      <span className="ml-1.5 text-zinc-400 dark:text-zinc-600">elapsed</span>
+    </>
+  );
 }

@@ -83,4 +83,35 @@ describe("buildPlanGenMetrics", () => {
     expect(m.retried).toBe(true);
     expect(m.workouts).toBe(0);
   });
+
+  it("Phase 2.5.2: forwards cache_read / cache_creation fields", () => {
+    const m = buildPlanGenMetrics({
+      tokensIn: 8200,
+      tokensOut: 1200,
+      cacheReadInputTokens: 7400, // big read = cache hit
+      cacheCreationInputTokens: 0,
+      durationMs: 11_000,
+      whys: [],
+      isWizard: false,
+      retried: false,
+    });
+    expect(m.cache_read_input_tokens).toBe(7400);
+    expect(m.cache_creation_input_tokens).toBe(0);
+  });
+
+  it("Phase 2.5.2: defaults missing cache fields to zero", () => {
+    // Legacy call sites that pre-date the cache instrumentation may
+    // not pass the fields. We default to zero so the [plan-gen-
+    // metrics] line stays parseable across deploy boundaries.
+    const m = buildPlanGenMetrics({
+      tokensIn: 1000,
+      tokensOut: 2000,
+      durationMs: 30_000,
+      whys: [],
+      isWizard: false,
+      retried: false,
+    });
+    expect(m.cache_read_input_tokens).toBe(0);
+    expect(m.cache_creation_input_tokens).toBe(0);
+  });
 });

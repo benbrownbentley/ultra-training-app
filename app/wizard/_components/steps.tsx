@@ -87,7 +87,7 @@ export function RaceFieldGroup({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="ELEVATION GAIN · OPTIONAL">
+      <FieldBlock label="ELEVATION GAIN">
         <SuffixField
           value={race.elevationGain != null ? String(race.elevationGain) : ""}
           onChange={(v) => set("elevationGain", v ? Number(v) : null)}
@@ -140,7 +140,7 @@ export function GoalFieldGroup({
       >
         — GOAL
       </span>
-      <FieldBlock label="TARGET FINISH TIME · OPTIONAL">
+      <FieldBlock label="TARGET FINISH TIME">
         <SuffixField
           value={race.targetTime}
           onChange={(v) => onChange({ ...race, targetTime: v })}
@@ -368,8 +368,8 @@ export function FitnessStepBody({
           disabled={disabled}
         />
         <HelperText>
-          How many hours you&apos;re currently training each week, on
-          average.
+          Total hours per week across everything you train — runs, gym,
+          mobility, cross-training.
         </HelperText>
       </FieldBlock>
       <FieldBlock label="LONGEST RUN · LAST MONTH">
@@ -387,7 +387,7 @@ export function FitnessStepBody({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="WHEN · OPTIONAL">
+      <FieldBlock label="WHEN">
         <DateField
           value={data.longestRunDate ?? ""}
           onChange={(v) => set("longestRunDate", v || null)}
@@ -460,7 +460,7 @@ export function ExperienceStepBody({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="RACE NAME · OPTIONAL">
+      <FieldBlock label="RACE NAME">
         <TextField
           value={data.longestRaceName}
           onChange={(v) => set("longestRaceName", v)}
@@ -468,7 +468,7 @@ export function ExperienceStepBody({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="DATE · OPTIONAL">
+      <FieldBlock label="DATE">
         <DateField
           value={data.longestRaceDate}
           onChange={(v) => set("longestRaceDate", v)}
@@ -499,7 +499,7 @@ export function AboutYouStepBody({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="BIOLOGICAL SEX · OPTIONAL">
+      <FieldBlock label="BIOLOGICAL SEX">
         <Segmented
           options={SEX_OPTS}
           value={data.sex || null}
@@ -507,7 +507,7 @@ export function AboutYouStepBody({
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="BODY WEIGHT · OPTIONAL">
+      <FieldBlock label="BODY WEIGHT">
         <SuffixField
           value={data.bodyWeight != null ? String(data.bodyWeight) : ""}
           onChange={(v) => set("bodyWeight", v ? Number(v) : null)}
@@ -545,7 +545,7 @@ export function HealthStepBody({
           vulnerable.
         </HelperText>
       </FieldBlock>
-      <FieldBlock label="CHRONIC CONDITIONS · OPTIONAL">
+      <FieldBlock label="CHRONIC CONDITIONS">
         <TextareaField
           value={data.chronicConditions}
           onChange={(v) => set("chronicConditions", v)}
@@ -619,7 +619,8 @@ export function ScheduleStepBody({
           disabled={disabled}
         />
         <HelperText>
-          How much you can dedicate to training going forward.
+          Total hours per week you can commit going forward — runs, gym,
+          mobility, cross-training.
         </HelperText>
       </FieldBlock>
       <FieldBlock label="TYPICAL TRAINING DAYS · multi-select">

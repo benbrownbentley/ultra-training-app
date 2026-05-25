@@ -26,7 +26,7 @@ const TRAIN_DAYS = ["M", "Tu", "W", "Th", "F", "Sa", "Su"];
 // mark any day they're flexible about. Multi-select.
 const LONG_DAY_OPTS = TRAIN_DAYS;
 const QUALITY_DAY_OPTS = TRAIN_DAYS;
-const STRENGTH_FREQ_OPTS = ["None", "1×", "2×", "3×"];
+const STRENGTH_FREQ_OPTS = ["None", "1×", "2×", "3×", "4×", "5×"];
 const TIME_OF_DAY_OPTS = ["Morning", "Lunch", "Evening", "No preference"];
 const JOB_OPTS = ["Sedentary office", "Standing", "Physical", "Shift work"];
 const GYM_OPTS: GymAccess[] = ["full", "limited", "none"];

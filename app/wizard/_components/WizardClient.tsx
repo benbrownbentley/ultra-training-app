@@ -275,6 +275,9 @@ function StepWrapper({
   let canAdvance = true;
   let onSkip: (() => void) | undefined = undefined;
 
+  // Convention: any step with no required fields offers SKIP FOR NOW.
+  // Steps with required fields (races: race name/date/distance; about:
+  // age) keep Continue-only so users can't accidentally bypass them.
   if (stepId === "races") {
     eyebrow = "YOUR A RACE";
     title = "What are you training for?";
@@ -287,15 +290,17 @@ function StepWrapper({
     eyebrow = "FITNESS";
     title = "Where are you starting from?";
     body = <FitnessStepBody data={data} set={set} disabled={busy} />;
+    onSkip = onAdvance;
   } else if (stepId === "experience") {
     eyebrow = "EXPERIENCE";
     title = "What have you done?";
     body = <ExperienceStepBody data={data} set={set} disabled={busy} />;
+    onSkip = onAdvance;
   } else if (stepId === "about") {
     eyebrow = "ABOUT YOU";
     title = "A few details about you.";
     helper =
-      "All optional except age. Used for plan personalization and fueling recommendations.";
+      "Used for plan personalization and fueling recommendations.";
     body = <AboutYouStepBody data={data} set={set} disabled={busy} />;
     canAdvance = data.age != null && data.age > 0;
   } else if (stepId === "health") {
@@ -307,10 +312,12 @@ function StepWrapper({
     eyebrow = "SCHEDULE";
     title = "When do you train?";
     body = <ScheduleStepBody data={data} set={set} disabled={busy} />;
+    onSkip = onAdvance;
   } else if (stepId === "equipment") {
     eyebrow = "EQUIPMENT";
     title = "What do you have access to?";
     body = <EquipmentStepBody data={data} set={set} disabled={busy} />;
+    onSkip = onAdvance;
   }
 
   return (
@@ -394,7 +401,7 @@ function RacesStepBody({
           className="font-mono text-[10px] uppercase text-zinc-500"
           style={{ letterSpacing: "0.2em" }}
         >
-          — OTHER RACES · OPTIONAL
+          — OTHER RACES
         </span>
         <HelperText>
           B races are tune-ups you race hard but don&apos;t peak for. C races

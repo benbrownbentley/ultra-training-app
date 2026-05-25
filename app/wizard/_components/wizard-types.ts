@@ -22,7 +22,7 @@ export const TRAIN_DAYS = ["M", "Tu", "W", "Th", "F", "Sa", "Su"] as const;
 // can flag any day they're flexible about. Multi-select.
 export const LONG_DAY_OPTS = TRAIN_DAYS;
 export const QUALITY_DAY_OPTS = TRAIN_DAYS;
-export const STRENGTH_FREQ_OPTS = ["None", "1×", "2×", "3×"] as const;
+export const STRENGTH_FREQ_OPTS = ["None", "1×", "2×", "3×", "4×", "5×"] as const;
 export const GYM_OPTS = ["full", "limited", "none"] as const;
 export const GYM_LABELS: Record<(typeof GYM_OPTS)[number], string> = {
   full: "Full",

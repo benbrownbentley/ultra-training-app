@@ -428,13 +428,13 @@ function RacesStepBody({
               type="button"
               onClick={() => startAdd("B")}
               disabled={disabled}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-[10px] border border-dashed border-zinc-200 px-3.5 py-3 text-[13px] font-medium text-zinc-950 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50"
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-[10px] border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-[13px] font-semibold text-emerald-900 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-500/35 dark:bg-emerald-500/[0.08] dark:text-emerald-200 dark:hover:border-emerald-500/55 dark:hover:bg-emerald-500/[0.14]"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
                 <path
                   d="M12 5v14M5 12h14"
-                  stroke="#10b981"
-                  strokeWidth="2"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
                   strokeLinecap="round"
                 />
               </svg>
@@ -444,13 +444,13 @@ function RacesStepBody({
               type="button"
               onClick={() => startAdd("C")}
               disabled={disabled}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-[10px] border border-dashed border-zinc-200 px-3.5 py-3 text-[13px] font-medium text-zinc-950 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50"
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-[10px] border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-[13px] font-semibold text-emerald-900 transition hover:border-emerald-300 hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-500/35 dark:bg-emerald-500/[0.08] dark:text-emerald-200 dark:hover:border-emerald-500/55 dark:hover:bg-emerald-500/[0.14]"
             >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
                 <path
                   d="M12 5v14M5 12h14"
-                  stroke="#10b981"
-                  strokeWidth="2"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
                   strokeLinecap="round"
                 />
               </svg>

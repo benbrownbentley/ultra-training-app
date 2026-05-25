@@ -119,7 +119,9 @@ export function SuffixField({
         placeholder={placeholder}
         className="flex-1 bg-transparent text-[14px] text-zinc-950 placeholder:text-zinc-400 focus:outline-none disabled:opacity-60 dark:text-zinc-50"
       />
-      <span className="font-mono text-[11px] text-zinc-500">{suffix}</span>
+      <span className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+        {suffix}
+      </span>
     </div>
   );
 }

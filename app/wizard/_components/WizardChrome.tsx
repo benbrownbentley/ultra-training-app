@@ -43,7 +43,7 @@ export function WizardChrome({
           style={{ width: `${pct}%` }}
         />
       </div>
-      <div className="flex items-center justify-between px-4 pt-2.5 pb-1 sm:px-5">
+      <div className="mx-auto flex w-full max-w-[640px] items-center justify-between px-4 pt-2.5 pb-1 sm:px-5">
         <span
           className="font-mono text-[10px] font-semibold uppercase text-zinc-500"
           style={{ letterSpacing: "0.2em" }}
@@ -60,60 +60,64 @@ export function WizardChrome({
         </button>
       </div>
 
-      <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pt-3.5 pb-3 sm:px-5">
-        <div>
-          <div
-            className="font-mono text-[11px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"
-            style={{ letterSpacing: "0.2em" }}
-          >
-            — {eyebrow}
+      <div className="flex flex-1 flex-col overflow-y-auto px-4 pt-3.5 pb-3 sm:px-5">
+        <div className="mx-auto flex w-full max-w-[640px] flex-col gap-4">
+          <div>
+            <div
+              className="font-mono text-[11px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"
+              style={{ letterSpacing: "0.2em" }}
+            >
+              — {eyebrow}
+            </div>
+            <h1
+              className="m-0 mt-1 text-[28px] font-medium leading-tight text-zinc-950 dark:text-zinc-50"
+              style={{ letterSpacing: "-0.02em" }}
+            >
+              {title}
+            </h1>
+            {helper && (
+              <p className="m-0 mt-2 text-[13.5px] leading-snug text-zinc-600 dark:text-zinc-400">
+                {helper}
+              </p>
+            )}
           </div>
-          <h1
-            className="m-0 mt-1 text-[28px] font-medium leading-tight text-zinc-950 dark:text-zinc-50"
-            style={{ letterSpacing: "-0.02em" }}
-          >
-            {title}
-          </h1>
-          {helper && (
-            <p className="m-0 mt-2 text-[13.5px] leading-snug text-zinc-600 dark:text-zinc-400">
-              {helper}
-            </p>
-          )}
+          {children}
         </div>
-        {children}
       </div>
 
-      <div className="flex items-center justify-between gap-3 border-t border-zinc-200 px-4 pt-3 pb-[max(env(safe-area-inset-bottom),18px)] sm:px-5 sm:pb-5 dark:border-zinc-800">
-        <button
-          type="button"
-          onClick={onBack}
-          disabled={!onBack || busy}
-          className="bg-transparent font-mono text-[11px] font-medium uppercase text-zinc-500 hover:text-zinc-900 disabled:opacity-30 dark:hover:text-zinc-50"
-          style={{ letterSpacing: "0.16em" }}
-        >
-          ← BACK
-        </button>
-        <div className="flex items-center gap-3.5">
-          {onSkip && (
-            <button
-              type="button"
-              onClick={onSkip}
-              disabled={busy}
-              className="bg-transparent font-mono text-[11px] font-medium uppercase text-zinc-500 hover:text-zinc-900 disabled:opacity-50 dark:hover:text-zinc-50"
-              style={{ letterSpacing: "0.16em" }}
-            >
-              SKIP FOR NOW →
-            </button>
-          )}
+      <div className="border-t border-zinc-200 px-4 pt-3 pb-[max(env(safe-area-inset-bottom),18px)] sm:px-5 sm:pb-5 dark:border-zinc-800">
+        <div className="mx-auto flex w-full max-w-[640px] items-center justify-between gap-3">
           <button
             type="button"
-            onClick={onPrimary}
-            disabled={disabled || busy}
-            className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={onBack}
+            disabled={!onBack || busy}
+            className="bg-transparent font-mono text-[11px] font-medium uppercase text-zinc-500 hover:text-zinc-900 disabled:opacity-30 dark:hover:text-zinc-50"
+            style={{ letterSpacing: "0.16em" }}
           >
-            {busy ? "Working…" : primaryLabel}
-            {!busy && <ArrowRight color="#052e1f" size={16} />}
+            ← BACK
           </button>
+          <div className="flex items-center gap-3.5">
+            {onSkip && (
+              <button
+                type="button"
+                onClick={onSkip}
+                disabled={busy}
+                className="bg-transparent font-mono text-[11px] font-medium uppercase text-zinc-500 hover:text-zinc-900 disabled:opacity-50 dark:hover:text-zinc-50"
+                style={{ letterSpacing: "0.16em" }}
+              >
+                SKIP FOR NOW →
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onPrimary}
+              disabled={disabled || busy}
+              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {busy ? "Working…" : primaryLabel}
+              {!busy && <ArrowRight color="#052e1f" size={16} />}
+            </button>
+          </div>
         </div>
       </div>
     </div>

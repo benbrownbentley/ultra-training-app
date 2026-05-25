@@ -25,6 +25,10 @@ export function Chip({
 }: ChipProps) {
   const padding = size === "lg" ? "px-3.5 py-2" : "px-3 py-1.5";
   const fontSize = size === "lg" ? "text-[13.5px]" : "text-[12.5px]";
+  // For multi-select chips we reserve space for the check glyph in both
+  // active and inactive states so toggling a chip doesn't shift its
+  // siblings left/right. Inactive renders the same SVG slot with
+  // `visibility: hidden` so the box still occupies width.
   if (active) {
     return (
       <button
@@ -34,7 +38,13 @@ export function Chip({
         className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-emerald-500 bg-emerald-500 ${padding} ${fontSize} font-semibold text-emerald-950 transition active:scale-[0.97] disabled:opacity-50`}
       >
         {multi && (
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none">
+          <svg
+            width="11"
+            height="11"
+            viewBox="0 0 24 24"
+            fill="none"
+            aria-hidden="true"
+          >
             <path
               d="M5 12l5 5L20 7"
               stroke="#052e1f"
@@ -53,8 +63,20 @@ export function Chip({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`whitespace-nowrap rounded-full border border-zinc-200 bg-transparent ${padding} ${fontSize} font-medium text-zinc-950 transition active:scale-[0.97] hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border border-zinc-200 bg-transparent ${padding} ${fontSize} font-medium text-zinc-950 transition active:scale-[0.97] hover:border-zinc-300 disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-50 dark:hover:border-zinc-700`}
     >
+      {multi && (
+        <svg
+          width="11"
+          height="11"
+          viewBox="0 0 24 24"
+          fill="none"
+          aria-hidden="true"
+          className="invisible"
+        >
+          <path d="M5 12l5 5L20 7" />
+        </svg>
+      )}
       {children}
     </button>
   );

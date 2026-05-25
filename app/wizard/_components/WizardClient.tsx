@@ -4,6 +4,12 @@ import { useCallback, useState, useTransition } from "react";
 import { resumeGenerationJob, submitWizard } from "@/app/actions";
 import type { PlanGenErrorCode } from "@/lib/plan-gen-result";
 import type { JobStatusSnapshot } from "@/lib/plan-generation-types";
+import {
+  type AboutFieldKey,
+  type RaceFieldKey,
+  validateAboutStep,
+  validateRaceStep,
+} from "@/lib/wizard-validation";
 import { GeneratingPhaseState } from "@/app/_components/generating/GeneratingPhaseState";
 import { WelcomeStep } from "./WelcomeStep";
 import { WizardChrome } from "./WizardChrome";
@@ -246,6 +252,17 @@ export function WizardClient() {
   );
 }
 
+// Stable error-span id prefixes — read by both the field renderer (to
+// set the span's id) and by the StepWrapper (to point the Continue
+// button's aria-describedby at the first surfaced error). Using a
+// step-scoped prefix keeps the ids unique across re-renders.
+const RACE_ERROR_PREFIX = "wizard-races-error";
+const ABOUT_ERROR_PREFIX = "wizard-about-error";
+// Field-order arrays drive both "mark all touched on Continue click"
+// and the deterministic "first error" lookup for aria-describedby.
+const RACE_FIELDS: RaceFieldKey[] = ["name", "date", "distance"];
+const ABOUT_FIELDS: AboutFieldKey[] = ["age"];
+
 function StepWrapper({
   step,
   stepId,
@@ -268,11 +285,87 @@ function StepWrapper({
   const isLast = step === TOTAL_STEPS;
   const primaryLabel = isLast ? "Generate my plan" : "Continue";
 
+  // Touched-field tracking. Errors only surface for fields the user
+  // has interacted with (blur) or after a Continue-click that marks
+  // every required field touched at once. The render-time reset on
+  // stepId change follows the React docs pattern for "adjust state
+  // when a prop changes" — avoids the setState-in-effect cascade.
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [touchedStepId, setTouchedStepId] = useState<StepId>(stepId);
+  if (touchedStepId !== stepId) {
+    setTouchedStepId(stepId);
+    setTouched({});
+  }
+
+  const markTouched = useCallback((key: string) => {
+    setTouched((prev) => (prev[key] ? prev : { ...prev, [key]: true }));
+  }, []);
+  const markManyTouched = useCallback((keys: readonly string[]) => {
+    setTouched((prev) => {
+      const next = { ...prev };
+      for (const k of keys) next[k] = true;
+      return next;
+    });
+  }, []);
+
+  // Per-step validation. Steps without required fields return an empty
+  // map and can always advance.
+  const raceErrors: Partial<Record<RaceFieldKey, string>> =
+    stepId === "races" ? validateRaceStep(data.aRace) : {};
+  const aboutErrors: Partial<Record<AboutFieldKey, string>> =
+    stepId === "about" ? validateAboutStep(data) : {};
+
+  // Visible errors filter out untouched fields so a fresh form
+  // doesn't yell at the user before they've typed anything.
+  const visibleRaceErrors: Partial<Record<RaceFieldKey, string>> = {};
+  for (const k of RACE_FIELDS) {
+    const msg = raceErrors[k];
+    if (msg && touched[k]) visibleRaceErrors[k] = msg;
+  }
+  const visibleAboutErrors: Partial<Record<AboutFieldKey, string>> = {};
+  for (const k of ABOUT_FIELDS) {
+    const msg = aboutErrors[k];
+    if (msg && touched[k]) visibleAboutErrors[k] = msg;
+  }
+
+  const canAdvance =
+    stepId === "races"
+      ? Object.keys(raceErrors).length === 0
+      : stepId === "about"
+        ? Object.keys(aboutErrors).length === 0
+        : true;
+
+  // First surfaced error id — wired to the Continue button's
+  // aria-describedby so screen-reader users hear a reason. We compute
+  // this against the *current validation result*, not just visible
+  // errors, because the screen-reader cue is most useful right after
+  // the user clicks Continue (which marks everything touched anyway).
+  let firstErrorId: string | undefined;
+  if (stepId === "races") {
+    const k = RACE_FIELDS.find((f) => raceErrors[f]);
+    if (k) firstErrorId = `${RACE_ERROR_PREFIX}-${k}`;
+  } else if (stepId === "about") {
+    const k = ABOUT_FIELDS.find((f) => aboutErrors[f]);
+    if (k) firstErrorId = `${ABOUT_ERROR_PREFIX}-${k}`;
+  }
+
+  // Wrapped advance handler: if validation blocks, mark every required
+  // field touched (surfaces all errors at once) and bail. Otherwise
+  // delegate to the parent.
+  const onPrimary = useCallback(() => {
+    if (busy) return;
+    if (!canAdvance) {
+      if (stepId === "races") markManyTouched(RACE_FIELDS);
+      else if (stepId === "about") markManyTouched(ABOUT_FIELDS);
+      return;
+    }
+    onAdvance();
+  }, [busy, canAdvance, markManyTouched, onAdvance, stepId]);
+
   let title = "";
   let eyebrow = "";
   let helper: string | undefined = undefined;
   let body: React.ReactNode = null;
-  let canAdvance = true;
   let onSkip: (() => void) | undefined = undefined;
 
   // Convention: any step with no required fields offers SKIP FOR NOW.
@@ -281,11 +374,16 @@ function StepWrapper({
   if (stepId === "races") {
     eyebrow = "YOUR A RACE";
     title = "What are you training for?";
-    body = <RacesStepBody data={data} set={set} disabled={busy} />;
-    canAdvance =
-      data.aRace.name.trim().length > 0 &&
-      data.aRace.date.length > 0 &&
-      data.aRace.distance.trim().length > 0;
+    body = (
+      <RacesStepBody
+        data={data}
+        set={set}
+        disabled={busy}
+        errors={visibleRaceErrors}
+        onBlurField={markTouched}
+        errorIdPrefix={RACE_ERROR_PREFIX}
+      />
+    );
   } else if (stepId === "fitness") {
     eyebrow = "FITNESS";
     title = "Where are you starting from?";
@@ -301,8 +399,16 @@ function StepWrapper({
     title = "A few details about you.";
     helper =
       "Used for plan personalization and fueling recommendations.";
-    body = <AboutYouStepBody data={data} set={set} disabled={busy} />;
-    canAdvance = data.age != null && data.age > 0;
+    body = (
+      <AboutYouStepBody
+        data={data}
+        set={set}
+        disabled={busy}
+        errors={visibleAboutErrors}
+        onBlurField={(k) => markTouched(k)}
+        errorIdPrefix={ABOUT_ERROR_PREFIX}
+      />
+    );
   } else if (stepId === "health") {
     eyebrow = "HEALTH";
     title = "Anything we should know?";
@@ -327,12 +433,13 @@ function StepWrapper({
       eyebrow={eyebrow}
       title={title}
       helper={helper}
-      onPrimary={onAdvance}
+      onPrimary={onPrimary}
       onBack={onBack}
       onSkip={onSkip}
       primaryLabel={primaryLabel}
       disabled={!canAdvance}
       busy={busy}
+      errorDescribedById={firstErrorId}
     >
       {body}
       {error && (
@@ -349,10 +456,16 @@ function RacesStepBody({
   data,
   set,
   disabled,
+  errors,
+  onBlurField,
+  errorIdPrefix,
 }: {
   data: WizardPayload;
   set: <K extends keyof WizardPayload>(k: K, v: WizardPayload[K]) => void;
   disabled: boolean;
+  errors?: Partial<Record<RaceFieldKey, string>>;
+  onBlurField?: (key: RaceFieldKey) => void;
+  errorIdPrefix?: string;
 }) {
   const [addingRace, setAddingRace] = useState<WizardRaceInput | null>(null);
 
@@ -388,6 +501,9 @@ function RacesStepBody({
         race={data.aRace}
         onChange={(v) => set("aRace", v)}
         disabled={disabled}
+        errors={errors}
+        onBlurField={onBlurField}
+        errorIdPrefix={errorIdPrefix}
       />
       <div className="h-px bg-zinc-200 dark:bg-zinc-800" />
       <GoalFieldGroup

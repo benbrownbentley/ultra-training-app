@@ -13,8 +13,18 @@ interface Props {
   onPrimary: () => void;
   onBack?: () => void;
   onSkip?: () => void;
+  // "Looks-and-feels disabled" — visual treatment + aria-disabled, but
+  // the click handler still fires so the caller can surface inline
+  // validation errors when the user tries to advance. Use `busy` when
+  // you need a hard HTML-disabled state (e.g. mid-submit) that
+  // prevents the click entirely.
   disabled?: boolean;
   busy?: boolean;
+  // Wires `aria-describedby` on the primary button to an inline error
+  // span — typically the first failing field's error message — so
+  // screen-reader users hear a reason when they land on the disabled
+  // Continue button.
+  errorDescribedById?: string;
 }
 
 // Standard wizard step shell: progress bar + STEP X OF Y row + body +
@@ -33,6 +43,7 @@ export function WizardChrome({
   onSkip,
   disabled,
   busy,
+  errorDescribedById,
 }: Props) {
   const pct = (step / totalSteps) * 100;
   return (
@@ -111,8 +122,16 @@ export function WizardChrome({
             <button
               type="button"
               onClick={onPrimary}
-              disabled={disabled || busy}
-              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+              // `busy` is the only state that hard-disables the button:
+              // we want to swallow clicks during submit. When
+              // `disabled` is true for a validation reason, the button
+              // keeps its visual disabled look (via aria-disabled +
+              // matching styles) but the click still fires so the
+              // caller can surface inline errors.
+              disabled={busy}
+              aria-disabled={disabled || busy}
+              aria-describedby={errorDescribedById}
+              className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60 aria-disabled:cursor-not-allowed aria-disabled:opacity-60 aria-disabled:hover:bg-emerald-500"
             >
               {busy ? "Working…" : primaryLabel}
               {!busy && <ArrowRight color="#052e1f" size={16} />}

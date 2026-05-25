@@ -8,6 +8,7 @@ import {
   FieldStack,
   FormSectionLabel,
   HelperText,
+  ProminentRangeField,
   RangeField,
   Segmented,
   SuffixField,
@@ -36,16 +37,26 @@ import {
 
 // Single-race form (A race). The B/C inline-add and saved-card flow live
 // just below to keep the family in one file.
+//
+// `errors` + `onBlurField` are optional so the B/C InlineRaceForm — which
+// has its own Save-button gating — can render the same body without
+// surfacing the main step's validation messages.
 export function RaceFieldGroup({
   race,
   onChange,
   eyebrow = "A RACE",
   disabled,
+  errors,
+  onBlurField,
+  errorIdPrefix,
 }: {
   race: WizardRaceInput;
   onChange: (race: WizardRaceInput) => void;
   eyebrow?: string;
   disabled?: boolean;
+  errors?: Partial<Record<"name" | "date" | "distance", string>>;
+  onBlurField?: (key: "name" | "date" | "distance") => void;
+  errorIdPrefix?: string;
 }) {
   function set<K extends keyof WizardRaceInput>(
     key: K,
@@ -62,25 +73,43 @@ export function RaceFieldGroup({
       >
         — {eyebrow}
       </span>
-      <FieldBlock label="RACE NAME" required>
+      <FieldBlock
+        label="RACE NAME"
+        required
+        error={errors?.name}
+        errorId={errorIdPrefix ? `${errorIdPrefix}-name` : undefined}
+      >
         <TextField
           value={race.name}
           onChange={(v) => set("name", v)}
+          onBlur={onBlurField ? () => onBlurField("name") : undefined}
           placeholder="e.g. Ultra-Trail du Mont-Blanc"
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="RACE DATE" required>
+      <FieldBlock
+        label="RACE DATE"
+        required
+        error={errors?.date}
+        errorId={errorIdPrefix ? `${errorIdPrefix}-date` : undefined}
+      >
         <DateField
           value={race.date}
           onChange={(v) => set("date", v)}
+          onBlur={onBlurField ? () => onBlurField("date") : undefined}
           disabled={disabled}
         />
       </FieldBlock>
-      <FieldBlock label="DISTANCE" required>
+      <FieldBlock
+        label="DISTANCE"
+        required
+        error={errors?.distance}
+        errorId={errorIdPrefix ? `${errorIdPrefix}-distance` : undefined}
+      >
         <SuffixField
           value={race.distance}
           onChange={(v) => set("distance", v)}
+          onBlur={onBlurField ? () => onBlurField("distance") : undefined}
           suffix="km"
           placeholder="—"
           numeric
@@ -334,16 +363,38 @@ export function FitnessStepBody({
 }) {
   return (
     <FieldStack>
-      <FieldBlock label="SELF-RATED FITNESS · 1 STARTING — 5 COMPETITIVE">
-        <RangeField
+      {/* SELF-RATED FITNESS gets a high-prominence treatment — the
+          smoke-test cohort kept scrolling past it because the default
+          mono 10px label read as a divider rather than a control.
+          Bigger eyebrow + bigger slider + step captions + larger
+          readout. The data shape stays a 1–5 integer; only the
+          rendering changes. */}
+      <section className="flex flex-col gap-3 pb-2">
+        <div>
+          <span
+            className="block font-mono text-[13px] font-semibold uppercase text-emerald-700 dark:text-emerald-400"
+            style={{ letterSpacing: "0.22em" }}
+          >
+            — SELF-RATED FITNESS
+          </span>
+          <span
+            className="mt-1 block font-mono text-[10.5px] uppercase text-zinc-500 dark:text-zinc-500"
+            style={{ letterSpacing: "0.18em" }}
+          >
+            1 starting — 5 competitive
+          </span>
+        </div>
+        <ProminentRangeField
           value={data.fitnessRating}
           onChange={(v) => set("fitnessRating", v)}
+          labels={FITNESS_LABELS}
           disabled={disabled}
+          ariaLabel="Self-rated fitness, 1 starting to 5 competitive"
         />
-        <span className="font-mono text-[12px] text-emerald-700 dark:text-emerald-400">
+        <span className="text-[15px] font-medium text-emerald-700 dark:text-emerald-400">
           {data.fitnessRating} · {FITNESS_LABELS[data.fitnessRating - 1]}
         </span>
-      </FieldBlock>
+      </section>
       <FieldBlock label="CURRENT WEEKLY VOLUME">
         <SuffixField
           value={data.weeklyVolumeKm != null ? String(data.weeklyVolumeKm) : ""}
@@ -483,17 +534,29 @@ export function AboutYouStepBody({
   data,
   set,
   disabled,
+  errors,
+  onBlurField,
+  errorIdPrefix,
 }: {
   data: WizardPayload;
   set: <K extends keyof WizardPayload>(k: K, v: WizardPayload[K]) => void;
   disabled?: boolean;
+  errors?: Partial<Record<"age", string>>;
+  onBlurField?: (key: "age") => void;
+  errorIdPrefix?: string;
 }) {
   return (
     <FieldStack>
-      <FieldBlock label="AGE" required>
+      <FieldBlock
+        label="AGE"
+        required
+        error={errors?.age}
+        errorId={errorIdPrefix ? `${errorIdPrefix}-age` : undefined}
+      >
         <SuffixField
           value={data.age != null ? String(data.age) : ""}
           onChange={(v) => set("age", v ? Number(v) : null)}
+          onBlur={onBlurField ? () => onBlurField("age") : undefined}
           suffix="yrs"
           numeric
           disabled={disabled}

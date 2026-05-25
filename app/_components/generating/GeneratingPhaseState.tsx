@@ -399,8 +399,13 @@ function PhaseFlavourRotator({ phase }: { phase: GenerationPhase }) {
           className="vert-fade-rotate absolute inset-0 flex items-center justify-center text-center font-mono text-[11.5px] text-zinc-500 dark:text-zinc-500"
           style={{
             letterSpacing: "0.02em",
-            animationDelay: `${i * 3}s`,
-            animationDuration: `${lines.length * 3}s`,
+            // 3.5s per line × N lines = full cycle. Each line is fully
+            // visible for ~3.5s (the keyframe's 12%-32% hold window),
+            // which gives the eye comfortable reading time before the
+            // crossfade kicks in. Bumped from 3s on 2026-05-22 after Ben
+            // flagged the previous timing as just too quick to land.
+            animationDelay: `${i * 3.5}s`,
+            animationDuration: `${lines.length * 3.5}s`,
           }}
         >
           {line}
@@ -426,11 +431,12 @@ function formatElapsedWithPulse(totalSeconds: number): React.ReactNode {
       <span
         aria-hidden
         style={{
-          // Reserve the colon's width on the off-tick so the timer
-          // doesn't shift horizontally.
-          display: "inline-block",
-          width: "0.32em",
-          textAlign: "center",
+          // No width / display / textAlign overrides — Geist Mono gives
+          // every glyph (including `:`) an identical fixed width, so
+          // the natural inline span keeps "1:43" tight without
+          // shifting the colon off-center. Earlier explicit width was
+          // narrower than the glyph and pushed the visible character
+          // to the right; removed on 2026-05-22.
           opacity: colonVisible ? 1 : 0.25,
           transition: "opacity 0.18s linear",
         }}

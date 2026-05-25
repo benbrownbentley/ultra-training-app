@@ -396,7 +396,7 @@ function PhaseFlavourRotator({ phase }: { phase: GenerationPhase }) {
       {lines.map((line, i) => (
         <div
           key={i}
-          className="vert-fade-rotate absolute inset-0 flex items-center justify-center text-center font-mono text-[11.5px] text-zinc-500 dark:text-zinc-500"
+          className="vert-fade-rotate-tight absolute inset-0 flex items-center justify-center text-center font-mono text-[11.5px] text-zinc-500 dark:text-zinc-500"
           style={{
             letterSpacing: "0.02em",
             // 3.5s per line × N lines = full cycle. Each line is fully
@@ -425,25 +425,28 @@ function formatElapsedWithPulse(totalSeconds: number): React.ReactNode {
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
   const colonVisible = totalSeconds % 2 === 0;
+  // Wrap the digits + colon in a span with explicit tracking:0 so the
+  // parent div's tracking-[0.16em] doesn't push the colon off-center
+  // relative to the digits. Only the trailing "elapsed" label needs
+  // wide tracking; the "M:SS" group reads tightest with normal
+  // mono-font spacing. Bug observed 2026-05-22: with parent tracking
+  // applied uniformly, the colon glyph (narrow horizontally vs. its
+  // em-box) drifted toward the seconds side.
   return (
     <>
-      {m}
-      <span
-        aria-hidden
-        style={{
-          // No width / display / textAlign overrides — Geist Mono gives
-          // every glyph (including `:`) an identical fixed width, so
-          // the natural inline span keeps "1:43" tight without
-          // shifting the colon off-center. Earlier explicit width was
-          // narrower than the glyph and pushed the visible character
-          // to the right; removed on 2026-05-22.
-          opacity: colonVisible ? 1 : 0.25,
-          transition: "opacity 0.18s linear",
-        }}
-      >
-        :
+      <span style={{ letterSpacing: "0em" }}>
+        {m}
+        <span
+          aria-hidden
+          style={{
+            opacity: colonVisible ? 1 : 0.25,
+            transition: "opacity 0.18s linear",
+          }}
+        >
+          :
+        </span>
+        {s.toString().padStart(2, "0")}
       </span>
-      {s.toString().padStart(2, "0")}
       <span className="ml-1.5 text-zinc-400 dark:text-zinc-600">elapsed</span>
     </>
   );

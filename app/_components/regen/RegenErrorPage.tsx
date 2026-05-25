@@ -32,7 +32,11 @@ export function RegenErrorPage({ code, requestId, jobId }: Props) {
       try {
         // Resume path — preserves the completed phases on the
         // existing job row. Only available on the chunked path
-        // (jobId is set).
+        // (jobId is set). Phase 2.5.2 hotfix: resumeGenerationJob
+        // now just flips status back to 'pending' and returns
+        // immediately — it does NOT run the orchestrator. The work
+        // happens on the next page (the GeneratingPhaseState
+        // component's advance loop picks up at the failed phase).
         if (jobId !== null) {
           const r = await resumeGenerationJob(jobId);
           if (!r.ok) {
@@ -41,15 +45,11 @@ export function RegenErrorPage({ code, requestId, jobId }: Props) {
             );
             return;
           }
-          // Success: the orchestrator finished the remaining phases.
-          // For regen runs we go to the diff view; wizard runs land
-          // here only when something unusual happened (the wizard
-          // owns its own state machine), so bounce home defensively.
-          if (r.trigger === "regen" && r.previewId) {
-            router.replace(`/regen?preview=${r.previewId}`);
-          } else {
-            router.replace("/");
-          }
+          // Route back to the chunked progress page. The advance
+          // loop's first iteration retries the failed phase; if it
+          // succeeds, the user lands on the preview diff naturally
+          // (via RegenJobPage's onComplete handler).
+          router.replace(`/regen?job=${jobId}`);
           return;
         }
         // Fresh-start retry path — legacy single-call OR a new

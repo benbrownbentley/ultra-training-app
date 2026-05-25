@@ -1662,8 +1662,21 @@ export interface GenerateMetaPlanArgs {
 export async function generateMetaPlan(
   args: GenerateMetaPlanArgs,
 ): Promise<MetaPlan> {
-  const firstMessage = await callMetaPlanOnce(args);
-  const firstResult = parseMetaPlanFromMessage(firstMessage);
+  // Phase 2.5.2 hotfix: same parse-retry pattern as generatePhase.
+  // If parse fails (Claude returned malformed tool args), retry with
+  // a fresh call before engaging the validation-failure retry path.
+  let firstMessage = await callMetaPlanOnce(args);
+  let firstResult;
+  try {
+    firstResult = parseMetaPlanFromMessage(firstMessage);
+  } catch (parseErr) {
+    console.warn(
+      "[generateMetaPlan] parse failed on first attempt — retrying once.",
+      parseErr,
+    );
+    firstMessage = await callMetaPlanOnce(args);
+    firstResult = parseMetaPlanFromMessage(firstMessage);
+  }
   const firstIssues = validateMetaPlan({
     metaPlan: firstResult.metaPlan,
     startDate: args.startDate,
@@ -1936,12 +1949,34 @@ export async function generatePhase(
   let cacheReadInputTokens = 0;
   let cacheCreationInputTokens = 0;
 
-  const firstMessage = await callPhaseOnce(args);
+  let firstMessage = await callPhaseOnce(args);
   inputTokens += firstMessage.usage.input_tokens;
   outputTokens += firstMessage.usage.output_tokens;
   cacheReadInputTokens += firstMessage.usage.cache_read_input_tokens ?? 0;
   cacheCreationInputTokens += firstMessage.usage.cache_creation_input_tokens ?? 0;
-  const firstResult = parsePlanFromMessage(firstMessage);
+  // Phase 2.5.2 hotfix: parse failures (Claude returned malformed
+  // tool args — e.g. no workouts array) used to throw immediately,
+  // bypassing the validation-failure retry path. That made the
+  // chunked pipeline fragile because each regen does ~5 Claude calls
+  // and any one of them returning a malformed tool call killed the
+  // whole thing. Now: retry the parse with a fresh call before
+  // engaging the normal validation flow. If parse ALSO fails on the
+  // retry, throw upward — orchestrator's error UX handles it.
+  let firstResult;
+  try {
+    firstResult = parsePlanFromMessage(firstMessage);
+  } catch (parseErr) {
+    console.warn(
+      `[generatePhase:${args.phase.phase}] parse failed on first attempt — retrying once.`,
+      parseErr,
+    );
+    firstMessage = await callPhaseOnce(args);
+    inputTokens += firstMessage.usage.input_tokens;
+    outputTokens += firstMessage.usage.output_tokens;
+    cacheReadInputTokens += firstMessage.usage.cache_read_input_tokens ?? 0;
+    cacheCreationInputTokens += firstMessage.usage.cache_creation_input_tokens ?? 0;
+    firstResult = parsePlanFromMessage(firstMessage);
+  }
   const firstIssues = validatePhaseChunk({
     workouts: firstResult.workouts,
     phaseStart: args.phase.weekStartIso,

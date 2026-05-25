@@ -171,6 +171,36 @@ body {
   opacity: 0;
 }
 
+/* Tighter variant for Phase 2.5.2's phase-aware flavour rotation.
+   The legacy vert-fade-rotate's 12/32/44 keyframe percentages produce
+   a ~2s crossfade where two adjacent lines render simultaneously —
+   fine for the wizard's brief 4-line × 2s use, too long for the
+   chunked path's 5-line × 3.5s rotation where the visible overlap
+   mashed lines into an unreadable blur (caught 2026-05-22 by Ben).
+   This variant uses 4/18/22 (fast fade in, full hold, fast fade out)
+   so there's essentially no overlap with adjacent lines. */
+@keyframes vert-fade-rotate-tight {
+  0% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  18% {
+    opacity: 1;
+  }
+  22% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+.vert-fade-rotate-tight {
+  animation: vert-fade-rotate-tight 8s infinite;
+  opacity: 0;
+}
+
 /* Hide the native number-input spinner arrows. Our numeric inputs live
    inside compact FieldRow atoms where the spinner overlaps the em-dash
    placeholder and reads as broken. We don't need them — users type

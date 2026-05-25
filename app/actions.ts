@@ -23,7 +23,6 @@ import {
   precreateGenerationJob as precreateGenerationJobHelper,
   reopenJobForResume,
   runFinalize,
-  runGenerationPipeline,
   runMetaPlanForJob as runMetaPlanForJobHelper,
   runOnePhase,
 } from "@/lib/plan-generation-orchestrator";
@@ -1442,21 +1441,19 @@ export async function resumeGenerationJob(jobId: number): Promise<
     }
   | PlanGenFailure
 > {
-  const today = getTodayISO();
   const { user } = await requireUser();
 
-  const [{ race, otherRaces, history }, profile, journal, previousSummary] =
-    await Promise.all([
-      getRaceAndHistory(today),
-      getAthleteProfile(),
-      listJournalEntries(),
-      getLatestAcceptedSummary(),
-    ]);
-  if (!race) throw new Error("No race configured.");
-  if (!profile) throw new Error("No athlete profile configured.");
-
-  // Load the job to recover its trigger value — the resume should
-  // route back to the same surface (wizard/done vs. regen/preview).
+  // Phase 2.5.2 hotfix: resume used to call runGenerationPipeline
+  // synchronously, which (a) blocked the action for the full ~4 min
+  // pipeline runtime — the same problem 2.5.1 fixed for kickoff but
+  // never applied to resume — and (b) on failure rebounded to the
+  // same error URL with router.replace, producing no visible UI
+  // change ("dead button"). Fix: just flip the job back to pending
+  // and return. The client-side advance loop in GeneratingPhaseState
+  // picks up at the failed phase via the existing /regen?job=<id>
+  // path, retrying it under the same per-phase UX as a fresh regen.
+  // No race/profile/history fetches needed here — advanceJob loads
+  // the pipeline context itself.
   const status = await getJobStatus(user.id, jobId);
   if (!status) {
     return {
@@ -1466,36 +1463,15 @@ export async function resumeGenerationJob(jobId: number): Promise<
     };
   }
 
-  const journalContext = journal.map((e) => ({
-    type: e.type,
-    entry_date: e.entry_date,
-    title: e.title,
-    body: e.body,
-    details_lines: formatJournalDetails(e),
-    consumed: e.consumed,
-  }));
-
-  const result = await runGenerationPipeline({
-    user,
-    race,
-    otherRaces,
-    profile,
-    startDate: today,
-    history,
-    journalEntries: journalContext,
-    notes: null,
-    previousSummary,
-    trigger: status.trigger,
-    resumeJobId: jobId,
-  });
-  if (!result.ok) {
-    return { ok: false, code: result.code, requestId: result.requestId };
-  }
+  await reopenJobForResume(user.id, jobId);
   if (status.trigger === "wizard") revalidatePath("/");
   return {
     ok: true,
-    jobId: result.jobId,
-    previewId: result.previewId,
+    jobId,
+    // previewId lands when the final advanceJob call commits — null
+    // here because resumption only flips the status; the work happens
+    // client-side via the advance loop.
+    previewId: null,
     trigger: status.trigger,
   };
 }

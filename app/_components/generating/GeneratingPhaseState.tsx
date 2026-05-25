@@ -416,37 +416,25 @@ function PhaseFlavourRotator({ phase }: { phase: GenerationPhase }) {
 }
 
 /**
- * Returns the `M:SS` elapsed timer with a per-second pulsing colon.
- * Even seconds show `:`; odd seconds show ` ` (a non-breaking
- * full-width-equivalent). The colon's perceived blink confirms the
- * page is alive — no JS animation needed beyond the existing tick.
+ * Returns the `M:SS elapsed` timer as a single tight text node + a
+ * spaced-out "elapsed" label.
+ *
+ * Earlier versions tried to pulse the colon by wrapping it in its own
+ * <span> with an opacity animation. That created two real problems:
+ * (1) the inner span's letter-spacing didn't reliably override the
+ *     parent's tracking, leaving a visible gap before the colon, and
+ * (2) it added rendering complexity for marginal value — the seconds
+ *     digit changing every second already gives a clear per-second
+ *     "alive" signal. So the pulse is dropped on 2026-05-22; the
+ *     timer renders as plain mono text.
  */
 function formatElapsedWithPulse(totalSeconds: number): React.ReactNode {
   const m = Math.floor(totalSeconds / 60);
   const s = totalSeconds % 60;
-  const colonVisible = totalSeconds % 2 === 0;
-  // Wrap the digits + colon in a span with explicit tracking:0 so the
-  // parent div's tracking-[0.16em] doesn't push the colon off-center
-  // relative to the digits. Only the trailing "elapsed" label needs
-  // wide tracking; the "M:SS" group reads tightest with normal
-  // mono-font spacing. Bug observed 2026-05-22: with parent tracking
-  // applied uniformly, the colon glyph (narrow horizontally vs. its
-  // em-box) drifted toward the seconds side.
+  const time = `${m}:${s.toString().padStart(2, "0")}`;
   return (
     <>
-      <span style={{ letterSpacing: "0em" }}>
-        {m}
-        <span
-          aria-hidden
-          style={{
-            opacity: colonVisible ? 1 : 0.25,
-            transition: "opacity 0.18s linear",
-          }}
-        >
-          :
-        </span>
-        {s.toString().padStart(2, "0")}
-      </span>
+      <span style={{ letterSpacing: "0em" }}>{time}</span>
       <span className="ml-1.5 text-zinc-400 dark:text-zinc-600">elapsed</span>
     </>
   );

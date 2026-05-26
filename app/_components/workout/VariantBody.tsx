@@ -82,6 +82,9 @@ export interface ActualsBindings {
     exerciseName: string,
     planned: { sets: number; reps: number; weight: number; unit: string },
   ) => void;
+  // Drops every actual set for the named exercise — the strength
+  // checkbox uncheck path.
+  onClearSets: (exerciseName: string) => void;
   // Appends a user-defined exercise with the planned defaults; seeds
   // sets[] so the row reads as DONE AT PLANNED immediately.
   onAddCustomExercise: (input: {
@@ -303,6 +306,7 @@ export function StrengthBody({
                         unit: ex.unit ?? defaultUnit,
                       })
                     }
+                    onClearSets={() => b.onClearSets(ex.name)}
                     disabled={isFuture}
                   />
                 );
@@ -338,6 +342,7 @@ export function StrengthBody({
                         unit: ex.plannedUnit,
                       })
                     }
+                    onClearSets={() => b.onClearSets(ex.name)}
                     disabled={isFuture}
                   />
                 );

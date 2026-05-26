@@ -1,8 +1,9 @@
 "use client";
 
 // Per-exercise row for the Strength variant. Renders collapsed by default
-// with a "Done?" pill; tap to expand into per-set inputs (PDF pages 25,
-// 27). Skipped state strikethroughs the name with an UNDO link; user-
+// with a circular done-checkbox at the start of the row (mirrors
+// mobility's RoutineRow); tap to expand into per-set inputs (PDF pages
+// 25, 27). Skipped state strikethroughs the name with an UNDO link; user-
 // added exercises wear a USER badge.
 //
 // Status badges (DONE AT PLANNED / DONE WITH OVERRIDES / "n SHORT") are
@@ -39,6 +40,9 @@ interface Props {
   // Marks every set done at planned reps + weight in one tap. Replaces
   // the existing sets[] for this exercise — pass the full new array up.
   onMarkDoneAtPlanned: () => void;
+  // Clears every logged set for this exercise — the checkbox "uncheck"
+  // path. Distinct from onToggleSkip: clearing isn't skipping.
+  onClearSets: () => void;
   disabled?: boolean;
 }
 
@@ -115,10 +119,27 @@ export function StrengthExerciseRow({
   onRemoveSet,
   onToggleSkip,
   onMarkDoneAtPlanned,
+  onClearSets,
   disabled,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const status = deriveStatus(planned, sets);
+  // sets.length > 0 ≡ "done" — the checkbox reads its checked state from
+  // whether any sets are logged, so a one-tap mark-done and a manually
+  // logged exercise both show the same filled circle.
+  const done = sets.length > 0;
+
+  function handleCheckboxTap() {
+    if (done) {
+      // TODO(ben): clearing logged sets is destructive — mobility's
+      // RoutineRow toggles silently, but strength rows carry user-entered
+      // reps/weight that a mistap would wipe. Decide whether to gate this
+      // behind a confirm. Shipping plain tap-to-clear for now.
+      onClearSets();
+    } else {
+      onMarkDoneAtPlanned();
+    }
+  }
   const setsLabel = planned.isTime
     ? `${planned.sets} × ${planned.reps}s`
     : `${planned.sets} × ${planned.reps}`;
@@ -136,9 +157,45 @@ export function StrengthExerciseRow({
     >
       {/* Collapsed header — always visible. */}
       <div className="flex items-center gap-2.5 px-3.5 py-3">
-        {/* Tap header to toggle expansion. The "Done?" / "UNDO" actions
-            and the skip "×" sit outside this button so they don't fire
-            an expand at the same time. */}
+        {/* Leftmost done-checkbox — mirrors mobility's RoutineRow glyph.
+            One tap marks every set done at planned values; tapping a
+            checked box clears the logged sets. Hidden while skipped — the
+            row's UNDO control owns that state instead. */}
+        {!skipped && (
+          <button
+            type="button"
+            onClick={handleCheckboxTap}
+            disabled={disabled}
+            aria-pressed={done}
+            aria-label={
+              done ? "Mark exercise not done" : "Mark exercise done at planned"
+            }
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition active:scale-[0.94] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <span
+              className={`inline-flex h-[18px] w-[18px] items-center justify-center rounded-full border-[1.5px] ${
+                done
+                  ? "border-emerald-500 bg-emerald-500"
+                  : "border-zinc-200 dark:border-zinc-800"
+              }`}
+            >
+              {done && (
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                  <path
+                    d="M5 12l5 5L20 7"
+                    stroke="#052e1f"
+                    strokeWidth="3"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              )}
+            </span>
+          </button>
+        )}
+        {/* Tap header to toggle expansion. The done-checkbox, "UNDO", and
+            skip "×" sit outside this button so they don't fire an expand
+            at the same time. */}
         <button
           type="button"
           onClick={() => setExpanded((e) => !e)}
@@ -195,7 +252,8 @@ export function StrengthExerciseRow({
           )}
         </button>
 
-        {/* Right column: Done? / UNDO + skip × */}
+        {/* Right column: UNDO (skipped) or the skip "×". The done state is
+            driven by the leftmost checkbox now, not a Done? pill here. */}
         <div className="flex shrink-0 items-center gap-2">
           {skipped ? (
             <button
@@ -208,34 +266,22 @@ export function StrengthExerciseRow({
               UNDO
             </button>
           ) : (
-            <>
-              {sets.length === 0 && (
-                <button
-                  type="button"
-                  onClick={onMarkDoneAtPlanned}
-                  disabled={disabled}
-                  className="inline-flex h-8 items-center justify-center rounded-lg border border-emerald-300 bg-transparent px-3 text-[12px] font-medium text-emerald-700 transition active:scale-[0.97] hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-500/40 dark:text-emerald-400 dark:hover:bg-emerald-500/10"
-                >
-                  Done?
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onToggleSkip}
-                disabled={disabled}
-                aria-label="Skip exercise"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 transition active:scale-[0.94] hover:text-zinc-700 disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-300"
-              >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M6 6l12 12M18 6L6 18"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={onToggleSkip}
+              disabled={disabled}
+              aria-label="Skip exercise"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 transition active:scale-[0.94] hover:text-zinc-700 disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-300"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M6 6l12 12M18 6L6 18"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
           )}
         </div>
       </div>

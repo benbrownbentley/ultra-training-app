@@ -318,6 +318,18 @@ export function ActualsForm({
     [],
   );
 
+  // Strength checkbox "uncheck" — drops every logged set for the named
+  // exercise so the row reverts to its unchecked (no-actuals) state.
+  const onClearSets = useCallback((exerciseName: string) => {
+    dirtyRef.current = true;
+    setState((s) => {
+      const sets = (s.detail?.sets ?? []).filter(
+        (x) => x.exerciseName !== exerciseName,
+      );
+      return { ...s, detail: { ...(s.detail ?? {}), sets } };
+    });
+  }, []);
+
   const onAddCustomExercise = useCallback(
     (input: {
       name: string;
@@ -417,6 +429,7 @@ export function ActualsForm({
       onRemoveSet,
       onToggleSkipExercise,
       onMarkDoneAtPlanned,
+      onClearSets,
       onAddCustomExercise,
     }),
     [
@@ -431,6 +444,7 @@ export function ActualsForm({
       onRemoveSet,
       onToggleSkipExercise,
       onMarkDoneAtPlanned,
+      onClearSets,
       onAddCustomExercise,
     ],
   );

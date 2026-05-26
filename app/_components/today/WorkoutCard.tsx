@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { logWorkout } from "@/app/actions";
-import type { Workout, WorkoutKind } from "@/lib/plan";
+import type { ActualDetail, Workout, WorkoutKind } from "@/lib/plan";
 import type { Variant } from "@/lib/workout-variant";
 import { summarisePlannedDetailForDiff } from "@/lib/preview";
 import { AddEntrySheets } from "@/app/_components/journal/AddEntrySheets";
@@ -66,7 +66,25 @@ function hasActuals(w: Workout): boolean {
     w.actual_hr_avg != null ||
     w.actual_rpe != null ||
     (w.actual_notes != null && w.actual_notes.length > 0) ||
-    w.actual_detail != null
+    hasMeaningfulDetail(w.actual_detail)
+  );
+}
+
+// An empty actual_detail must count as "no actuals". A running row whose
+// time-in-zone form was opened and committed empty saves { zones: [] }
+// (ActualsForm spreads `...(s.detail ?? {})`), which is non-null but
+// carries nothing — the old `!= null` check treated that as "has
+// actuals" and permanently suppressed the "+ ADD ACTUALS" prompt.
+// Strength dodged the bug only because it rarely leaves an empty-array
+// detail behind; checking the inner arrays makes this kind-agnostic.
+function hasMeaningfulDetail(d: ActualDetail | null | undefined): boolean {
+  if (d == null) return false;
+  return Boolean(
+    (d.sets && d.sets.length > 0) ||
+      (d.zones && d.zones.length > 0) ||
+      (d.exercises && d.exercises.length > 0) ||
+      (d.added_exercises && d.added_exercises.length > 0) ||
+      (d.skipped_exercises && d.skipped_exercises.length > 0),
   );
 }
 
@@ -206,27 +224,17 @@ export function WorkoutCard({
         )}
 
         {variant === "skipped" && (
+          // Status badge only — the + ADD NOTE affordance moved down into
+          // the footer's action row so it sits inline with Unskip, mirroring
+          // the logged variant's + ADD ACTUALS / × UNLOG pairing.
           <div
-            className="pointer-events-none mt-1 flex items-center justify-between gap-2 font-mono text-[13px] text-zinc-500"
+            className="pointer-events-none mt-1 flex items-center font-mono text-[13px] text-zinc-500"
             style={{ letterSpacing: "0.005em" }}
           >
             <span>
               <span className="mr-1.5 text-zinc-400 dark:text-zinc-600">›</span>
               Skipped
             </span>
-            {/* Inline note-add affordance — pre-fills the journal note
-                sheet so the athlete can drop a one-liner about why.
-                Adherence already feeds Claude separately; this just
-                lets them attach *context*. */}
-            <button
-              type="button"
-              onClick={() => setNoteSheetOpen(true)}
-              disabled={isFaded}
-              className="pointer-events-auto bg-transparent font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:underline disabled:opacity-50 dark:text-emerald-400"
-              style={{ letterSpacing: "0.18em" }}
-            >
-              + ADD NOTE
-            </button>
           </div>
         )}
 
@@ -244,6 +252,8 @@ export function WorkoutCard({
           onSkip={() => setStatus("skipped")}
           onLogRetro={() => setStatus("completed")}
           onUnlog={() => setStatus("pending")}
+          onUnskip={() => setStatus("pending")}
+          onAddNote={() => setNoteSheetOpen(true)}
         />
       </div>
       {/* Note-prefill sheet — opens for the skipped variant's + ADD
@@ -273,6 +283,13 @@ interface FooterProps {
   // UNLOG text link on the logged variant; the unlogged toast surfaces
   // an Undo within a 5s window so the action stays reversible.
   onUnlog: () => void;
+  // Reverts a skipped workout back to pending. Fires from the skipped
+  // variant's Unskip button. Silent revert (no toast) — the card just
+  // re-renders as the upcoming variant with Log/Skip restored.
+  onUnskip: () => void;
+  // Opens the note-prefill sheet. Lives on the skipped variant's action
+  // row (moved here from the upper status row).
+  onAddNote: () => void;
 }
 
 function CardFooter({
@@ -286,6 +303,8 @@ function CardFooter({
   onSkip,
   onLogRetro,
   onUnlog,
+  onUnskip,
+  onAddNote,
 }: FooterProps) {
   // Future: no action buttons — preview only.
   if (variant === "future") {
@@ -318,11 +337,14 @@ function CardFooter({
             + ADD ACTUALS →
           </Link>
         )}
+        {/* Bordered chip — lower visual weight than + ADD ACTUALS (the
+            primary action on this row) but enough affordance that it
+            reads as tappable, where the old ghost text didn't. */}
         <button
           type="button"
           onClick={onUnlog}
           disabled={isFaded || isPending}
-          className="pointer-events-auto inline-flex items-center gap-0.5 whitespace-nowrap bg-transparent font-mono text-[10.5px] uppercase text-zinc-400 transition active:scale-[0.97] hover:text-zinc-600 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-400"
+          className="pointer-events-auto inline-flex h-7 items-center gap-0.5 whitespace-nowrap rounded-lg border border-zinc-200 bg-transparent px-2.5 font-mono text-[10.5px] uppercase text-zinc-500 transition active:scale-[0.97] hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-900/40"
           style={{ letterSpacing: "0.18em" }}
         >
           × UNLOG
@@ -360,8 +382,9 @@ function CardFooter({
     );
   }
 
-  // Skipped: offer "Log retrospectively" + an Unskip toggle so the
-  // user can revert. Same pointer-events handling as the other rows.
+  // Skipped: "Log retrospectively" (primary) · Unskip (ghost) · + ADD
+  // NOTE (emerald link, mirrors the logged variant's + ADD ACTUALS).
+  // Same pointer-events handling as the other rows.
   if (variant === "skipped") {
     return (
       <div className="pointer-events-none mt-3 flex flex-wrap items-center gap-2.5">
@@ -376,11 +399,23 @@ function CardFooter({
         </button>
         <button
           type="button"
-          onClick={onSkip}
+          onClick={onUnskip}
           disabled={isFaded || isPending}
           className="pointer-events-auto inline-flex h-9 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-zinc-600 transition active:scale-[0.97] hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-50"
         >
           Unskip
+        </button>
+        {/* Pre-fills the journal note sheet so the athlete can drop a
+            one-liner about why. Adherence already feeds Claude
+            separately; this just lets them attach *context*. */}
+        <button
+          type="button"
+          onClick={onAddNote}
+          disabled={isFaded}
+          className="pointer-events-auto inline-flex items-center whitespace-nowrap bg-transparent font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:underline disabled:opacity-50 dark:text-emerald-400"
+          style={{ letterSpacing: "0.18em" }}
+        >
+          + ADD NOTE
         </button>
       </div>
     );

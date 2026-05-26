@@ -75,13 +75,29 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
   const actualsCaptured = hasActuals(workout);
 
   function setStatus(next: Workout["status"]) {
-    const wasUnlogged = workout.status !== "completed";
+    const wasCompleted = workout.status === "completed";
     startTransition(() => {
       void (async () => {
         try {
           await logWorkout(workout.id, next);
-          if (next === "completed" && wasUnlogged) {
-            toast.show({ workoutId: workout.id, title: workout.title });
+          if (next === "completed" && !wasCompleted) {
+            toast.show({
+              kind: "logged",
+              workoutId: workout.id,
+              title: workout.title,
+            });
+          } else if (next === "pending" && wasCompleted) {
+            // Unlog toast carries an Undo that re-logs with a fresh
+            // timestamp. Captured actuals on the row survive the
+            // status flip (logWorkout only touches status + logged_at),
+            // so undo is a clean state restore aside from the
+            // re-logged-at moving forward by a few seconds.
+            toast.show({
+              kind: "unlogged",
+              workoutId: workout.id,
+              title: workout.title,
+              onUndo: () => setStatus("completed"),
+            });
           }
         } catch (e) {
           console.error("Failed to log workout", e);
@@ -180,8 +196,9 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
           </div>
         )}
 
-        {/* Footer — pointer-events re-enabled so buttons capture clicks
-            instead of falling through to the overlay link. */}
+        {/* Footer — pointer-events re-enabled per-control so buttons
+            capture clicks while dead space inside the row falls
+            through to the overlay link. */}
         <CardFooter
           variant={variant}
           actualsCaptured={actualsCaptured}
@@ -192,6 +209,7 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
           onMarkDone={() => setStatus("completed")}
           onSkip={() => setStatus("skipped")}
           onLogRetro={() => setStatus("completed")}
+          onUnlog={() => setStatus("pending")}
         />
       </div>
     </div>
@@ -208,6 +226,10 @@ interface FooterProps {
   onMarkDone: () => void;
   onSkip: () => void;
   onLogRetro: () => void;
+  // Reverts a logged workout to pending. Fires from the explicit ×
+  // UNLOG text link on the logged variant; the unlogged toast surfaces
+  // an Undo within a 5s window so the action stays reversible.
+  onUnlog: () => void;
 }
 
 function CardFooter({
@@ -220,6 +242,7 @@ function CardFooter({
   onMarkDone,
   onSkip,
   onLogRetro,
+  onUnlog,
 }: FooterProps) {
   // Future: no action buttons — preview only.
   if (variant === "future") {
@@ -235,10 +258,11 @@ function CardFooter({
     );
   }
 
-  // Logged: no Log/Skip buttons. Just the DONE timestamp + first-time
-  // "+ ADD ACTUALS →" prompt. The full card body is the tap target;
-  // there's no Edit-log affordance here (the drill-down's sticky bar
-  // owns that).
+  // Logged: no Log/Skip buttons. + ADD ACTUALS → on the left,
+  // × UNLOG ghost link beside it (lower visual weight — should not
+  // compete for attention), DONE timestamp on the right. The
+  // CheckCircle in the eyebrow row is the passive status indicator;
+  // UNLOG is the explicit interactive control.
   if (variant === "logged") {
     return (
       <div className="pointer-events-none relative mt-3 flex flex-wrap items-center gap-2.5">
@@ -251,6 +275,15 @@ function CardFooter({
             + ADD ACTUALS →
           </Link>
         )}
+        <button
+          type="button"
+          onClick={onUnlog}
+          disabled={isFaded || isPending}
+          className="pointer-events-auto inline-flex items-center gap-0.5 whitespace-nowrap bg-transparent font-mono text-[10.5px] uppercase text-zinc-400 transition active:scale-[0.97] hover:text-zinc-600 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-400"
+          style={{ letterSpacing: "0.18em" }}
+        >
+          × UNLOG
+        </button>
         <span className="flex-1" />
         {doneTime && (
           <span
@@ -265,14 +298,17 @@ function CardFooter({
   }
 
   // Missed: only "Log retrospectively" — no Skip button (already past).
+  // Row container is pointer-events-none so dead space inside the row
+  // (right of the button) falls through to the card overlay Link.
+  // pointer-events-auto is re-enabled per-control.
   if (variant === "missed") {
     return (
-      <div className="pointer-events-auto mt-3 flex flex-wrap items-center gap-2.5">
+      <div className="pointer-events-none mt-3 flex flex-wrap items-center gap-2.5">
         <button
           type="button"
           onClick={onLogRetro}
           disabled={isFaded}
-          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-amber-500 bg-amber-50 px-3.5 text-[13px] font-semibold text-amber-900 transition active:scale-[0.97] hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-500/50 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
+          className="pointer-events-auto inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-amber-500 bg-amber-50 px-3.5 text-[13px] font-semibold text-amber-900 transition active:scale-[0.97] hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-amber-500/50 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
         >
           Log retrospectively
           <ArrowRight color="currentColor" size={13} />
@@ -282,15 +318,15 @@ function CardFooter({
   }
 
   // Skipped: offer "Log retrospectively" + an Unskip toggle so the
-  // user can revert.
+  // user can revert. Same pointer-events handling as the other rows.
   if (variant === "skipped") {
     return (
-      <div className="pointer-events-auto mt-3 flex flex-wrap items-center gap-2.5">
+      <div className="pointer-events-none mt-3 flex flex-wrap items-center gap-2.5">
         <button
           type="button"
           onClick={onLogRetro}
           disabled={isFaded}
-          className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-500 px-3.5 text-[13px] font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_6px_16px_rgba(16,185,129,0.28)] transition active:scale-[0.97] hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+          className="pointer-events-auto inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-500 px-3.5 text-[13px] font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_6px_16px_rgba(16,185,129,0.28)] transition active:scale-[0.97] hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
         >
           Log retrospectively
           <ArrowRight color="#052e1f" size={13} />
@@ -299,7 +335,7 @@ function CardFooter({
           type="button"
           onClick={onSkip}
           disabled={isFaded || isPending}
-          className="inline-flex h-9 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-zinc-600 transition active:scale-[0.97] hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-50"
+          className="pointer-events-auto inline-flex h-9 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-zinc-600 transition active:scale-[0.97] hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-50"
         >
           Unskip
         </button>
@@ -307,14 +343,17 @@ function CardFooter({
     );
   }
 
-  // Upcoming (pending + today): full Log done / Skip pair.
+  // Upcoming (pending + today): full Log done / Skip pair. Row
+  // container is pointer-events-none so empty space between/around
+  // the two buttons falls through to the card-overlay Link — fixes
+  // the dead-zone right of "Skip" not opening the drill-down.
   return (
-    <div className="pointer-events-auto mt-3 flex flex-wrap items-center gap-2.5">
+    <div className="pointer-events-none mt-3 flex flex-wrap items-center gap-2.5">
       <button
         type="button"
         onClick={onMarkDone}
         disabled={isFaded}
-        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-500 px-3.5 text-[13px] font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_6px_16px_rgba(16,185,129,0.28)] transition active:scale-[0.97] hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+        className="pointer-events-auto inline-flex h-9 items-center justify-center gap-1.5 rounded-lg border border-emerald-600 bg-emerald-500 px-3.5 text-[13px] font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_6px_16px_rgba(16,185,129,0.28)] transition active:scale-[0.97] hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
       >
         Log done
         <ArrowRight color="#052e1f" size={13} />
@@ -323,7 +362,7 @@ function CardFooter({
         type="button"
         onClick={onSkip}
         disabled={isFaded}
-        className="inline-flex h-9 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-zinc-600 transition active:scale-[0.97] hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-50"
+        className="pointer-events-auto inline-flex h-9 items-center justify-center rounded-lg px-3.5 text-[13px] font-medium text-zinc-600 transition active:scale-[0.97] hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-50"
       >
         Skip
       </button>

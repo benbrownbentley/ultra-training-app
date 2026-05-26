@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { Day, Plan } from "@/lib/plan";
+import { computePhase, phaseLabel } from "@/lib/plan-derive";
 import type { ContextRow } from "@/lib/regen-context";
 import { Header } from "./Header";
 import { WorkoutCard } from "./WorkoutCard";
@@ -86,12 +87,18 @@ export function TodayPageClient({
       : "BROWSING";
 
   const weekSummaries = buildWeekSummaries(weekDays, todayIso, selectedDayIso);
-  const phaseLabel = `WK ${weekIndex}/${totalWeeks} · ${daysToRace}D OUT`;
+  // Header eyebrow mirrors the Plan view's per-week eyebrow format
+  // (`WEEK n OF m · PHASE`) so the periodization context is consistent
+  // across tabs. The days-to-race countdown lives in PlanStrip below
+  // the header — no need to double-render it here.
+  const headerPhase = `WEEK ${weekIndex} OF ${totalWeeks} · ${phaseLabel(
+    computePhase(weekIndex, totalWeeks),
+  )}`;
 
   return (
     <LoggedToastProvider>
     <div className="flex min-h-svh flex-col bg-zinc-50 text-zinc-950 dark:bg-zinc-950 dark:text-zinc-50">
-      <Header phase={phaseLabel} />
+      <Header phase={headerPhase} />
 
       <div className="flex flex-1 flex-col gap-4 overflow-hidden px-4 py-4 sm:px-5 sm:py-5">
         <div className="mx-auto flex w-full max-w-[600px] flex-col gap-4">

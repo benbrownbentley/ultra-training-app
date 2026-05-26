@@ -1,10 +1,14 @@
 import { VertLogo } from "@/app/_components/today/icons";
 
+// Mirrors the Today / Plan / Journal headers — inner wrapper capped at
+// 720px and centred so the wordmark sits at the same horizontal anchor
+// on desktop across every top-level tab.
 export function ProfileTabHeader() {
   return (
-    <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-4 py-3.5 sm:px-5 dark:border-zinc-800 dark:bg-zinc-950">
-      <VertLogo accent="#10b981" textColor="currentColor" />
-      <span aria-hidden="true" />
+    <div className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+      <div className="mx-auto flex max-w-[720px] items-center px-4 py-3.5 sm:px-5">
+        <VertLogo accent="#10b981" textColor="currentColor" />
+      </div>
     </div>
   );
 }

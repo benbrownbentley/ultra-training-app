@@ -6,6 +6,11 @@ Items deferred from code review or development sessions. Work through these befo
 
 ## 🔴 Fix before v2 launches (security / correctness)
 
+### TD-011 — Unskip button on Today card is a no-op (regression) — ✅ RESOLVED 2026-05-26
+**What:** The Unskip button on a skipped Today card was wired to `onClick={onSkip}` (`app/_components/today/WorkoutCard.tsx:379`), which called `setStatus("skipped")` — the card is already skipped, so the click did nothing. No `onUnskip` handler existed.
+**Why deferred:** Surfaced by Ben's smoke test on 2026-05-25 after the Phase 3 polish batch merged. Real regression introduced by that batch (`782fcae` or `85a205e` — likely the latter when the skipped variant was reorganized for the C15 + ADD NOTE work).
+**Resolved:** Fixed on branch `phase-3-polish-round-2` (Phase 3 polish round 2). Added `onUnskip` + `onAddNote` props to `CardFooter`; the skipped variant's Unskip button now calls `setStatus("pending")` — the un-skipped status per `lib/plan.ts:8` (`WorkoutStatus = "pending" | "completed" | "skipped"`), **not** `"scheduled"` as the original fix note guessed. Silent revert (no toast); the card re-renders as the `upcoming` variant with Log done / Skip restored.
+
 ### TD-001 — Migrate `lib/supabase.ts` to `@supabase/ssr`
 **What:** The read client uses `createClient` from `@supabase/supabase-js` directly. For Supabase Auth in v2, both the browser and server clients need to use `@supabase/ssr` (`createBrowserClient` / `createServerClient`) so session cookies are handled correctly.
 **Why deferred:** This is part of the v2 auth architecture — doing it in isolation risks getting it wrong. Design it in the auth planning session, then implement as the first step of v2.
@@ -68,4 +73,4 @@ Items deferred from code review or development sessions. Work through these befo
 
 ---
 
-_Last updated: 2026-05-25 | Source: Phase 3 polish batch code review_
+_Last updated: 2026-05-26 | Source: Phase 3 polish batch code review; TD-011 closed in Phase 3 polish round 2_

@@ -119,12 +119,27 @@ export function summarisePlannedDetailForDiff(
     return pd.segments.map((s) => s.label).join(" · ");
   }
   if (pd.kind === "gym" || pd.kind === "physio") {
-    const dur = pd.total_duration_min != null ? `${pd.total_duration_min} min — ` : "";
-    return `${dur}${pd.exercises.map((e) => e.name).join(", ")}`;
+    // Title-level summary only — per-exercise detail belongs on the
+    // drill-down, where strength rows render the full list. The
+    // comma-joined name list was overwhelming in the regen diff (and
+    // on the Today card for long blocks) and pushed the eye away
+    // from the title.
+    const count = pd.exercises.length;
+    const label = count === 1 ? "exercise" : "exercises";
+    if (pd.total_duration_min != null) {
+      return `${pd.total_duration_min} min · ${count} ${label}`;
+    }
+    return `${count} ${label}`;
   }
   if (pd.kind === "mobility") {
-    const dur = pd.total_duration_min != null ? `${pd.total_duration_min} min — ` : "";
-    return `${dur}${pd.movements.map((m) => m.name).join(", ")}`;
+    // Same title-level treatment as gym/physio — movement names
+    // belong on the drill-down, not in the diff or card subtitle.
+    const count = pd.movements.length;
+    const label = count === 1 ? "movement" : "movements";
+    if (pd.total_duration_min != null) {
+      return `${pd.total_duration_min} min · ${count} ${label}`;
+    }
+    return `${count} ${label}`;
   }
   if (pd.kind === "cross") {
     return `${pd.duration_min} min ${pd.activity}${pd.target_zone ? ` · ${pd.target_zone}` : ""}`;

@@ -86,6 +86,12 @@ export interface JobStatusSnapshot {
   // the failure was mid-pipeline (vs. at meta-plan).
   failureCode: import("@/lib/plan-gen-result").PlanGenErrorCode | null;
   failurePhase: GenerationPhase | "meta" | null;
+  // ISO-8601 timestamptz from Postgres. Drives the generating-screen
+  // timer's origin so the elapsed seconds survive a page refresh
+  // (B11 — Phase 3 polish, 2026-05-25). Optional because the
+  // fallback-failure snapshots GeneratingPhaseState constructs
+  // locally don't carry it; the timer guards against that case.
+  createdAt?: string;
 }
 
 /**

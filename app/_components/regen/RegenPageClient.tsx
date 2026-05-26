@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { commitPlan, discardPreview, previewPlan } from "@/app/actions";
 import type { WeekDiff } from "@/lib/preview";
@@ -52,15 +52,29 @@ export function RegenPageClient({
   // StateMinor's diff is collapsed by default — this toggles the
   // per-week view inline without changing the URL.
   const [diffExpanded, setDiffExpanded] = useState(false);
+  // True from the moment Accept is clicked until the commit either
+  // completes (→ accepted screen + router push) or fails (→ error).
+  // Render-guarded at the top so the diff doesn't briefly flash back
+  // through any intermediate state during the commit transition.
+  const [accepting, setAccepting] = useState(false);
+  // Flips true once discard fires or the user explicitly keeps the
+  // current plan — used by the beforeunload guard to know the user
+  // already chose a clean exit (no warning needed).
+  const [exiting, setExiting] = useState(false);
   const [, startTransition] = useTransition();
 
   const handleAccept = useCallback(() => {
+    // Flash the success/accepted screen immediately — the commit
+    // happens in the background. If it fails, we drop into the error
+    // state, which also clears `accepting` so the user can retry.
+    setAccepting(true);
     setPendingAction("accept");
     startTransition(async () => {
       try {
         await commitPlan(previewId);
         setPhase("accepted");
       } catch (e) {
+        setAccepting(false);
         setErrorMessage(
           e instanceof Error ? e.message : "Failed to accept plan",
         );
@@ -72,12 +86,14 @@ export function RegenPageClient({
   }, [previewId]);
 
   const handleDiscard = useCallback(() => {
+    setExiting(true);
     setPendingAction("discard");
     startTransition(async () => {
       try {
         await discardPreview(previewId);
         router.push("/");
       } catch (e) {
+        setExiting(false);
         setErrorMessage(
           e instanceof Error ? e.message : "Failed to discard preview",
         );
@@ -123,7 +139,28 @@ export function RegenPageClient({
     });
   }, [router]);
 
-  if (phase === "accepted") {
+  // Browser-level guard against discarding an unsaved preview. Only
+  // arms while the user is on the diff and hasn't already picked a
+  // clean exit (accept, discard, or regenerate-from-scratch).
+  // In-app router-driven navigation does NOT fire `beforeunload`;
+  // intercepting Next.js App-Router pushes would require either a
+  // custom history-stack dance or wrapping every tab Link in a guard
+  // component. Pragmatic scope: ship `beforeunload` only this batch —
+  // real-world the back button hits a full-page nav anyway.
+  useEffect(() => {
+    const armed = phase === "diff" && !accepting && !exiting;
+    if (!armed) return;
+    function handler(e: BeforeUnloadEvent) {
+      e.preventDefault();
+      e.returnValue = "";
+    }
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [phase, accepting, exiting]);
+
+  // Accept render-guards have to win over phase === "diff" so the
+  // diff never briefly re-renders during the commit transition.
+  if (accepting || phase === "accepted") {
     return <StateAccepted />;
   }
   if (phase === "generating") {

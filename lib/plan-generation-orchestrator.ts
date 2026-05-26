@@ -95,10 +95,13 @@ interface JobRow {
   status: "kicking-off" | "pending" | "complete" | "failed" | "cancelled";
   failure_code: PlanGenErrorCode | null;
   failure_phase: GenerationPhase | "meta" | null;
+  // Postgres timestamptz. Surfaced through JobStatusSnapshot so the
+  // generating-screen timer can survive a page refresh — see B11.
+  created_at: string;
 }
 
 const JOB_COLUMNS =
-  "id, user_id, trigger, meta_plan, completed_phases, partial_workouts, notes, preview_id, status, failure_code, failure_phase";
+  "id, user_id, trigger, meta_plan, completed_phases, partial_workouts, notes, preview_id, status, failure_code, failure_phase, created_at";
 
 // =============================================================
 // Public helpers — the building blocks the action layer composes
@@ -666,6 +669,7 @@ export async function getJobStatus(
     previewId: data.preview_id,
     failureCode: data.failure_code,
     failurePhase: data.failure_phase,
+    createdAt: data.created_at,
   };
 }
 

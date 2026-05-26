@@ -115,7 +115,9 @@ export function StateResult({
             </Section>
           )}
 
-          <div className="h-2" />
+          {/* Bottom padding so the last diff row clears the sticky
+              action bar that overlays this scroll region. */}
+          <div className="h-20" />
         </div>
       </div>
       <ActionBar
@@ -143,18 +145,24 @@ function ActionBar({
   isPending: boolean;
   pendingAction: "accept" | "discard" | "regenerate" | null;
 }) {
+  // Sticky to the viewport bottom so long diffs can scroll without
+  // burying the actions. Soft upward shadow visually separates it
+  // from scrolled content; safe-area-aware bottom padding lifts the
+  // controls above the iOS home indicator. Keep + Regen + Accept
+  // share one row (Keep on the left as a ghost link, Accept the
+  // primary fill on the right) so the hierarchy reads at a glance.
   return (
-    <div className="border-t border-zinc-200 bg-zinc-50 px-4 pt-3 pb-3.5 sm:px-5 dark:border-zinc-800 dark:bg-zinc-950">
+    <div className="sticky bottom-0 z-20 border-t border-zinc-200 bg-zinc-50 px-4 pt-3 pb-[max(env(safe-area-inset-bottom),18px)] shadow-[0_-12px_24px_rgba(0,0,0,0.08)] sm:px-5 dark:border-zinc-800 dark:bg-zinc-950 dark:shadow-[0_-12px_24px_rgba(0,0,0,0.45)]">
       <div className="flex items-center gap-2.5">
         <button
           type="button"
-          onClick={onAccept}
+          onClick={onDiscard}
           disabled={isPending}
-          className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
+          className="bg-transparent text-[12.5px] font-medium text-zinc-400 hover:text-zinc-600 disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-400"
         >
-          {pendingAction === "accept" ? "Accepting…" : "Accept new plan"}
-          {pendingAction !== "accept" && <ArrowRight color="#052e1f" size={16} />}
+          {pendingAction === "discard" ? "Discarding…" : "Keep current plan"}
         </button>
+        <span className="flex-1" />
         <button
           type="button"
           onClick={onRegenerateAgain}
@@ -163,15 +171,14 @@ function ActionBar({
         >
           {pendingAction === "regenerate" ? "Working…" : "Regenerate again"}
         </button>
-      </div>
-      <div className="mt-2.5 flex justify-end">
         <button
           type="button"
-          onClick={onDiscard}
+          onClick={onAccept}
           disabled={isPending}
-          className="bg-transparent text-[12.5px] font-medium text-zinc-400 hover:text-zinc-600 disabled:opacity-50 dark:text-zinc-600 dark:hover:text-zinc-400"
+          className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {pendingAction === "discard" ? "Discarding…" : "Keep current plan"}
+          {pendingAction === "accept" ? "Accepting…" : "Accept new plan"}
+          {pendingAction !== "accept" && <ArrowRight color="#052e1f" size={16} />}
         </button>
       </div>
     </div>

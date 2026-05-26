@@ -66,7 +66,12 @@ export function GeneratingPhaseState({
   useEffect(() => {
     let cancelled = false;
     let terminalFired = false;
-    const startedAt = Date.now();
+    // Local mount time used as the timer's seed; gets overwritten
+    // with snapshot.createdAt as soon as the first poll lands so a
+    // page refresh shows the real elapsed time rather than restarting
+    // at 0. See B11 (Phase 3 polish, 2026-05-25).
+    const mountedAt = Date.now();
+    let startedAt = mountedAt;
 
     const fireComplete = (s: JobStatusSnapshot) => {
       if (terminalFired || cancelled) return;
@@ -100,6 +105,14 @@ export function GeneratingPhaseState({
         return;
       }
       setSnapshot(initial);
+      // Swap the timer origin to the job's persisted created_at so
+      // the elapsed counter reflects real wall time even after a
+      // refresh. Guard against an invalid timestamp falling through —
+      // a NaN getTime() would freeze the timer at the mount value.
+      if (initial.createdAt) {
+        const t = new Date(initial.createdAt).getTime();
+        if (Number.isFinite(t)) startedAt = t;
+      }
       if (initial.status === "complete") {
         fireComplete(initial);
         return;

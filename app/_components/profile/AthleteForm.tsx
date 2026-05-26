@@ -574,7 +574,7 @@ export function AthleteForm({ profile }: Props) {
                   value={injuryNotes}
                   onChange={(e) => setInjuryNotes(e.target.value)}
                   disabled={isPending}
-                  placeholder="Recovered injuries Claude should know about."
+                  placeholder="Recovered injuries we should know about."
                   rows={3}
                   className="rounded-[10px] border border-zinc-200 bg-white px-3.5 py-3 text-[14px] text-zinc-950 placeholder:text-zinc-400 focus:border-emerald-500 focus:outline-none focus:ring-[3px] focus:ring-emerald-50 disabled:opacity-60 dark:border-zinc-800 dark:bg-[#0f0f11] dark:text-zinc-50"
                 />

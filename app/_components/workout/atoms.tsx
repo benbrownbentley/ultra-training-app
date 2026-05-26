@@ -255,7 +255,7 @@ export function NotesField({
       disabled={disabled}
       placeholder={
         placeholder ??
-        "Add a note about how the session felt, weather, route, anything Claude should weigh into the next plan update."
+        "Add a note about how the session felt, weather, route, anything we should weigh into the next plan update."
       }
       className={`min-h-[80px] w-full resize-y rounded-[10px] border bg-white px-3.5 py-3 text-[13px] leading-relaxed text-zinc-950 placeholder:text-zinc-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-55 dark:bg-[#0f0f11] dark:text-zinc-50 dark:placeholder:text-zinc-600 ${
         value.length === 0

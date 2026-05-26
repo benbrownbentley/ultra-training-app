@@ -205,7 +205,7 @@ function SheetBody({
 
           <div className="mt-4">
             <p className="m-0 text-sm leading-snug text-zinc-600 dark:text-zinc-400">
-              Recent context Claude already has:
+              Recent context we already have:
             </p>
             <div className="mt-1.5">
               {contextRows.length > 0 ? (
@@ -238,7 +238,7 @@ function SheetBody({
                   — TIP
                 </span>
                 <span className="text-[13px] italic leading-snug text-zinc-600 dark:text-zinc-400">
-                  Adding notes will give Claude more to work with. Otherwise the
+                  Adding notes will give us more to work with. Otherwise the
                   plan will likely come back unchanged.
                 </span>
               </div>

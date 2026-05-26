@@ -43,7 +43,7 @@ export function InjuryForm() {
   const submit = useCallback(
     (regenAfter: boolean) => {
       if (!bodyPart) {
-        setError("Pick a body part so Claude knows where to back off.");
+        setError("Pick a body part so we know where to back off.");
         return;
       }
       // Guard against NaN / negative / zero before the value reaches the

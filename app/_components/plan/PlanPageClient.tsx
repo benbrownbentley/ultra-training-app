@@ -3,7 +3,7 @@
 import { useState } from "react";
 import type { PlanWeek } from "@/lib/plan-derive";
 import { phaseLabel } from "@/lib/plan-derive";
-import type { ContextRow } from "@/lib/regen-context";
+import type { ContextRow, RecentSkips } from "@/lib/regen-context";
 import { PlanHeader } from "./PlanHeader";
 import { SparklineCard } from "./VolumeSparkline";
 import { WeekSection } from "./WeekSection";
@@ -24,6 +24,7 @@ interface Props {
   raceElevationGain: number | null;
   regenContextRows: ContextRow[];
   regenSparseTip: boolean;
+  regenRecentSkips: RecentSkips;
   unitSystem: import("@/lib/plan").UnitSystem;
 }
 
@@ -44,6 +45,7 @@ export function PlanPageClient({
   raceElevationGain,
   regenContextRows,
   regenSparseTip,
+  regenRecentSkips,
   unitSystem,
 }: Props) {
   const [pastExpanded, setPastExpanded] = useState(false);
@@ -86,6 +88,7 @@ export function PlanPageClient({
             <RegeneratePlanRow
               contextRows={regenContextRows}
               showSparseTip={regenSparseTip}
+              recentSkips={regenRecentSkips}
             />
           </div>
 

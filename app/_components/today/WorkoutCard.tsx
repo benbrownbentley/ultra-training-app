@@ -1,11 +1,12 @@
 "use client";
 
-import { useTransition } from "react";
+import { useState, useTransition } from "react";
 import Link from "next/link";
 import { logWorkout } from "@/app/actions";
 import type { Workout, WorkoutKind } from "@/lib/plan";
 import type { Variant } from "@/lib/workout-variant";
 import { summarisePlannedDetailForDiff } from "@/lib/preview";
+import { AddEntrySheets } from "@/app/_components/journal/AddEntrySheets";
 import { MOTIFS } from "./motifs";
 import { ArrowRight, CheckCircle, ChevronUpRight } from "./icons";
 import { useLoggedToast } from "./LoggedToast";
@@ -41,6 +42,11 @@ function eyebrowTone(variant: Variant): string {
 
 interface Props {
   workout: Workout;
+  // YYYY-MM-DD date of the day this card represents. Sourced from the
+  // parent Day (Workout itself doesn't carry a date). Used by the
+  // skipped variant's + ADD NOTE prefill so the journal entry
+  // self-dates.
+  dateIso: string;
   // Classified state (today/past/future × pending/logged/skipped) —
   // computed at the call site via lib/workout-variant.classifyWorkout.
   variant: Variant;
@@ -64,8 +70,15 @@ function hasActuals(w: Workout): boolean {
   );
 }
 
-export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
+export function WorkoutCard({
+  workout,
+  dateIso,
+  variant,
+  dim,
+  loggedAt,
+}: Props) {
   const [isPending, startTransition] = useTransition();
+  const [noteSheetOpen, setNoteSheetOpen] = useState(false);
   const toast = useLoggedToast();
   const Motif = MOTIFS[workout.kind];
   const isFaded = dim || isPending;
@@ -73,6 +86,12 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
   const suffix = eyebrowSuffix(variant);
   const tone = eyebrowTone(variant);
   const actualsCaptured = hasActuals(workout);
+
+  // Pre-fill used by the + ADD NOTE flow on the skipped variant.
+  // Skipped+missed adherence already feeds Claude via the adherence
+  // summary block, but a journal note lets the athlete add the *why*
+  // — context the model can't infer.
+  const skippedPrefill = `Skipped: ${workout.title} on ${dateIso} — `;
 
   function setStatus(next: Workout["status"]) {
     const wasCompleted = workout.status === "completed";
@@ -188,11 +207,26 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
 
         {variant === "skipped" && (
           <div
-            className="mt-1 font-mono text-[13px] text-zinc-500"
+            className="pointer-events-none mt-1 flex items-center justify-between gap-2 font-mono text-[13px] text-zinc-500"
             style={{ letterSpacing: "0.005em" }}
           >
-            <span className="mr-1.5 text-zinc-400 dark:text-zinc-600">›</span>
-            Skipped
+            <span>
+              <span className="mr-1.5 text-zinc-400 dark:text-zinc-600">›</span>
+              Skipped
+            </span>
+            {/* Inline note-add affordance — pre-fills the journal note
+                sheet so the athlete can drop a one-liner about why.
+                Adherence already feeds Claude separately; this just
+                lets them attach *context*. */}
+            <button
+              type="button"
+              onClick={() => setNoteSheetOpen(true)}
+              disabled={isFaded}
+              className="pointer-events-auto bg-transparent font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:underline disabled:opacity-50 dark:text-emerald-400"
+              style={{ letterSpacing: "0.18em" }}
+            >
+              + ADD NOTE
+            </button>
           </div>
         )}
 
@@ -212,6 +246,15 @@ export function WorkoutCard({ workout, variant, dim, loggedAt }: Props) {
           onUnlog={() => setStatus("pending")}
         />
       </div>
+      {/* Note-prefill sheet — opens for the skipped variant's + ADD
+          NOTE affordance. Mounted at the card level so each skipped
+          card owns its own sheet state; the portal target is
+          document.body so siblings can't visually collide. */}
+      <AddEntrySheets
+        open={noteSheetOpen}
+        onClose={() => setNoteSheetOpen(false)}
+        prefill={{ type: "note", body: skippedPrefill }}
+      />
     </div>
   );
 }

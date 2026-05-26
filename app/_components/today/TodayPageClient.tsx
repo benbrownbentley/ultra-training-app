@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type { Day, Plan } from "@/lib/plan";
 import { computePhase, phaseLabel } from "@/lib/plan-derive";
-import type { ContextRow } from "@/lib/regen-context";
+import type { ContextRow, RecentSkips } from "@/lib/regen-context";
 import { Header } from "./Header";
 import { WorkoutCard } from "./WorkoutCard";
 import { RestCard, TomorrowPreview } from "./RestCard";
@@ -43,6 +43,10 @@ interface Props {
   // what Claude already knows before choosing to regenerate.
   regenContextRows: ContextRow[];
   regenSparseTip: boolean;
+  // Skipped + missed workouts since the last 14 days — surfaced as the
+  // RECENT SKIPS hint inside the regenerate sheet so the athlete can
+  // attach a note about why those sessions didn't happen.
+  regenRecentSkips: RecentSkips;
 }
 
 function shortRaceName(name: string): string {
@@ -71,6 +75,7 @@ export function TodayPageClient({
   loggedAtById,
   regenContextRows,
   regenSparseTip,
+  regenRecentSkips,
 }: Props) {
   const todayWorkouts = today?.workouts ?? [];
   const isRestDay = todayWorkouts.length === 0;
@@ -153,6 +158,7 @@ export function TodayPageClient({
                   <WorkoutCard
                     key={w.id}
                     workout={w}
+                    dateIso={selectedDayIso}
                     variant={classifyWorkout(w.status, selectedDayIso, todayIso)}
                     loggedAt={loggedAtById[w.id] ?? null}
                   />
@@ -180,6 +186,7 @@ export function TodayPageClient({
           <RegenButton
             contextRows={regenContextRows}
             showSparseTip={regenSparseTip}
+            recentSkips={regenRecentSkips}
             isPending={false}
           />
         }

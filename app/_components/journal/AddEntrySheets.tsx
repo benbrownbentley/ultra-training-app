@@ -34,6 +34,11 @@ const IMPACT_ORDER: ImpactChoice[] = [
 interface Props {
   open: boolean;
   onClose: () => void;
+  // When set, the sheet skips the type picker and opens directly to
+  // the note step with the textarea pre-filled. Used by the skip +
+  // missed annotation flow so the user taps once to go from a card
+  // to typing why. The picker is still reachable via the Back chip.
+  prefill?: { type: "note"; body: string };
 }
 
 // Stays-false during SSR/hydration so the portal never targets a missing
@@ -47,14 +52,26 @@ function useIsClient(): boolean {
 // picker; choosing note/travel swaps the inner step in place. Choosing
 // injury/physio navigates to the dedicated route (closed via onClose
 // after the navigation kicks off).
-export function AddEntrySheets({ open, onClose }: Props) {
+export function AddEntrySheets({ open, onClose, prefill }: Props) {
   const isClient = useIsClient();
   if (!open || !isClient) return null;
-  return createPortal(<SheetShell onClose={onClose} />, document.body);
+  return createPortal(
+    <SheetShell onClose={onClose} prefill={prefill} />,
+    document.body,
+  );
 }
 
-function SheetShell({ onClose }: { onClose: () => void }) {
-  const [step, setStep] = useState<Step>("picker");
+function SheetShell({
+  onClose,
+  prefill,
+}: {
+  onClose: () => void;
+  prefill?: { type: "note"; body: string };
+}) {
+  // Open straight to the note step when prefill is provided so the
+  // user lands directly on the textarea (already focused + cursor at
+  // end of the pre-filled body). Otherwise show the type picker.
+  const [step, setStep] = useState<Step>(prefill ? "note" : "picker");
   const [isNavigating, setIsNavigating] = useState(false);
   const router = useRouter();
 
@@ -122,6 +139,7 @@ function SheetShell({ onClose }: { onClose: () => void }) {
             titleId={titleId}
             onClose={onClose}
             onBack={() => setStep("picker")}
+            initialBody={prefill?.body}
           />
         )}
         {step === "travel" && (
@@ -278,20 +296,36 @@ function NoteStep({
   titleId,
   onClose,
   onBack,
+  initialBody,
 }: {
   titleId: string;
   onClose: () => void;
   onBack: () => void;
+  // Seeds the textarea — used by the skip + missed annotation flow.
+  // The caret lands at the end of this string so the user types
+  // straight into the rest of the sentence.
+  initialBody?: string;
 }) {
-  const [body, setBody] = useState("");
+  const [body, setBody] = useState(initialBody ?? "");
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    const handle = window.setTimeout(() => textareaRef.current?.focus(), 50);
+    const handle = window.setTimeout(() => {
+      const ta = textareaRef.current;
+      if (!ta) return;
+      ta.focus();
+      // Place the caret at the end of the prefilled body so the user
+      // can keep typing the rest of the sentence — feels seamless
+      // from "tap + ADD NOTE → start typing".
+      if (initialBody) {
+        const len = initialBody.length;
+        ta.setSelectionRange(len, len);
+      }
+    }, 50);
     return () => window.clearTimeout(handle);
-  }, []);
+  }, [initialBody]);
 
   const submit = useCallback(
     (regenAfter: boolean) => {

@@ -3,18 +3,24 @@
 import { useState } from "react";
 import { RegenIcon } from "./icons";
 import { RegenerateSheet } from "@/app/_components/regen/RegenerateSheet";
-import type { ContextRow } from "@/lib/regen-context";
+import type { ContextRow, RecentSkips } from "@/lib/regen-context";
 
 interface Props {
   contextRows: ContextRow[];
   showSparseTip?: boolean;
+  recentSkips?: RecentSkips;
   isPending: boolean;
 }
 
 // REGEN chip inside the plan strip. Opens the universal regenerate sheet
 // rather than firing the action directly — the sheet owns confirmation,
 // context display, and notes entry.
-export function RegenButton({ contextRows, showSparseTip, isPending }: Props) {
+export function RegenButton({
+  contextRows,
+  showSparseTip,
+  recentSkips,
+  isPending,
+}: Props) {
   const [open, setOpen] = useState(false);
 
   if (isPending) {
@@ -51,6 +57,7 @@ export function RegenButton({ contextRows, showSparseTip, isPending }: Props) {
         onClose={() => setOpen(false)}
         contextRows={contextRows}
         showSparseTip={showSparseTip}
+        recentSkips={recentSkips}
       />
     </>
   );

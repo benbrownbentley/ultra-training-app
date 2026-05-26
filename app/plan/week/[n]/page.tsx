@@ -204,6 +204,7 @@ function DayRow({ day, todayIso }: { day: Day; todayIso: string }) {
             <WorkoutCard
               key={w.id}
               workout={w}
+              dateIso={day.date}
               variant={classifyWorkout(w.status, day.date, todayIso)}
             />
           ))}

@@ -3,12 +3,33 @@
 // rows are omitted when their source is empty so we don't ever render an
 // empty-looking row.
 
-import type { AthleteProfile, Plan } from "@/lib/plan";
+import type { AthleteProfile, Plan, WorkoutKind } from "@/lib/plan";
 import { addDays, daysBetween } from "@/lib/utils";
 
 export interface ContextRow {
   label: string;
   value: string;
+}
+
+/**
+ * A single skipped or missed workout from the recent window. Surfaced
+ * inside the regenerate sheet's RECENT SKIPS hint so the athlete can
+ * see which sessions Claude already knows didn't happen, and attach a
+ * note about why.
+ */
+export interface RecentSkippedItem {
+  date: string;
+  title: string;
+  kind: WorkoutKind;
+  // Distinguishes "intentionally skipped" from "missed without
+  // skipping" — both feed the adherence summary but read differently
+  // to the athlete.
+  status: "skipped" | "missed";
+}
+
+export interface RecentSkips {
+  count: number;
+  items: RecentSkippedItem[];
 }
 
 interface BuildArgs {
@@ -69,4 +90,49 @@ export function buildContextRows({
   rows.push({ label: "TARGET", value: targetParts.join(" · ") });
 
   return rows;
+}
+
+/**
+ * Surfaces skipped + retroactively-missed workouts from the last 14
+ * days so the regenerate sheet can render a "RECENT SKIPS · N since
+ * last update" hint with an inline "add a note about these" link.
+ *
+ * Missed = a past day's pending workout that was never marked done
+ * and never explicitly skipped. The user might not realise it counts
+ * as a skip from Claude's perspective; surfacing it here gives them
+ * a chance to add context.
+ */
+export function buildRecentSkips({
+  plan,
+  todayIso,
+}: {
+  plan: Plan;
+  todayIso: string;
+}): RecentSkips {
+  const windowStart = addDays(todayIso, -14);
+  const items: RecentSkippedItem[] = [];
+  for (const day of plan.days) {
+    if (day.date < windowStart || day.date >= todayIso) continue;
+    for (const w of day.workouts) {
+      if (w.status === "skipped") {
+        items.push({
+          date: day.date,
+          title: w.title,
+          kind: w.kind,
+          status: "skipped",
+        });
+      } else if (w.status === "pending") {
+        items.push({
+          date: day.date,
+          title: w.title,
+          kind: w.kind,
+          status: "missed",
+        });
+      }
+    }
+  }
+  // Sort newest-first so the hint reads "Fri · Wed · Mon" rather
+  // than dates the user has to scan backwards through.
+  items.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  return { count: items.length, items };
 }

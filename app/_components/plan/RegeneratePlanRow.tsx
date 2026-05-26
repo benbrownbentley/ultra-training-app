@@ -3,17 +3,22 @@
 import { useState } from "react";
 import { RegenIcon } from "@/app/_components/today/icons";
 import { RegenerateSheet } from "@/app/_components/regen/RegenerateSheet";
-import type { ContextRow } from "@/lib/regen-context";
+import type { ContextRow, RecentSkips } from "@/lib/regen-context";
 
 interface Props {
   contextRows: ContextRow[];
   showSparseTip?: boolean;
+  recentSkips?: RecentSkips;
 }
 
 // Outline button at the top of the plan tab. Opens the universal regen
 // sheet — the sheet itself owns confirmation, context display, and notes
 // entry so the destructive write always lands behind a deliberate tap.
-export function RegeneratePlanRow({ contextRows, showSparseTip }: Props) {
+export function RegeneratePlanRow({
+  contextRows,
+  showSparseTip,
+  recentSkips,
+}: Props) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -31,6 +36,7 @@ export function RegeneratePlanRow({ contextRows, showSparseTip }: Props) {
         onClose={() => setOpen(false)}
         contextRows={contextRows}
         showSparseTip={showSparseTip}
+        recentSkips={recentSkips}
       />
     </>
   );

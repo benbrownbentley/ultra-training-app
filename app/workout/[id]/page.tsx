@@ -6,6 +6,7 @@ import { TitleBlock } from "@/app/_components/workout/TitleBlock";
 import { MetricsRow } from "@/app/_components/workout/MetricsRow";
 import { Section } from "@/app/_components/workout/Section";
 import { Banner } from "@/app/_components/workout/Banner";
+import { MissedSkippedBanner } from "@/app/_components/workout/MissedSkippedBanner";
 import { WorkoutActions } from "@/app/_components/workout/WorkoutActions";
 import { ActualsForm } from "@/app/_components/workout/ActualsForm";
 import { TabBar } from "@/app/_components/today/TabBar";
@@ -114,9 +115,23 @@ export default async function WorkoutPage({
 
       <div className="flex flex-1 flex-col overflow-y-auto pb-4">
         <div className="mx-auto flex w-full max-w-[640px] flex-col gap-2">
-          {banner && (
-            <Banner tone={banner.tone} label={banner.label} body={banner.body} />
-          )}
+          {/* Missed + skipped get a richer client-side banner that
+              adds an inline "+ Add note" affordance — the rest of
+              the tone palette uses the plain Banner. */}
+          {banner &&
+            (variant === "missed" || variant === "skipped" ? (
+              <MissedSkippedBanner
+                variant={variant}
+                workoutTitle={workout.title}
+                workoutDateIso={workout.date}
+              />
+            ) : (
+              <Banner
+                tone={banner.tone}
+                label={banner.label}
+                body={banner.body}
+              />
+            ))}
 
           <TitleBlock
             kind={workout.kind}

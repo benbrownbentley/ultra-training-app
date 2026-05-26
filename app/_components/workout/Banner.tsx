@@ -42,9 +42,12 @@ export function Banner({
         — {label}
       </span>
       {body && (
-        <span className="text-[13px] leading-snug text-zinc-950 dark:text-zinc-50">
+        // Body intentionally a div so callers can pass stacked
+        // children (e.g. the skip/missed banner adds an inline note
+        // affordance below the prose line).
+        <div className="text-[13px] leading-snug text-zinc-950 dark:text-zinc-50">
           {body}
-        </span>
+        </div>
       )}
     </div>
   );

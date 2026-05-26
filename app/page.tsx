@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { getAthleteProfile, getPlan } from "@/lib/supabase/server";
 import { addDays, daysBetween, getTodayISO, weekStart } from "@/lib/utils";
 import { TodayPageClient } from "@/app/_components/today/TodayPageClient";
-import { buildContextRows } from "@/lib/regen-context";
+import { buildContextRows, buildRecentSkips } from "@/lib/regen-context";
 import type { Day } from "@/lib/plan";
 
 export const dynamic = "force-dynamic";
@@ -102,6 +102,9 @@ export default async function Home({
   // then nudges the user to type notes so the regen has something new to
   // chew on.
   const regenSparseTip = !regenContextRows.some((r) => r.label === "LAST 14");
+  // Skipped + missed workouts in the last 14 days — drives the
+  // regen-sheet's RECENT SKIPS hint with a pre-filled note flow.
+  const regenRecentSkips = buildRecentSkips({ plan, todayIso });
 
   return (
     <TodayPageClient
@@ -123,6 +126,7 @@ export default async function Home({
       loggedAtById={loggedAtById}
       regenContextRows={regenContextRows}
       regenSparseTip={regenSparseTip}
+      regenRecentSkips={regenRecentSkips}
     />
   );
 }

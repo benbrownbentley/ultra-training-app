@@ -27,7 +27,8 @@ import { useRouter } from "next/navigation";
 import { previewPlan } from "@/app/actions";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { ArrowRight } from "@/app/_components/today/icons";
-import type { ContextRow } from "@/lib/regen-context";
+import { AddEntrySheets } from "@/app/_components/journal/AddEntrySheets";
+import type { ContextRow, RecentSkips } from "@/lib/regen-context";
 
 interface Props {
   open: boolean;
@@ -36,6 +37,10 @@ interface Props {
   // Set true when the user has very little new data since the last regen
   // (sparse context). Surfaces the "add notes for a meaningful change" tip.
   showSparseTip?: boolean;
+  // Skipped + missed workouts in the recent window — when count > 0,
+  // surfaces a RECENT SKIPS hint with an inline "add a note" affordance
+  // that opens the journal note sheet pre-filled.
+  recentSkips?: RecentSkips;
   // Seed value for the textarea. Used by "Regenerate again" on /regen so
   // the user keeps the notes they typed for the previous attempt.
   initialNotes?: string;
@@ -51,6 +56,7 @@ export function RegenerateSheet({
   onClose,
   contextRows,
   showSparseTip,
+  recentSkips,
   initialNotes,
 }: Props) {
   const isClient = useIsClient();
@@ -60,6 +66,7 @@ export function RegenerateSheet({
       onClose={onClose}
       contextRows={contextRows}
       showSparseTip={showSparseTip}
+      recentSkips={recentSkips}
       initialNotes={initialNotes}
     />,
     document.body,
@@ -70,6 +77,7 @@ function SheetBody({
   onClose,
   contextRows,
   showSparseTip,
+  recentSkips,
   initialNotes,
 }: Omit<Props, "open">) {
   const [notes, setNotes] = useState(initialNotes ?? "");
@@ -217,6 +225,10 @@ function SheetBody({
               )}
             </div>
 
+            {recentSkips && recentSkips.count > 0 && (
+              <RecentSkipsHint recentSkips={recentSkips} />
+            )}
+
             {showSparseTip && (
               <div className="mt-3 flex gap-2.5 rounded-[10px] border border-dashed border-zinc-200 px-3 py-2.5 dark:border-zinc-800">
                 <span
@@ -301,5 +313,118 @@ function ContextRowItem({ label, value }: ContextRow) {
         {value}
       </span>
     </div>
+  );
+}
+
+// Formats a YYYY-MM-DD date string as a short weekday ("MON", "FRI")
+// in UTC so it lines up with how the rest of the app renders dates.
+function shortWeekday(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d))
+    .toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" })
+    .toUpperCase();
+}
+
+/**
+ * Tappable RECENT SKIPS hint. Collapsed view shows a one-line
+ * summary ("3 since last update · MON · WED · FRI"); expanded view
+ * lists the workouts and offers an inline "Add a note about these"
+ * link that opens the journal note sheet pre-filled with a
+ * multi-line scaffold. Re-uses the existing AddEntrySheets prefill
+ * surface so the journal entry lands in the standard feed.
+ */
+function RecentSkipsHint({ recentSkips }: { recentSkips: RecentSkips }) {
+  const [expanded, setExpanded] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Cap the inline date list — beyond 4 the row gets cramped.
+  const preview = recentSkips.items.slice(0, 4);
+  const inlineDates = preview.map((i) => shortWeekday(i.date)).join(" · ");
+
+  // Pre-fill body for "Add a note about these" — multi-line so the
+  // athlete can leave one line per session if they want. Same shape
+  // as the per-card prefill but aggregated.
+  const prefillLines = recentSkips.items.map((i) => {
+    const verb = i.status === "skipped" ? "Skipped" : "Missed";
+    return `${verb}: ${i.title} on ${i.date} — `;
+  });
+  const prefillBody = `${prefillLines.join("\n")}\n`;
+
+  return (
+    <>
+      <div className="mt-3 rounded-[10px] border border-amber-200 bg-amber-50 dark:border-amber-500/40 dark:bg-amber-500/[0.08]">
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          className="flex w-full items-center justify-between gap-2.5 bg-transparent px-3 py-2.5 text-left"
+        >
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span
+              className="font-mono text-[10px] font-semibold uppercase text-amber-700 dark:text-amber-400"
+              style={{ letterSpacing: "0.2em" }}
+            >
+              — RECENT SKIPS
+            </span>
+            <span className="font-mono text-[12px] leading-snug text-zinc-950 dark:text-zinc-50">
+              {recentSkips.count} since last update
+              {inlineDates && <span className="text-zinc-500"> · {inlineDates}</span>}
+            </span>
+          </div>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            className={`shrink-0 text-amber-700 transition-transform dark:text-amber-400 ${
+              expanded ? "rotate-90" : ""
+            }`}
+          >
+            <path
+              d="M9 6l6 6-6 6"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        {expanded && (
+          <div className="border-t border-amber-200 px-3 py-2 dark:border-amber-500/40">
+            <ul className="m-0 flex flex-col gap-1.5 p-0">
+              {recentSkips.items.map((item, i) => (
+                <li
+                  key={`${item.date}-${i}`}
+                  className="flex items-center justify-between gap-2 font-mono text-[12px] text-zinc-950 dark:text-zinc-50"
+                >
+                  <span>
+                    <span className="mr-2 text-zinc-500">
+                      {shortWeekday(item.date)}
+                    </span>
+                    {item.title}
+                  </span>
+                  <span className="font-mono text-[10px] uppercase text-zinc-500" style={{ letterSpacing: "0.18em" }}>
+                    {item.status}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <button
+              type="button"
+              onClick={() => setSheetOpen(true)}
+              className="mt-2.5 bg-transparent font-mono text-[10.5px] font-medium uppercase text-emerald-700 transition hover:underline dark:text-emerald-400"
+              style={{ letterSpacing: "0.18em" }}
+            >
+              + ADD A NOTE ABOUT THESE
+            </button>
+          </div>
+        )}
+      </div>
+      <AddEntrySheets
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        prefill={{ type: "note", body: prefillBody }}
+      />
+    </>
   );
 }

@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { getAthleteProfile, getPlan } from "@/lib/supabase/server";
 import { daysBetween, getTodayISO } from "@/lib/utils";
 import { buildPlanWeeks } from "@/lib/plan-derive";
-import { buildContextRows } from "@/lib/regen-context";
+import { buildContextRows, buildRecentSkips } from "@/lib/regen-context";
 import { PlanPageClient } from "@/app/_components/plan/PlanPageClient";
 
 export const dynamic = "force-dynamic";
@@ -27,6 +27,7 @@ export default async function PlanPage() {
 
   const regenContextRows = buildContextRows({ plan, profile, todayIso });
   const regenSparseTip = !regenContextRows.some((r) => r.label === "LAST 14");
+  const regenRecentSkips = buildRecentSkips({ plan, todayIso });
 
   return (
     <PlanPageClient
@@ -41,6 +42,7 @@ export default async function PlanPage() {
       raceElevationGain={plan.race.elevation_gain ?? null}
       regenContextRows={regenContextRows}
       regenSparseTip={regenSparseTip}
+      regenRecentSkips={regenRecentSkips}
       unitSystem={profile?.unit_system ?? "metric"}
     />
   );

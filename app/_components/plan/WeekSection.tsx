@@ -1,7 +1,8 @@
 import Link from "next/link";
 import type { PlanWeek } from "@/lib/plan-derive";
 import { dayPrimaryKind, daySummaryLabel, phaseLabel } from "@/lib/plan-derive";
-import type { UnitSystem } from "@/lib/plan";
+import type { Day, UnitSystem } from "@/lib/plan";
+import { classifyWorkout } from "@/lib/workout-variant";
 import { formatDistance, formatElevation } from "@/lib/units";
 import {
   CheckMini,
@@ -33,6 +34,69 @@ function phaseTintClass(phase: string, isCurrent: boolean): string {
     default:
       return "";
   }
+}
+
+type DayStatus = "logged" | "skipped" | "missed" | null;
+
+// Per-day completion state for the week-strip glyph. Only past days carry
+// one — today and the future show the plain kind icon, since a pending
+// workout isn't "missed" until the day is actually over. Precedence on
+// mixed-status days: missed wins (one missed session is the signal worth
+// surfacing), then any-logged reads as logged, else skipped.
+function dayCompletionStatus(day: Day, todayIso: string): DayStatus {
+  if (day.workouts.length === 0) return null; // rest day
+  if (day.date >= todayIso) return null; // today or future — no retro glyph
+  const variants = day.workouts.map((w) =>
+    classifyWorkout(w.status, day.date, todayIso),
+  );
+  if (variants.every((v) => v === "logged")) return "logged";
+  if (variants.every((v) => v === "skipped")) return "skipped";
+  if (variants.some((v) => v === "missed")) return "missed";
+  if (variants.some((v) => v === "logged")) return "logged";
+  return "skipped";
+}
+
+// Small status badge overlaid on the day pill's top-right corner. Logged
+// reuses the shared CheckMini; skipped/missed are bare ×/! glyphs kept
+// legible at ~10px. Colour is carried via currentColor so the className
+// drives the theme token.
+function DayStatusGlyph({ status }: { status: Exclude<DayStatus, null> }) {
+  if (status === "logged") return <CheckMini color="#10b981" size={10} />;
+  if (status === "skipped") {
+    return (
+      <svg
+        width="10"
+        height="10"
+        viewBox="0 0 24 24"
+        fill="none"
+        className="text-zinc-400 dark:text-zinc-600"
+      >
+        <path
+          d="M6 6l12 12M18 6L6 18"
+          stroke="currentColor"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 24 24"
+      fill="none"
+      className="text-amber-500"
+    >
+      <path
+        d="M12 5v9"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+      />
+      <circle cx="12" cy="19" r="1.3" fill="currentColor" />
+    </svg>
+  );
 }
 
 // One week in the long-form plan list. Whole row links to `/plan/week/[n]`
@@ -82,9 +146,7 @@ export function WeekSection({
         {week.days.map((day) => {
           const primaryKind = dayPrimaryKind(day.workouts);
           const isToday = day.date === todayIso;
-          const isDayDone =
-            day.workouts.length > 0 &&
-            day.workouts.every((w) => w.status === "completed");
+          const completion = dayCompletionStatus(day, todayIso);
           const isRest = day.workouts.length === 0;
           const isoDay = day.date.split("-").map(Number);
           const weekdayIdx = new Date(
@@ -94,12 +156,19 @@ export function WeekSection({
           return (
             <div
               key={day.date}
-              className={`flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg border px-1 py-2 ${
+              className={`relative flex min-w-0 flex-1 flex-col items-center gap-1 rounded-lg border px-1 py-2 ${
                 isToday
                   ? "border-emerald-500 bg-emerald-50 dark:bg-emerald-500/[0.08]"
                   : "border-zinc-200 dark:border-zinc-800"
               }`}
             >
+              {/* Past-day completion badge — logged ✓ / skipped × / missed !.
+                  Absolutely positioned so the kind icon below stays centred. */}
+              {completion && (
+                <span className="absolute right-0.5 top-0.5">
+                  <DayStatusGlyph status={completion} />
+                </span>
+              )}
               <span
                 className={`font-mono text-[10px] ${
                   isToday
@@ -110,17 +179,13 @@ export function WeekSection({
               >
                 {dayInitial}
               </span>
+              {/* Kind icon is always the base layer so resting/run/strength
+                  context is preserved even on logged or skipped past days. */}
               <div className="flex h-3 items-center">
-                {isDayDone ? (
-                  <CheckMini color="#10b981" size={11} />
-                ) : (
-                  <WorkoutKindIcon
-                    kind={isRest ? null : primaryKind}
-                    color={
-                      isToday ? "#10b981" : "rgb(82 82 91)"
-                    }
-                  />
-                )}
+                <WorkoutKindIcon
+                  kind={isRest ? null : primaryKind}
+                  color={isToday ? "#10b981" : "rgb(82 82 91)"}
+                />
               </div>
               <span
                 className={`overflow-hidden text-ellipsis whitespace-nowrap font-mono text-[9.5px] leading-tight ${

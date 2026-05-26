@@ -36,6 +36,12 @@ Items deferred from code review or development sessions. Work through these befo
 ### TD-007 — Password reset flow
 **What:** The "Forgot?" link in `components/auth/auth-split.tsx` goes to `href="#"` — a dead link. Needs a `/forgot-password` page that calls `supabase.auth.resetPasswordForEmail()` and a `/reset-password` page that handles the email link callback.
 **Why deferred:** No users yet. Must exist before v2 public launch.
+**Status:** Queued for the auth-flow polish batch (next session). Bundled with: password show/hide toggle, password strength rules, email-collision-across-providers fix, auto-login after Supabase email verification.
+
+### TD-008 — In-app navigation guard for the regen diff
+**What:** The 2026-05-25 Phase 3 batch shipped a `beforeunload` warning on the regen result page (B13 from the smoke-test findings). That covers full page navigations (refresh, close tab, type a new URL). It does NOT cover in-app router-driven navigation — back button, bottom tab switch, or any client-side `router.push`. A user clicking "Plan" or "Today" mid-diff still silently loses their previewed plan.
+**Why deferred:** Next.js 15 App Router has no built-in route-change blocker. The fix requires: (a) `history.pushState` interception with a custom popstate handler + confirmation modal for the back button, (b) wrapping the bottom tab Links in a guard component that calls the same modal before navigating. ~30 minutes of work but fiddly. Pragmatic call: ship `beforeunload` now, watch behavior, add this guard only if users actually hit the case.
+**Files:** `app/_components/regen/RegenPageClient.tsx`, `app/_components/regen/StateResult.tsx`, `app/_components/regen/StateMinor.tsx`, plus a new `useUnsavedNavGuard` hook + tab-link wrapper.
 
 ---
 
@@ -50,6 +56,16 @@ Items deferred from code review or development sessions. Work through these befo
 **File:** `app/layout.tsx`
 **When:** v2 or v3, once race data is user-scoped.
 
+### TD-009 — Consolidate duplicated `STRENGTH_FREQ_OPTS` constant
+**What:** The wizard and the profile athlete-form each declare their own copy of `STRENGTH_FREQ_OPTS = ["None","1×","2×","3×","4×","5×"]`. The wizard's lives in `app/wizard/_components/wizard-types.ts`; the profile's lives at the top of `app/_components/profile/AthleteForm.tsx`. They drifted before — 2026-05-25 wizard polish batch extended the wizard version to 5× and had to mirror the change to the profile copy manually.
+**Why deferred:** Surfaced in the wizard polish batch commit body as a known cleanup target. Low risk but worth a small dedicated refactor PR alongside other small-constant consolidations.
+**Fix:** Move `STRENGTH_FREQ_OPTS` (and any other duplicated wizard/profile constants — `TRAIN_DAYS`, `SLEEP_OPTS`, etc.) into a shared `lib/training-constants.ts` module. Both surfaces import from there.
+
+### TD-010 — Remove unused `RegenActionBar.tsx` stub
+**What:** `app/_components/regen/RegenActionBar.tsx` exists as a static component but the shipping regen flow renders its action bar inline inside `StateResult.tsx` / `StateMinor.tsx`. The stub was polished alongside those for visual consistency during the 2026-05-25 Phase 3 batch but is currently dead code — nothing imports it in the shipping flow.
+**Why deferred:** Surfaced during code review of the Phase 3 polish batch. Low priority — just dead code, not a correctness issue.
+**Fix:** Delete the file. Search for any stale imports first (`grep -rn RegenActionBar`).
+
 ---
 
-_Last updated: 2026-05-16 | Source: v1 code review_
+_Last updated: 2026-05-25 | Source: Phase 3 polish batch code review_

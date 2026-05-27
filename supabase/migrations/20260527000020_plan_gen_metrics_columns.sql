@@ -20,8 +20,8 @@ create index if not exists plan_generation_jobs_completed_at_idx
   on public.plan_generation_jobs (completed_at desc)
   where completed_at is not null;
 
-commit;
-
+-- Comments live inside the transaction so the migration is fully
+-- atomic — either columns + index + comments all land, or none do.
 comment on column public.plan_generation_jobs.meta_duration_ms is
   'Wall-clock ms spent in the meta-plan Claude call (runMetaPlanForJob). Null until the meta call returns.';
 comment on column public.plan_generation_jobs.total_duration_ms is
@@ -32,3 +32,5 @@ comment on column public.plan_generation_jobs.total_tokens_in is
   'Sum of input tokens across all phases (meta excluded until generateMetaPlan exposes usage). Null until first phase lands.';
 comment on column public.plan_generation_jobs.total_tokens_out is
   'Sum of output tokens across all phases (meta excluded until generateMetaPlan exposes usage). Null until first phase lands.';
+
+commit;

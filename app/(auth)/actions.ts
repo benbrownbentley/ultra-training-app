@@ -3,6 +3,7 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   checkPassword,
   PASSWORD_REQUIREMENTS_MESSAGE,
@@ -38,6 +39,29 @@ export async function signIn({ email, password }: Credentials): Promise<AuthResu
 }
 
 /**
+ * Returns true if a user already exists with this email, regardless of how
+ * they originally signed up (email/password or an OAuth provider). Uses the
+ * service-role admin client so it can see across all identities. Never expose
+ * this function or its result directly to the client without rate-limiting —
+ * it's an email-enumeration oracle.
+ *
+ * TODO: switch to supabaseAdmin.auth.admin.getUserByEmail(email) once we're on
+ * a supabase-js version that ships it (not present in 2.105.x). Until then,
+ * listUsers returns every user and we filter in memory — one API call per
+ * signup, fine at early-launch counts. One 1000-row page covers us; revisit
+ * with pagination (or getUserByEmail) before the user base outgrows it.
+ */
+async function userExistsByEmail(email: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+    page: 1,
+    perPage: 1000,
+  });
+  if (error) return false; // Fail open — let signUp surface the real error.
+  const target = email.toLowerCase();
+  return data.users.some((u) => u.email?.toLowerCase() === target);
+}
+
+/**
  * Email/password sign-up. Two success paths depending on Supabase project
  * settings:
  *   - Email confirmation OFF → an active session is created; redirect to /.
@@ -50,6 +74,18 @@ export async function signUp({ email, password }: Credentials): Promise<AuthResu
   const check = checkPassword(password);
   if (!check.ok) {
     return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
+  }
+
+  // App-level email-collision check. Supabase's anti-enumeration default
+  // returns "success" with session=null when the email already exists, which
+  // would silently strand the user on the "check your inbox" screen forever.
+  // Surface the real state so they can sign in (or reset) instead.
+  if (await userExistsByEmail(email)) {
+    return {
+      ok: false,
+      error:
+        "This email is already registered. Sign in instead, or reset your password.",
+    };
   }
 
   const supabase = await createClient();

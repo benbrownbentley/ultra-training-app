@@ -1363,6 +1363,12 @@ export async function advanceJob(jobId: number): Promise<
       metaPlan: job.meta_plan,
       completedPhases: job.completed_phases,
       partialWorkouts: job.partial_workouts,
+      // Running totals live on the row (each advanceJob call is
+      // stateless); pass the prior values so runOnePhase increments
+      // rather than resets them.
+      priorValidatorRetries: job.validator_retries,
+      priorTokensIn: job.total_tokens_in ?? 0,
+      priorTokensOut: job.total_tokens_out ?? 0,
     });
     if (!phaseResult.ok) {
       return {

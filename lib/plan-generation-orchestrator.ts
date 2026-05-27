@@ -98,10 +98,18 @@ interface JobRow {
   // Postgres timestamptz. Surfaced through JobStatusSnapshot so the
   // generating-screen timer can survive a page refresh — see B11.
   created_at: string;
+  // Instrumentation running totals. Each advanceJob call is stateless,
+  // so the per-phase accumulators only survive on the row — runOnePhase
+  // reads the prior value off here and writes the incremented value back.
+  // `validator_retries` is NOT NULL default 0; the token totals are null
+  // until the first phase lands.
+  validator_retries: number;
+  total_tokens_in: number | null;
+  total_tokens_out: number | null;
 }
 
 const JOB_COLUMNS =
-  "id, user_id, trigger, meta_plan, completed_phases, partial_workouts, notes, preview_id, status, failure_code, failure_phase, created_at";
+  "id, user_id, trigger, meta_plan, completed_phases, partial_workouts, notes, preview_id, status, failure_code, failure_phase, created_at, validator_retries, total_tokens_in, total_tokens_out";
 
 // =============================================================
 // Public helpers — the building blocks the action layer composes
@@ -292,12 +300,22 @@ export async function runOnePhase(args: {
   metaPlan: MetaPlan;
   completedPhases: GenerationPhase[];
   partialWorkouts: GeneratedWorkout[];
+  // Running totals carried on the job row (each advanceJob call is
+  // stateless, so they don't survive in caller memory). runOnePhase
+  // increments and writes them back, and returns the new cumulative
+  // values so the legacy in-memory loop can thread them too.
+  priorValidatorRetries: number;
+  priorTokensIn: number;
+  priorTokensOut: number;
 }): Promise<
   | {
       ok: true;
       completedPhases: GenerationPhase[];
       workouts: GeneratedWorkout[];
       summary: GenerationSummary;
+      validatorRetries: number;
+      tokensIn: number;
+      tokensOut: number;
     }
   | RunGenerationFailure
 > {
@@ -308,15 +326,21 @@ export async function runOnePhase(args: {
     metaPlan,
     completedPhases,
     partialWorkouts,
+    priorValidatorRetries,
+    priorTokensIn,
+    priorTokensOut,
   } = args;
 
-  const startedAt = Date.now();
+  const phaseStartedAt = Date.now();
   const priorSummaries = buildPriorPhaseSummaries(
     metaPlan,
     completedPhases,
     partialWorkouts,
   );
 
+  // Time the Claude call on its own so the per-phase line can separate
+  // generation latency from the supabase write below.
+  const claudeStartedAt = Date.now();
   let phaseResult;
   try {
     phaseResult = await generatePhase({
@@ -349,19 +373,33 @@ export async function runOnePhase(args: {
     );
     return { ok: false, code, requestId, jobId };
   }
+  const claudeDurationMs = Date.now() - claudeStartedAt;
 
   const nextWorkouts = [...partialWorkouts, ...phaseResult.workouts];
   const nextCompleted: GenerationPhase[] = [...completedPhases, phase.phase];
+  const nextValidatorRetries = priorValidatorRetries + phaseResult.validatorRetries;
+  const nextTokensIn = priorTokensIn + phaseResult.usage.inputTokens;
+  const nextTokensOut = priorTokensOut + phaseResult.usage.outputTokens;
 
+  // Time the DB write separately so the latency audit can rule it in or
+  // out as a contributor (expected tiny, but worth confirming).
+  const dbStartedAt = Date.now();
   await supabaseAdmin
     .from("plan_generation_jobs")
     .update({
       completed_phases: nextCompleted,
       partial_workouts: nextWorkouts,
+      // Running totals live on the row — read prior off args, write the
+      // incremented value here so the next stateless advanceJob call and
+      // the finalize summary see the cumulative figure.
+      validator_retries: nextValidatorRetries,
+      total_tokens_in: nextTokensIn,
+      total_tokens_out: nextTokensOut,
       updated_at: new Date().toISOString(),
     })
     .eq("id", jobId)
     .eq("user_id", pipelineArgs.user.id);
+  const dbDurationMs = Date.now() - dbStartedAt;
 
   // Emit the per-phase metrics line. Stays at the orchestrator layer
   // so Phase 2.5.1's move to client-driven looping doesn't lose the
@@ -371,7 +409,10 @@ export async function runOnePhase(args: {
   logPhaseMetrics({
     phase: phase.phase,
     workouts: phaseResult.workouts,
-    durationMs: Date.now() - startedAt,
+    durationMs: Date.now() - phaseStartedAt,
+    claudeDurationMs,
+    dbDurationMs,
+    validatorRetries: phaseResult.validatorRetries,
     isWizard: pipelineArgs.trigger === "wizard",
     tokensIn: phaseResult.usage.inputTokens,
     tokensOut: phaseResult.usage.outputTokens,
@@ -384,6 +425,9 @@ export async function runOnePhase(args: {
     completedPhases: nextCompleted,
     workouts: nextWorkouts,
     summary: phaseResult.summary,
+    validatorRetries: nextValidatorRetries,
+    tokensIn: nextTokensIn,
+    tokensOut: nextTokensOut,
   };
 }
 
@@ -600,6 +644,11 @@ async function resumeJobLegacy(
     row.meta_plan,
     row.completed_phases,
     row.partial_workouts,
+    // Seed the running totals from the row so a resumed job keeps
+    // accumulating instead of resetting its retry/token counters.
+    row.validator_retries,
+    row.total_tokens_in ?? 0,
+    row.total_tokens_out ?? 0,
   );
 }
 
@@ -616,10 +665,19 @@ export async function runPhasesAndCommit(
   metaPlan: MetaPlan,
   completedPhases: GenerationPhase[],
   partialWorkouts: GeneratedWorkout[],
+  // Running totals seed for the in-memory loop. Fresh runs start at 0;
+  // the resume path passes the values already on the row so the metrics
+  // keep accumulating rather than resetting on resume.
+  priorValidatorRetries = 0,
+  priorTokensIn = 0,
+  priorTokensOut = 0,
 ): Promise<RunGenerationResult> {
   const completedSet = new Set(completedPhases);
   let workouts = [...partialWorkouts];
   let completed = [...completedPhases];
+  let validatorRetries = priorValidatorRetries;
+  let tokensIn = priorTokensIn;
+  let tokensOut = priorTokensOut;
   const summaries: GenerationSummary[] = [];
 
   for (const phase of metaPlan.phases) {
@@ -631,10 +689,16 @@ export async function runPhasesAndCommit(
       metaPlan,
       completedPhases: completed,
       partialWorkouts: workouts,
+      priorValidatorRetries: validatorRetries,
+      priorTokensIn: tokensIn,
+      priorTokensOut: tokensOut,
     });
     if (!phaseResult.ok) return phaseResult;
     workouts = phaseResult.workouts;
     completed = phaseResult.completedPhases;
+    validatorRetries = phaseResult.validatorRetries;
+    tokensIn = phaseResult.tokensIn;
+    tokensOut = phaseResult.tokensOut;
     completedSet.add(phase.phase);
     summaries.push(phaseResult.summary);
   }
@@ -797,6 +861,9 @@ function logPhaseMetrics(args: {
   phase: GenerationPhase;
   workouts: GeneratedWorkout[];
   durationMs: number;
+  claudeDurationMs: number;
+  dbDurationMs: number;
+  validatorRetries: number;
   isWizard: boolean;
   tokensIn: number;
   tokensOut: number;
@@ -809,9 +876,12 @@ function logPhaseMetrics(args: {
     cacheReadInputTokens: args.cacheReadInputTokens,
     cacheCreationInputTokens: args.cacheCreationInputTokens,
     durationMs: args.durationMs,
+    claudeDurationMs: args.claudeDurationMs,
+    dbDurationMs: args.dbDurationMs,
+    validatorRetries: args.validatorRetries,
     whys: args.workouts.map((w) => w.why ?? ""),
     isWizard: args.isWizard,
-    retried: false,
+    // `retried` is derived from validatorRetries inside buildPlanGenMetrics.
   });
   console.log(
     `[plan-gen-metrics] ${JSON.stringify({

@@ -83,6 +83,12 @@ export interface PlanGenMetrics {
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
   duration_s: number;
+  // Instrumentation batch: the phase duration split into the Anthropic
+  // SDK call vs. the post-call supabase UPDATE, so the latency audit can
+  // rule the DB write in or out as a contributor. Both 0 on call sites
+  // that don't measure the split.
+  claude_duration_s: number;
+  db_duration_s: number;
   workouts: number;
   why_avg: number;
   why_max: number;
@@ -93,9 +99,14 @@ export interface PlanGenMetrics {
   // false for regens. Useful for separating wizard vs. regen metrics
   // when eyeballing the distribution.
   is_wizard: boolean;
+  // How many times the per-phase validator forced a retry on this call.
+  // 0 when the first pass validated. The summary line sums this across
+  // phases into the row's validator_retries column.
+  validator_retries: number;
   // True when the auto-retry-once path fired and the retry produced
   // the final plan. Helps gauge how often the soft retry mechanic is
-  // load-bearing.
+  // load-bearing. Derived from validator_retries when not passed
+  // explicitly — kept as its own field for log-parsing back-compat.
   retried: boolean;
 }
 
@@ -113,17 +124,28 @@ export function buildPlanGenMetrics(args: {
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
   durationMs: number;
+  // Instrumentation batch: optional sub-timing split + validator-retry
+  // count. Optional so direct unit tests and any legacy caller still
+  // type-check; the per-phase log call site always passes them.
+  claudeDurationMs?: number;
+  dbDurationMs?: number;
+  validatorRetries?: number;
   whys: string[];
   isWizard: boolean;
-  retried: boolean;
+  // Optional: when omitted, derived from validatorRetries > 0. Callers
+  // that still pass it explicitly win (back-compat).
+  retried?: boolean;
 }): PlanGenMetrics {
   const dist = computeWhyDistribution(args.whys);
+  const validatorRetries = args.validatorRetries ?? 0;
   return {
     tokens_in: args.tokensIn,
     tokens_out: args.tokensOut,
     cache_read_input_tokens: args.cacheReadInputTokens ?? 0,
     cache_creation_input_tokens: args.cacheCreationInputTokens ?? 0,
     duration_s: Math.round(args.durationMs / 1000),
+    claude_duration_s: Math.round((args.claudeDurationMs ?? 0) / 1000),
+    db_duration_s: Math.round((args.dbDurationMs ?? 0) / 1000),
     workouts: args.whys.length,
     why_avg: dist.avg,
     why_max: dist.max,
@@ -131,6 +153,7 @@ export function buildPlanGenMetrics(args: {
     why_over_480: dist.count_over_480,
     why_under_50: dist.count_under_50,
     is_wizard: args.isWizard,
-    retried: args.retried,
+    validator_retries: validatorRetries,
+    retried: args.retried ?? validatorRetries > 0,
   };
 }

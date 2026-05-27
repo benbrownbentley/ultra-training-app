@@ -1932,6 +1932,12 @@ export interface PhaseGenerationOutput {
     cacheReadInputTokens: number;
     cacheCreationInputTokens: number;
   };
+  // Instrumentation: how many times the *validation*-failure retry
+  // fired for this phase. 0 = first pass validated; 1 = the retry
+  // produced the final plan. The parse-failure retry above is a
+  // distinct safety mechanic and is intentionally not counted here —
+  // this field tracks validator pressure specifically.
+  validatorRetries: number;
 }
 
 /**
@@ -2003,6 +2009,7 @@ export async function generatePhase(
         cacheReadInputTokens,
         cacheCreationInputTokens,
       },
+      validatorRetries: 0,
     };
   }
 
@@ -2066,6 +2073,7 @@ export async function generatePhase(
       cacheReadInputTokens,
       cacheCreationInputTokens,
     },
+    validatorRetries: 1,
   };
 }
 

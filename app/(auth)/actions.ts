@@ -67,6 +67,57 @@ export async function signUp({ email, password }: Credentials): Promise<AuthResu
 }
 
 /**
+ * Sends a password-reset email via Supabase. Returns `ok: true` even when the
+ * email doesn't exist in our database — same response either way to prevent
+ * email-enumeration via the reset form. Supabase silently no-ops on
+ * non-existent emails by design, so the user just sees "check your inbox"
+ * regardless. The link lands on /reset-password (see middleware allowlist).
+ *
+ * Reuses the `confirm_email` status so the "check your inbox" UI works without
+ * a new result type — the email field is all the caller needs.
+ */
+export async function requestPasswordReset({
+  email,
+}: {
+  email: string;
+}): Promise<AuthResult> {
+  const h = await headers();
+  const host = h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  if (!host) return { ok: false, error: "Could not determine request origin." };
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${proto}://${host}/reset-password`,
+  });
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, status: "confirm_email", email };
+}
+
+/**
+ * Updates the password for the recovery-session user. Called from the
+ * /reset-password page after the client has verified the recovery token
+ * (verifyOtp), which writes the recovery-session cookies the server reads
+ * here. Validates server-side, just like signUp. Redirects to / on success —
+ * the recovery session is promoted to a full session, so the user lands
+ * signed in.
+ */
+export async function completePasswordReset({
+  newPassword,
+}: {
+  newPassword: string;
+}): Promise<AuthResult> {
+  const check = checkPassword(newPassword);
+  if (!check.ok) return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) return { ok: false, error: error.message };
+  redirect("/");
+}
+
+/**
  * Initiates the Google OAuth flow. Supabase returns a provider URL we have
  * to navigate to client-side — we don't redirect from the action itself
  * because the URL is external and client-side navigation handles it cleanly.

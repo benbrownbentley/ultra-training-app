@@ -7,9 +7,11 @@ import { NextResponse, type NextRequest } from "next/server";
  *   1. Refresh the Supabase session token by calling getUser() — without this
  *      the session silently expires.
  *   2. Gate route access: unauthenticated requests bounce to /sign-in, and
- *      authenticated requests bounce away from /sign-in and /sign-up.
- * The /auth/* segment (e.g. /auth/callback for OAuth) is intentionally
- * reachable in both states so the post-OAuth code exchange can run.
+ *      authenticated requests bounce away from the entry forms.
+ * The auth surfaces (/sign-in, /sign-up, /forgot-password, /reset-password,
+ * /auth/*) are reachable unauthenticated. /auth/* (OAuth code exchange) and
+ * /reset-password (recovery-session new-password form) additionally stay
+ * reachable while authenticated.
  */
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -43,13 +45,24 @@ export async function middleware(request: NextRequest) {
   const isAuthRoute =
     path.startsWith("/sign-in") ||
     path.startsWith("/sign-up") ||
+    path.startsWith("/forgot-password") ||
+    path.startsWith("/reset-password") ||
     path.startsWith("/auth");
 
   if (!user && !isAuthRoute) {
     return NextResponse.redirect(new URL("/sign-in", request.url));
   }
 
-  if (user && isAuthRoute && !path.startsWith("/auth")) {
+  // Signed-in users get bounced away from the entry forms, but /auth/* (OAuth
+  // code exchange) and /reset-password (the recovery session is a real session,
+  // yet the user still needs to reach the new-password form) must stay
+  // reachable while authenticated.
+  if (
+    user &&
+    isAuthRoute &&
+    !path.startsWith("/auth") &&
+    !path.startsWith("/reset-password")
+  ) {
     return NextResponse.redirect(new URL("/", request.url));
   }
 

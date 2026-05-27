@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, MailCheck } from "lucide-react";
+import { ArrowRight, Eye, EyeOff, MailCheck } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -46,6 +46,9 @@ export function AuthSplit({
   const isSignup = mode === "signup";
   const [email, setEmail] = React.useState("");
   const [password, setPassword] = React.useState("");
+  // Toggle is component-local and resets to hidden on every mount — we never
+  // persist a "show password" preference.
+  const [showPassword, setShowPassword] = React.useState(false);
   const [error, setError] = React.useState<string | null>(initialError ?? null);
   const [confirmEmail, setConfirmEmail] = React.useState<string | null>(null);
   const [isPending, startTransition] = React.useTransition();
@@ -206,17 +209,31 @@ export function AuthSplit({
                         </Link>
                       )}
                     </div>
-                    <Input
-                      id="password"
-                      type="password"
-                      autoComplete={isSignup ? "new-password" : "current-password"}
-                      placeholder="••••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                      minLength={isSignup ? PASSWORD_MIN_LENGTH : undefined}
-                      className="h-11"
-                    />
+                    <div className="relative">
+                      <Input
+                        id="password"
+                        type={showPassword ? "text" : "password"}
+                        autoComplete={isSignup ? "new-password" : "current-password"}
+                        placeholder="••••••••••"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                        minLength={isSignup ? PASSWORD_MIN_LENGTH : undefined}
+                        className="h-11 pr-11"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((v) => !v)}
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                        className="absolute right-1 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-md text-zinc-500 transition hover:text-zinc-900 dark:hover:text-zinc-100"
+                      >
+                        {showPassword ? (
+                          <EyeOff className="h-4 w-4" />
+                        ) : (
+                          <Eye className="h-4 w-4" />
+                        )}
+                      </button>
+                    </div>
                   </div>
 
                   {/* Live rule checklist — sign-up only, and only once the

@@ -3,8 +3,8 @@
 import { useCallback, useState, useTransition } from "react";
 import { changePassword } from "@/app/(auth)/actions";
 import {
-  PASSWORD_MIN_LENGTH,
-  PASSWORD_TOO_SHORT_MESSAGE,
+  checkPassword,
+  PASSWORD_REQUIREMENTS_MESSAGE,
 } from "@/lib/auth-constants";
 import { FormField } from "./FormField";
 import { InlineError, InlineSuccess } from "./InlineMessages";
@@ -20,8 +20,8 @@ export function ChangePasswordForm({ onClose }: { onClose: () => void }) {
   const submit = useCallback(() => {
     setError(null);
     setSuccess(null);
-    if (newPassword.length < PASSWORD_MIN_LENGTH) {
-      setError(PASSWORD_TOO_SHORT_MESSAGE);
+    if (!checkPassword(newPassword).ok) {
+      setError(PASSWORD_REQUIREMENTS_MESSAGE);
       return;
     }
     if (newPassword !== confirmPassword) {

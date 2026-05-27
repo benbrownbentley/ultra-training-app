@@ -7,9 +7,11 @@ import { ArrowRight, MailCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PASSWORD_MIN_LENGTH } from "@/lib/auth-constants";
 
 import { ElevationProfile } from "./elevation-profile";
 import { GoogleIcon } from "./google-icon";
+import { PasswordRequirements } from "./password-requirements";
 import { TopoBackground } from "./topo-background";
 import { VertLogo } from "./vert-logo";
 
@@ -212,10 +214,16 @@ export function AuthSplit({
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       required
-                      minLength={isSignup ? 8 : undefined}
+                      minLength={isSignup ? PASSWORD_MIN_LENGTH : undefined}
                       className="h-11"
                     />
                   </div>
+
+                  {/* Live rule checklist — sign-up only, and only once the
+                      user starts typing (see PasswordRequirements). */}
+                  {isSignup && password.length > 0 && (
+                    <PasswordRequirements pw={password} />
+                  )}
 
                   {error && (
                     <div

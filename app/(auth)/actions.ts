@@ -3,6 +3,10 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import {
+  checkPassword,
+  PASSWORD_REQUIREMENTS_MESSAGE,
+} from "@/lib/auth-constants";
 
 export type AuthResult =
   | { ok: false; error: string }
@@ -41,6 +45,13 @@ export async function signIn({ email, password }: Credentials): Promise<AuthResu
  *     so the UI can ask the user to check their inbox.
  */
 export async function signUp({ email, password }: Credentials): Promise<AuthResult> {
+  // Defence-in-depth: Supabase enforces the same floor server-side, but a
+  // friendly message beats its raw "Password should be at least 8 characters".
+  const check = checkPassword(password);
+  if (!check.ok) {
+    return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
+  }
+
   const supabase = await createClient();
   const { data, error } = await supabase.auth.signUp({ email, password });
 
@@ -88,11 +99,6 @@ export async function signInWithGoogle(): Promise<OAuthResult> {
 }
 
 // ─── Account self-service ─────────────────────────────────────────
-
-import {
-  PASSWORD_MIN_LENGTH,
-  PASSWORD_TOO_SHORT_MESSAGE,
-} from "@/lib/auth-constants";
 
 export type AccountResult = { ok: true } | { ok: false; error: string };
 
@@ -148,8 +154,9 @@ export async function changePassword({
   currentPassword,
   newPassword,
 }: ChangePasswordArgs): Promise<AccountResult> {
-  if (newPassword.length < PASSWORD_MIN_LENGTH) {
-    return { ok: false, error: PASSWORD_TOO_SHORT_MESSAGE };
+  const check = checkPassword(newPassword);
+  if (!check.ok) {
+    return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
   }
   const supabase = await createClient();
   const {

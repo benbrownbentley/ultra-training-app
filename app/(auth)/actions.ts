@@ -88,8 +88,22 @@ export async function signUp({ email, password }: Credentials): Promise<AuthResu
     };
   }
 
+  const h = await headers();
+  const host = h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  if (!host) return { ok: false, error: "Could not determine request origin." };
+
   const supabase = await createClient();
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      // Route the confirmation link through our callback so clicking it signs
+      // the user in automatically (see app/auth/callback). next=/ lets
+      // app/page.tsx's empty-state logic forward brand-new users to /wizard.
+      emailRedirectTo: `${proto}://${host}/auth/callback?next=/`,
+    },
+  });
 
   if (error) {
     return { ok: false, error: error.message };

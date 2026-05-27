@@ -527,6 +527,7 @@ export async function runFinalize(args: {
       })
       .eq("id", jobId)
       .eq("user_id", pipelineArgs.user.id);
+    await finalizeMetrics({ jobId, status: "complete", failureCode: null });
     return { ok: true, previewId: null };
   }
 
@@ -575,6 +576,7 @@ export async function runFinalize(args: {
     })
     .eq("id", jobId)
     .eq("user_id", pipelineArgs.user.id);
+  await finalizeMetrics({ jobId, status: "complete", failureCode: null });
   return { ok: true, previewId };
 }
 
@@ -835,6 +837,66 @@ async function markJobFailed(
       updated_at: new Date().toISOString(),
     })
     .eq("id", jobId);
+  // Single failure writer for the pipeline, so this is the right place
+  // to emit the terminal summary + total_duration_ms for every failure
+  // path (meta, phase, finalize).
+  await finalizeMetrics({ jobId, status: "failed", failureCode: code });
+}
+
+/**
+ * Terminal-state instrumentation. Called once when a job reaches
+ * `complete` (from runFinalize) or `failed` (from markJobFailed). Reads
+ * the running totals straight off the row — they only exist there, since
+ * advanceJob is stateless across calls — computes end-to-end wall-clock
+ * from created_at, persists total_duration_ms, and emits the per-job
+ * summary line the SQL queries read. The caller has already written
+ * status / failure_code / completed_at; this only adds total_duration_ms,
+ * so it doesn't clobber those.
+ */
+async function finalizeMetrics(args: {
+  jobId: number;
+  status: "complete" | "failed";
+  failureCode: PlanGenErrorCode | null;
+}): Promise<void> {
+  const { data: row } = await supabaseAdmin
+    .from("plan_generation_jobs")
+    .select(
+      "created_at, meta_duration_ms, validator_retries, total_tokens_in, total_tokens_out",
+    )
+    .eq("id", args.jobId)
+    .single<{
+      created_at: string;
+      meta_duration_ms: number | null;
+      validator_retries: number;
+      total_tokens_in: number | null;
+      total_tokens_out: number | null;
+    }>();
+  if (!row) return; // Defensive — the caller just wrote to this row.
+
+  const totalDurationMs = Date.now() - new Date(row.created_at).getTime();
+
+  await supabaseAdmin
+    .from("plan_generation_jobs")
+    .update({ total_duration_ms: totalDurationMs })
+    .eq("id", args.jobId);
+
+  // One terminal line per job. Same [plan-gen-metrics] prefix so any
+  // grep that finds the phase rows finds the summary too.
+  console.log(
+    `[plan-gen-metrics] ${JSON.stringify({
+      phase: "summary",
+      status: args.status,
+      failure_code: args.failureCode,
+      total_duration_s: Math.round(totalDurationMs / 1000),
+      meta_duration_s:
+        row.meta_duration_ms != null
+          ? Math.round(row.meta_duration_ms / 1000)
+          : null,
+      validator_retries: row.validator_retries,
+      total_tokens_in: row.total_tokens_in,
+      total_tokens_out: row.total_tokens_out,
+    })}`,
+  );
 }
 
 // Emits a [plan-gen-metrics] line for the meta-plan call. The meta call

@@ -188,6 +188,9 @@ export async function runMetaPlanForJob(args: {
   }
 
   let metaPlan: MetaPlan;
+  // Time the meta-plan Claude call so the summary line + meta_duration_ms
+  // column can attribute wall-clock between the meta step and the phases.
+  const metaStartedAt = Date.now();
   try {
     metaPlan = await generateMetaPlan({
       race: args.race,
@@ -202,12 +205,17 @@ export async function runMetaPlanForJob(args: {
       `[orchestrator] meta-plan failed (code=${code}, req=${requestId})`,
       err,
     );
+    // Log the meta timing even on failure — a meta call that runs long
+    // then errors is exactly the kind of thing the latency audit wants
+    // to see. markJobFailed emits the per-job summary line afterwards.
+    logMetaMetrics({ durationMs: Date.now() - metaStartedAt, ok: false });
     // Mark the job failed so the friendly error UX can render the
     // Resume CTA — though resume on meta-plan-failure means re-running
     // the meta-plan, which is what runMetaPlanForJob does anyway.
     await markJobFailed(args.jobId, code, "meta", [], []);
     return { ok: false, code, requestId, jobId: args.jobId };
   }
+  const metaDurationMs = Date.now() - metaStartedAt;
   const enrichedMeta: MetaPlan = {
     ...metaPlan,
     phases: enrichPhaseWeeks(metaPlan.phases),
@@ -217,10 +225,17 @@ export async function runMetaPlanForJob(args: {
     .update({
       meta_plan: enrichedMeta,
       status: "pending",
+      // Persisted in the same write that flips status so the summary
+      // line at finalize can read it back off the row.
+      meta_duration_ms: metaDurationMs,
       updated_at: new Date().toISOString(),
     })
     .eq("id", args.jobId)
     .eq("user_id", args.user.id);
+  // Emit alongside the per-phase metric lines so a single
+  // [plan-gen-metrics] grep catches the meta call too. generateMetaPlan
+  // doesn't surface usage today, so tokens are omitted (see TECH_DEBT).
+  logMetaMetrics({ durationMs: metaDurationMs, ok: true });
   return { ok: true, metaPlan: enrichedMeta };
 }
 
@@ -756,6 +771,20 @@ async function markJobFailed(
       updated_at: new Date().toISOString(),
     })
     .eq("id", jobId);
+}
+
+// Emits a [plan-gen-metrics] line for the meta-plan call. The meta call
+// produces no workouts and (today) exposes no usage, so the shape is a
+// stripped-down phase row: just the phase tag, duration, and ok flag.
+// Same prefix so one grep catches meta + phases + summary.
+function logMetaMetrics(args: { durationMs: number; ok: boolean }): void {
+  console.log(
+    `[plan-gen-metrics] ${JSON.stringify({
+      phase: "meta",
+      duration_s: Math.round(args.durationMs / 1000),
+      ok: args.ok,
+    })}`,
+  );
 }
 
 // Emits a [plan-gen-metrics] line per phase chunk. Same shape as the

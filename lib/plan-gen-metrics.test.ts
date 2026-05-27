@@ -114,4 +114,71 @@ describe("buildPlanGenMetrics", () => {
     expect(m.cache_read_input_tokens).toBe(0);
     expect(m.cache_creation_input_tokens).toBe(0);
   });
+
+  it("instrumentation: splits claude vs db sub-timing into whole seconds", () => {
+    const m = buildPlanGenMetrics({
+      tokensIn: 5000,
+      tokensOut: 12000,
+      durationMs: 42_400,
+      claudeDurationMs: 41_200,
+      dbDurationMs: 1_200,
+      validatorRetries: 0,
+      whys: [],
+      isWizard: false,
+    });
+    expect(m.duration_s).toBe(42);
+    expect(m.claude_duration_s).toBe(41);
+    expect(m.db_duration_s).toBe(1);
+  });
+
+  it("instrumentation: derives retried from validatorRetries when not passed", () => {
+    const firstPass = buildPlanGenMetrics({
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 1000,
+      validatorRetries: 0,
+      whys: [],
+      isWizard: false,
+    });
+    expect(firstPass.validator_retries).toBe(0);
+    expect(firstPass.retried).toBe(false);
+
+    const retried = buildPlanGenMetrics({
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 1000,
+      validatorRetries: 1,
+      whys: [],
+      isWizard: false,
+    });
+    expect(retried.validator_retries).toBe(1);
+    expect(retried.retried).toBe(true);
+  });
+
+  it("instrumentation: an explicit retried flag still wins over the derived value", () => {
+    const m = buildPlanGenMetrics({
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 1000,
+      validatorRetries: 0,
+      retried: true,
+      whys: [],
+      isWizard: false,
+    });
+    expect(m.retried).toBe(true);
+  });
+
+  it("instrumentation: claude/db sub-timing default to zero when omitted", () => {
+    const m = buildPlanGenMetrics({
+      tokensIn: 1,
+      tokensOut: 1,
+      durationMs: 30_000,
+      whys: [],
+      isWizard: false,
+      retried: false,
+    });
+    expect(m.claude_duration_s).toBe(0);
+    expect(m.db_duration_s).toBe(0);
+    expect(m.validator_retries).toBe(0);
+  });
 });

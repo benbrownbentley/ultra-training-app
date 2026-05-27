@@ -71,6 +71,21 @@ Items deferred from code review or development sessions. Work through these befo
 **Why deferred:** Surfaced during code review of the Phase 3 polish batch. Low priority — just dead code, not a correctness issue.
 **Fix:** Delete the file. Search for any stale imports first (`grep -rn RegenActionBar`).
 
+### TD-012 — Plumb `usage` out of `generateMetaPlan`
+**What:** `generateMetaPlan` in `lib/claude.ts` returns a `MetaPlan` with no token usage. The regen-instrumentation batch (2026-05-27) therefore logs the meta-call metrics line without tokens, and `meta` tokens are excluded from the `total_tokens_in/out` row totals.
+**Why deferred:** Threading usage out of `generateMetaPlan` (and its retry path) is a bigger change than the diagnostic batch needed. The meta call is cheap (~10s), so meta tokens are a small fraction of the total.
+**Fix:** Return `usage` from `generateMetaPlan` like `generatePhase` does, thread it into the `[plan-gen-metrics] phase:meta` line, and add it to the running token totals (see TD-014).
+
+### TD-013 — Audit whether validator retries fire below `generatePhase`
+**What:** The new `validator_retries` counter (regen-instrumentation, 2026-05-27) is set inside `generatePhase` — it counts only the explicit validation-failure retry-once path, not the separate parse-failure retry, and not any retry the Anthropic SDK performs internally (e.g. on 429/5xx). If the counter looks suspiciously low against observed latency, the retries are happening at a lower layer than we instrument.
+**Why deferred:** Can't confirm without real data; the counter is correct for the layer it measures.
+**Fix:** If query 4 in `docs/queries/regen-latency.sql` shows near-zero retries but latency is high, inspect the Anthropic SDK retry policy and decide whether to surface SDK-level retry counts too.
+
+### TD-014 — `total_tokens_in/out` sum phases only
+**What:** The `total_tokens_in` / `total_tokens_out` columns (regen-instrumentation, 2026-05-27) sum the per-phase Claude calls only. Meta-call tokens are not included (see TD-012), so the SQL number undercounts the real Anthropic bill by the meta call's contribution.
+**Why deferred:** Depends on TD-012 (meta usage isn't available to sum yet).
+**Fix:** Once TD-012 lands, add the meta call's input/output tokens to the running totals in `runMetaPlanForJob`'s status→pending UPDATE, and update query 5's note in `docs/queries/regen-latency.sql`.
+
 ---
 
-_Last updated: 2026-05-26 | Source: Phase 3 polish batch code review; TD-011 closed in Phase 3 polish round 2_
+_Last updated: 2026-05-27 | Source: regen-instrumentation batch (TD-012/013/014 added); Phase 3 polish round 2 (TD-011 closed)_

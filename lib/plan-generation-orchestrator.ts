@@ -538,11 +538,17 @@ export async function runFinalize(args: {
     .update({ status: "discarded", decided_at: new Date().toISOString() })
     .eq("user_id", pipelineArgs.user.id)
     .eq("status", "pending");
+  // Tomorrow onwards only. Regen leaves today untouched so a same-day
+  // logged workout can't be overwritten by a background regen that
+  // finishes after the user has already logged. Users who want to
+  // change today's workout use the today-card controls (Skip / Log
+  // retrospectively / etc.), not regen. See PROJECT_BRIEF.md →
+  // "Regen async + notification UX (2026-05-28)" for the decision.
   const previewInsert = await supabaseAdmin
     .from("plan_previews")
     .insert({
       user_id: pipelineArgs.user.id,
-      workouts: workouts.filter((w) => w.date >= pipelineArgs.startDate),
+      workouts: workouts.filter((w) => w.date > pipelineArgs.startDate),
       notes: pipelineArgs.notes ?? null,
       generation_summary: assembledSummary,
       status: "pending" as const,
@@ -772,6 +778,33 @@ export async function loadJob(
     .maybeSingle<JobRow>();
   if (error || !data) return null;
   return data;
+}
+
+/**
+ * Returns the user's most-recent non-terminal job (kicking-off or
+ * pending), or null if none exists. Used by `previewPlan` to block
+ * a fresh regen kickoff while a prior generation is still in flight.
+ * Most-recent-by-created_at because cancelAllPendingJobs flips older
+ * rows to `cancelled` whenever a new precreate succeeds — so the
+ * non-terminal row is always the latest one.
+ */
+export async function getInFlightJobForUser(
+  userId: string,
+): Promise<{ jobId: number; status: "kicking-off" | "pending" } | null> {
+  const { data, error } = await supabaseAdmin
+    .from("plan_generation_jobs")
+    .select("id, status")
+    .eq("user_id", userId)
+    .in("status", ["kicking-off", "pending"])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  return {
+    jobId: data.id as number,
+    status: data.status as "kicking-off" | "pending",
+  };
 }
 
 /**

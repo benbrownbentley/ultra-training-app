@@ -10,6 +10,7 @@ import {
   autoPhaseSummary,
   buildPriorPhaseSummaries,
   combineSummaries,
+  hasMoreWork,
   pickNextPhase,
 } from "@/lib/plan-generation-helpers";
 import type { GeneratedWorkout, GenerationSummary } from "@/lib/claude";
@@ -212,5 +213,44 @@ describe("pickNextPhase", () => {
     expect(pickNextPhase(compressed, [])?.phase).toBe("build");
     expect(pickNextPhase(compressed, ["build"])?.phase).toBe("taper");
     expect(pickNextPhase(compressed, ["build", "taper"])).toBeNull();
+  });
+});
+
+describe("hasMoreWork", () => {
+  // Minimal MetaPlan fixture — only phases.length is read by hasMoreWork,
+  // so we don't bother populating weekStart/End ISOs.
+  const metaWithPhases: MetaPlan = {
+    meta_summary: "",
+    phases: [
+      { phase: "base", weekStartIso: "2026-05-20", weekEndIso: "2026-06-09", weeks: 3 },
+      { phase: "build", weekStartIso: "2026-06-10", weekEndIso: "2026-06-30", weeks: 3 },
+    ],
+  };
+
+  it("returns true for a pending row with phases configured", () => {
+    expect(
+      hasMoreWork({ status: "pending", meta_plan: metaWithPhases }),
+    ).toBe(true);
+  });
+
+  it("returns false for a kicking-off row — the chain doesn't self-drive meta", () => {
+    expect(
+      hasMoreWork({ status: "kicking-off", meta_plan: metaWithPhases }),
+    ).toBe(false);
+  });
+
+  it("returns false for every terminal status", () => {
+    for (const status of ["complete", "failed", "cancelled"] as const) {
+      expect(hasMoreWork({ status, meta_plan: metaWithPhases })).toBe(false);
+    }
+  });
+
+  it("returns false for a pending row with no phases — malformed meta-plan", () => {
+    const empty: MetaPlan = { meta_summary: "", phases: [] };
+    expect(hasMoreWork({ status: "pending", meta_plan: empty })).toBe(false);
+  });
+
+  it("returns false for a pending row with null meta_plan", () => {
+    expect(hasMoreWork({ status: "pending", meta_plan: null })).toBe(false);
   });
 });

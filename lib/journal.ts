@@ -83,6 +83,63 @@ export type JournalEntry =
   | InjuryEntry
   | PhysioEntry;
 
+/**
+ * Renders the type-specific `details` JSON into bullet lines for the
+ * Claude prompt. Pure formatting — no business logic. Lives here (not
+ * in the orchestrator) so both the session-scoped action and the
+ * admin-scoped server-to-server advance engine can format consistently.
+ */
+export function formatJournalDetails(entry: JournalEntry): string[] {
+  if (entry.type === "travel" && entry.details) {
+    const d = entry.details;
+    return [
+      `dates: ${d.start_date} → ${d.end_date}`,
+      `impact: ${d.impact.length ? d.impact.join(", ") : "unspecified"}`,
+    ];
+  }
+  if (entry.type === "injury" && entry.details) {
+    const d = entry.details;
+    const lines = [
+      `body_part: ${d.body_part}`,
+      `side: ${d.side}`,
+      `severity: ${d.severity}/10`,
+    ];
+    if (d.pain_quality.length)
+      lines.push(`pain_quality: ${d.pain_quality.join(", ")}`);
+    if (d.restrictions.length)
+      lines.push(`restrictions: ${d.restrictions.join(", ")}`);
+    if (d.started_date) lines.push(`started: ${d.started_date}`);
+    if (d.check_back_in_days)
+      lines.push(`check_back_in: ${d.check_back_in_days} days`);
+    return lines;
+  }
+  if (entry.type === "physio" && entry.details) {
+    const d = entry.details;
+    const lines = [`diagnosis: ${d.diagnosis}`];
+    if (d.physio_name) lines.push(`physio: ${d.physio_name}`);
+    if (d.visit_date) lines.push(`visit: ${d.visit_date}`);
+    if (d.restrictions.length)
+      lines.push(`restrictions: ${d.restrictions.join(", ")}`);
+    if (d.exercises.length) {
+      const ex = d.exercises
+        .map(
+          (e) =>
+            `${e.name} — ${e.sets_reps}${e.load ? ` @ ${e.load}` : ""}${
+              e.frequency ? ` (${e.frequency})` : ""
+            }`,
+        )
+        .join("; ");
+      lines.push(`exercises: ${ex}`);
+    }
+    if (d.duration_value && d.duration_unit === "weeks")
+      lines.push(`duration: ${d.duration_value} weeks`);
+    if (d.duration_unit === "until_resolved")
+      lines.push("duration: until symptoms resolve");
+    return lines;
+  }
+  return [];
+}
+
 export const IMPACT_LABELS: Record<ImpactChoice, string> = {
   no_running: "No running",
   no_gym: "No gym",

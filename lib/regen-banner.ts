@@ -40,6 +40,12 @@ export interface BannerState {
   // notes captured on the failed regen so the retry can re-fire
   // previewPlan with the same input.
   failedNotes: string | null;
+  // ISO timestamp of the job row's last update. Used by the lazy
+  // watchdog (RegenStatusProvider) to detect chains that have gone
+  // silent — if state is in_progress and lastUpdatedAt is older than
+  // ~3 min, fire a resume so the chain picks up where it died. Null
+  // off the in-flight branches.
+  lastUpdatedAt: string | null;
 }
 
 /**
@@ -56,6 +62,10 @@ export interface BannerJobRow {
   preview_id: number | null;
   failure_code: PlanGenErrorCode | null;
   notes: string | null;
+  // Postgres timestamptz, bumped by the orchestrator on every phase
+  // advance + the final status flip. Used as the heartbeat for the
+  // lazy watchdog.
+  updated_at: string;
 }
 
 /**
@@ -77,6 +87,7 @@ const IDLE: BannerState = {
   phaseLabel: null,
   failureCode: null,
   failedNotes: null,
+  lastUpdatedAt: null,
 };
 
 /**
@@ -104,6 +115,7 @@ export function bannerStateFromRow(
       ...derivePhaseProgress(job),
       failureCode: null,
       failedNotes: null,
+      lastUpdatedAt: job.updated_at,
     };
   }
 
@@ -117,6 +129,7 @@ export function bannerStateFromRow(
       phaseLabel: null,
       failureCode: job.failure_code,
       failedNotes: job.notes,
+      lastUpdatedAt: job.updated_at,
     };
   }
 
@@ -138,6 +151,7 @@ export function bannerStateFromRow(
         phaseLabel: null,
         failureCode: null,
         failedNotes: null,
+        lastUpdatedAt: job.updated_at,
       };
     }
     return IDLE;
@@ -216,7 +230,7 @@ export async function getBannerStateForUser(
   const { data: jobRow, error: jobErr } = await supabaseAdmin
     .from("plan_generation_jobs")
     .select(
-      "id, status, trigger, meta_plan, completed_phases, preview_id, failure_code, notes",
+      "id, status, trigger, meta_plan, completed_phases, preview_id, failure_code, notes, updated_at",
     )
     .eq("user_id", userId)
     .eq("trigger", "regen")

@@ -18,11 +18,18 @@
 //
 // `unknown` is the catch-all so a new failure mode never falls off
 // the wire. Client copy treats it identically to `generation_timeout`.
+//
+// `already_in_flight` is the typed signal that a user-initiated
+// regen was rejected because the user already has an in-progress
+// generation job. The banner is the recovery surface — no separate
+// error screen — so client UX is "swap the Regenerate button copy"
+// rather than render the full error layout.
 
 export type PlanGenErrorCode =
   | "generation_timeout"
   | "validation_failed"
   | "anthropic_error"
+  | "already_in_flight"
   | "unknown";
 
 /**
@@ -77,6 +84,13 @@ export const PLAN_GEN_ERROR_COPY: Record<
     eyebrow: "REST DAY",
     title: "Looks like our servers are having a rest day.",
     body: "Your plan is safe and unchanged. Give us a minute — we'll be back at it shortly.",
+  },
+  // Fallback copy only — the banner is the primary surface for this
+  // code, so the full ErrorShell layout should rarely render this.
+  already_in_flight: {
+    eyebrow: "STILL RUNNING",
+    title: "Your last regen is still in flight.",
+    body: "Check the banner at the top of the page — tap it to watch progress, or wait for it to finish before kicking off another.",
   },
 };
 

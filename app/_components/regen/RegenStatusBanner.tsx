@@ -1,90 +1,30 @@
 "use client";
 
-// Global regen status banner. Mounted in the root layout so it
-// appears on every authenticated page; sits as a thin top bar that
-// renders nothing in the idle state. v2's primary "where is my
-// regen?" surface — see PROJECT_BRIEF.md → "Regen async +
-// notification UX (2026-05-28)".
+// Renders the global regen status bar. Pure consumer — all state +
+// Realtime ownership now lives in RegenStatusProvider so this
+// component and RegenProgressSheet read from the same source.
 //
-// Data flow:
-//   1. Root layout server-renders the initial state via
-//      `getBannerStateForUser(userId)` and passes it as a prop. No
-//      flash-of-empty on first paint.
-//   2. This component subscribes to plan_generation_jobs row changes
-//      via Supabase Realtime, filtered to the user's own rows by
-//      `user_id=eq.<userId>` (RLS also enforces this; the explicit
-//      filter just reduces wasted wire traffic).
-//   3. On each payload the banner re-fetches via the
-//      `getRegenBannerState` server action so the linked plan_preview
-//      status is reflected too — Realtime alone only tells us about
-//      the job row, not whether the user has since accepted the
-//      preview from another tab.
+// In-progress VIEW tap opens the in-page progress sheet rather than
+// navigating to /regen?job=<id>. The sheet stays minimisable so the
+// user can pop the ceremony view from any page without losing their
+// place — see PROJECT_BRIEF.md → "Regen async + notification UX
+// (2026-05-28)" for the hybrid tap-flow decision.
 
-import { useEffect, useState, useTransition } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { createClient } from "@/lib/supabase/client";
-import {
-  getRegenBannerState,
-  previewPlan,
-} from "@/app/actions";
-import type { BannerState } from "@/lib/regen-banner";
+import { useTransition } from "react";
+import { previewPlan } from "@/app/actions";
+import { useRegenStatus } from "./RegenStatusProvider";
 
-interface Props {
-  userId: string;
-  initialState: BannerState;
-}
-
-export function RegenStatusBanner({ userId, initialState }: Props) {
-  const router = useRouter();
-  const [state, setState] = useState<BannerState>(initialState);
+export function RegenStatusBanner() {
+  const { state, openSheet, refresh } = useRegenStatus();
   const [isRetrying, startRetry] = useTransition();
-
-  useEffect(() => {
-    const supabase = createClient();
-
-    // Filter to the user's own rows. RLS enforces this server-side
-    // too, but pushing the filter down to the publication subscription
-    // means the wire only carries our user's payloads.
-    const channel = supabase
-      .channel(`regen-banner-${userId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "plan_generation_jobs",
-          filter: `user_id=eq.${userId}`,
-        },
-        () => {
-          // Re-derive via the server action so the linked preview
-          // row's status (pending / accepted / discarded) is part of
-          // the state we render. The payload alone doesn't carry that.
-          void refresh();
-        },
-      )
-      .subscribe();
-
-    return () => {
-      void supabase.removeChannel(channel);
-    };
-  }, [userId]);
-
-  async function refresh() {
-    try {
-      const next = await getRegenBannerState();
-      setState(next);
-    } catch (err) {
-      console.error("[regen-banner] refresh failed", err);
-    }
-  }
 
   function handleRetry() {
     // Re-fire previewPlan with the failed job's notes so the new
-    // regen starts from the same input. The original failed row stays
-    // in the table but is no longer the most-recent regen-trigger row
-    // once the new precreate lands, so the banner state derivation
-    // moves on automatically.
+    // regen starts from the same input. The original failed row
+    // stays in the table but is no longer the most-recent regen
+    // trigger row once the new precreate lands, so the banner state
+    // derivation moves on automatically.
     startRetry(async () => {
       await previewPlan(state.failedNotes ?? undefined);
       await refresh();
@@ -98,9 +38,7 @@ export function RegenStatusBanner({ userId, initialState }: Props) {
       <BannerShell>
         <button
           type="button"
-          onClick={() => {
-            if (state.jobId) router.push(`/regen?job=${state.jobId}`);
-          }}
+          onClick={openSheet}
           className="flex flex-1 items-center gap-3 text-left"
         >
           <PulseDot />

@@ -28,6 +28,7 @@ import { previewPlan } from "@/app/actions";
 import { MotifTopo } from "@/app/_components/today/motifs";
 import { ArrowRight } from "@/app/_components/today/icons";
 import { AddEntrySheets } from "@/app/_components/journal/AddEntrySheets";
+import { useRegenStatus } from "@/app/_components/regen/RegenStatusProvider";
 import type { ContextRow, RecentSkips } from "@/lib/regen-context";
 
 interface Props {
@@ -85,6 +86,15 @@ function SheetBody({
   const [isPending, startTransition] = useTransition();
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const titleId = useId();
+  // Read inFlight from the shared regen-status context so the
+  // Regenerate button disables itself when a prior regen is still
+  // running. The banner is the recovery surface — duplicate kickoffs
+  // are blocked server-side too (already_in_flight code from PR 1)
+  // but disabling client-side keeps the UX from rendering a useless
+  // tap target. Refresh primes the banner state right after submit
+  // so the user sees the new chain in_progress without waiting on
+  // the first Realtime payload.
+  const { inFlight, refresh } = useRegenStatus();
 
   // Focus the textarea once painted so mobile keyboards rise immediately.
   useEffect(() => {
@@ -113,6 +123,18 @@ function SheetBody({
       try {
         const r = await previewPlan(notes);
         if (!r.ok) {
+          // already_in_flight is the banner's job — surface it
+          // inline rather than bouncing to /regen?error, because the
+          // user's recovery surface is the banner they can already
+          // see. Server returns this when a prior regen is still
+          // running (e.g. another tab kicked one off).
+          if (r.code === "already_in_flight") {
+            setError(
+              "A regen is already running — check the banner at the top of the page.",
+            );
+            void refresh();
+            return;
+          }
           // Branded full-screen error — closes the sheet and lets
           // /regen?error=<code> render the StateError variant the user
           // can retry from. Stable across timeout, validation,
@@ -121,6 +143,9 @@ function SheetBody({
           router.push(`/regen?error=${r.code}&req=${r.requestId}`);
           return;
         }
+        // Prime the banner state so the user sees in_progress
+        // immediately, not after the first Realtime payload.
+        void refresh();
         onClose();
         // Phase 2.5 chunked path returns a jobId — route to the
         // progress page which polls until complete then auto-routes
@@ -141,7 +166,7 @@ function SheetBody({
         router.push(`/regen?error=generation_timeout`);
       }
     });
-  }, [notes, onClose, router]);
+  }, [notes, onClose, refresh, router]);
 
   return (
     <div
@@ -266,6 +291,17 @@ function SheetBody({
               style={{ minHeight: 96 }}
               rows={4}
             />
+            {/* Today-lock heads-up. Regen always preserves today's
+                workout — users who want to change today use the
+                today-card controls (Skip / Log retrospectively).
+                Stated explicitly so a user typing "swap today's run
+                for a rest day" doesn't expect that to land. */}
+            <p
+              className="mt-1.5 font-mono text-[10.5px] uppercase text-zinc-500 dark:text-zinc-500"
+              style={{ letterSpacing: "0.18em" }}
+            >
+              Updates tomorrow onwards · today stays as-is
+            </p>
           </div>
 
           {error && (
@@ -287,11 +323,21 @@ function SheetBody({
           <button
             type="button"
             onClick={submit}
-            disabled={isPending}
+            disabled={isPending || inFlight}
             className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-emerald-600 bg-emerald-500 px-4 text-sm font-semibold text-emerald-950 shadow-[0_1px_0_rgba(255,255,255,0.18)_inset,0_8px_22px_rgba(16,185,129,0.28)] transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isPending ? "Regenerating…" : "Regenerate"}
-            {!isPending && <ArrowRight color="#052e1f" size={16} />}
+            {/* Three button states: submitting this sheet's tap
+                ("Regenerating…"), another regen already running
+                (server returns already_in_flight; banner is the
+                recovery surface), or idle ready-to-submit. */}
+            {isPending
+              ? "Regenerating…"
+              : inFlight
+                ? "Generation in progress — see banner"
+                : "Regenerate"}
+            {!isPending && !inFlight && (
+              <ArrowRight color="#052e1f" size={16} />
+            )}
           </button>
         </div>
       </div>

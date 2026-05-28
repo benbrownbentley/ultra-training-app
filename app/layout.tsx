@@ -9,6 +9,8 @@ import {
 import { BRAND_NAME, BRAND_TAGLINE } from "@/lib/brand";
 import { getBannerStateForUser } from "@/lib/regen-banner";
 import { RegenStatusBanner } from "@/app/_components/regen/RegenStatusBanner";
+import { RegenStatusProvider } from "@/app/_components/regen/RegenStatusProvider";
+import { RegenProgressSheet } from "@/app/_components/regen/RegenProgressSheet";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -73,13 +75,20 @@ export default async function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
-          {userId && initialBannerState && (
-            <RegenStatusBanner
-              userId={userId}
-              initialState={initialBannerState}
-            />
-          )}
-          {children}
+          {/* Provider stays mounted on every route (including
+              unauthenticated /sign-in etc.) so consumers that read
+              `useRegenStatus()` from RegenerateSheet — mounted across
+              Today / Plan / regen pages — always get a context.
+              With no userId it skips the Realtime subscription and
+              keeps the banner + sheet in idle (renders nothing). */}
+          <RegenStatusProvider
+            userId={userId}
+            initialState={initialBannerState}
+          >
+            {userId && <RegenStatusBanner />}
+            {userId && <RegenProgressSheet />}
+            {children}
+          </RegenStatusProvider>
         </ThemeProvider>
       </body>
     </html>

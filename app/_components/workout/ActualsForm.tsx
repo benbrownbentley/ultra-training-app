@@ -330,6 +330,30 @@ export function ActualsForm({
     });
   }, []);
 
+  // Seeds sets[] with `count` zero-entries for the named exercise. Fires
+  // on the first edit of a placeholder set row (StrengthExerciseRow) so
+  // the subsequent same-tick onChangeSet patch has somewhere to land —
+  // React's functional setState updaters compose in order, so the seed
+  // is visible to the patch updater that runs next. Filters existing
+  // entries first to stay idempotent on the off-chance two placeholder
+  // inputs fire onChange in the same handler.
+  const onSeedSets = useCallback(
+    (exerciseName: string, count: number, unit: string) => {
+      dirtyRef.current = true;
+      setState((s) => {
+        const others = (s.detail?.sets ?? []).filter(
+          (x) => x.exerciseName !== exerciseName,
+        );
+        const seeded = [...others];
+        for (let i = 0; i < count; i++) {
+          seeded.push({ exerciseName, reps: 0, weight: 0, unit });
+        }
+        return { ...s, detail: { ...(s.detail ?? {}), sets: seeded } };
+      });
+    },
+    [],
+  );
+
   const onAddCustomExercise = useCallback(
     (input: {
       name: string;
@@ -430,6 +454,7 @@ export function ActualsForm({
       onToggleSkipExercise,
       onMarkDoneAtPlanned,
       onClearSets,
+      onSeedSets,
       onAddCustomExercise,
     }),
     [
@@ -445,6 +470,7 @@ export function ActualsForm({
       onToggleSkipExercise,
       onMarkDoneAtPlanned,
       onClearSets,
+      onSeedSets,
       onAddCustomExercise,
     ],
   );

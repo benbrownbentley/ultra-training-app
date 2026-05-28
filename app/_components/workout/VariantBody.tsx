@@ -85,6 +85,12 @@ export interface ActualsBindings {
   // Drops every actual set for the named exercise — the strength
   // checkbox uncheck path.
   onClearSets: (exerciseName: string) => void;
+  // Seeds sets[] with `count` zero-entries for the named exercise so the
+  // per-set inputs have a backing store the moment the user starts
+  // editing a placeholder row. Replaces any existing entries for the
+  // exercise (callers gate on sets.length === 0, so this is a no-op for
+  // already-logged rows in practice).
+  onSeedSets: (exerciseName: string, count: number, unit: string) => void;
   // Appends a user-defined exercise with the planned defaults; seeds
   // sets[] so the row reads as DONE AT PLANNED immediately.
   onAddCustomExercise: (input: {
@@ -307,6 +313,9 @@ export function StrengthBody({
                       })
                     }
                     onClearSets={() => b.onClearSets(ex.name)}
+                    onSeedSets={() =>
+                      b.onSeedSets(ex.name, ex.sets, ex.unit ?? defaultUnit)
+                    }
                     disabled={isFuture}
                   />
                 );
@@ -343,6 +352,9 @@ export function StrengthBody({
                       })
                     }
                     onClearSets={() => b.onClearSets(ex.name)}
+                    onSeedSets={() =>
+                      b.onSeedSets(ex.name, ex.plannedSets, ex.plannedUnit)
+                    }
                     disabled={isFuture}
                   />
                 );

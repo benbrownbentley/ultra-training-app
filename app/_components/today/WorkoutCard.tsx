@@ -320,14 +320,27 @@ function CardFooter({
     );
   }
 
-  // Logged: no Log/Skip buttons. + ADD ACTUALS → on the left,
-  // × UNLOG ghost link beside it (lower visual weight — should not
-  // compete for attention), DONE timestamp on the right. The
-  // CheckCircle in the eyebrow row is the passive status indicator;
-  // UNLOG is the explicit interactive control.
+  // Logged: no Log/Skip buttons. × UNLOG occupies the primary slot —
+  // same horizontal position the upcoming variant's "Log done" button
+  // lives in, so "the main action on this card" stays in the same place
+  // as a card transitions upcoming → logged. + ADD ACTUALS → sits to
+  // its right as a secondary affordance. DONE timestamp far right.
   if (variant === "logged") {
     return (
       <div className="pointer-events-none relative mt-3 flex flex-wrap items-center gap-2.5">
+        {/* Primary slot — outline button (not emerald) because Unlog is
+            destructive-ish, not progressive. Height/padding mirror the
+            upcoming variant's Log done button so the two share a
+            visual size class across variant transitions. */}
+        <button
+          type="button"
+          onClick={onUnlog}
+          disabled={isFaded || isPending}
+          className="pointer-events-auto inline-flex h-9 items-center gap-1 whitespace-nowrap rounded-lg border border-zinc-300 bg-transparent px-3.5 font-mono text-[11px] uppercase text-zinc-700 transition active:scale-[0.97] hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900/40"
+          style={{ letterSpacing: "0.18em" }}
+        >
+          × UNLOG
+        </button>
         {!actualsCaptured && (
           <Link
             href={`/workout/${workoutId}`}
@@ -337,18 +350,6 @@ function CardFooter({
             + ADD ACTUALS →
           </Link>
         )}
-        {/* Bordered chip — lower visual weight than + ADD ACTUALS (the
-            primary action on this row) but enough affordance that it
-            reads as tappable, where the old ghost text didn't. */}
-        <button
-          type="button"
-          onClick={onUnlog}
-          disabled={isFaded || isPending}
-          className="pointer-events-auto inline-flex h-7 items-center gap-0.5 whitespace-nowrap rounded-lg border border-zinc-200 bg-transparent px-2.5 font-mono text-[10.5px] uppercase text-zinc-500 transition active:scale-[0.97] hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-900/40"
-          style={{ letterSpacing: "0.18em" }}
-        >
-          × UNLOG
-        </button>
         <span className="flex-1" />
         {doneTime && (
           <span

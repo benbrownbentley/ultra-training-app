@@ -43,6 +43,11 @@ interface Props {
   // Clears every logged set for this exercise — the checkbox "uncheck"
   // path. Distinct from onToggleSkip: clearing isn't skipping.
   onClearSets: () => void;
+  // Seeds sets[] with planned.sets zero-entries (reps: 0, weight: 0,
+  // unit: planned.unit) so subsequent onChangeSet calls have somewhere
+  // to land. Called once when the user starts editing a placeholder row
+  // — see the placeholder render block below for why.
+  onSeedSets: () => void;
   disabled?: boolean;
 }
 
@@ -120,6 +125,7 @@ export function StrengthExerciseRow({
   onToggleSkip,
   onMarkDoneAtPlanned,
   onClearSets,
+  onSeedSets,
   disabled,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
@@ -289,51 +295,73 @@ export function StrengthExerciseRow({
       {/* Expanded — per-set inputs. */}
       {expanded && !skipped && (
         <div className="border-t border-zinc-200 px-3.5 pb-3 pt-1 dark:border-zinc-800">
-          {sets.length === 0 ? (
-            <div className="py-3 font-mono text-[11.5px] text-zinc-500 dark:text-zinc-500">
-              No sets logged yet. Tap &ldquo;Done?&rdquo; above to fill in the
-              plan, or &ldquo;+ Add set&rdquo; below to log them one at a time.
-            </div>
-          ) : (
-            <div className="flex flex-col">
-              {sets.map((s, i) => {
-                const short = s.reps < planned.reps;
-                return (
-                  <div
-                    key={i}
-                    className="grid items-center gap-2 border-t border-zinc-200 py-2 first:border-t-0 dark:border-zinc-800"
-                    style={{ gridTemplateColumns: "44px 1fr auto" }}
+          <div className="flex flex-col">
+            {/* When the row expands with no logged sets, render planned.sets
+                placeholder input rows so per-set actuals are immediately
+                enterable — the natural flow is "I just finished set 1, here's
+                what I did" rather than "check done first, then edit". The
+                first edit calls onSeedSets to commit sets[] with planned.sets
+                zero entries; React's state-updater queue applies that seed
+                before the same-tick onChangeSet patch, so the typed value
+                lands in the right index without losing input focus. */}
+            {(sets.length > 0
+              ? sets
+              : Array.from({ length: planned.sets }, () => ({
+                  reps: 0,
+                  weight: 0,
+                  unit: planned.unit,
+                }))
+            ).map((s, i) => {
+              const isPlaceholder = sets.length === 0;
+              // SHORT badge would mis-fire on placeholders (reps=0 < planned)
+              // — suppress until there's a real logged set to compare.
+              const short = !isPlaceholder && s.reps < planned.reps;
+              return (
+                <div
+                  key={i}
+                  className="grid items-center gap-2 border-t border-zinc-200 py-2 first:border-t-0 dark:border-zinc-800"
+                  style={{ gridTemplateColumns: "44px 1fr auto" }}
+                >
+                  <span
+                    className="font-mono text-[10px] font-semibold uppercase text-zinc-500 dark:text-zinc-400"
+                    style={{ letterSpacing: "0.14em" }}
                   >
-                    <span
-                      className="font-mono text-[10px] font-semibold uppercase text-zinc-500 dark:text-zinc-400"
-                      style={{ letterSpacing: "0.14em" }}
-                    >
-                      SET {i + 1}
-                    </span>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <MiniNumInput
-                        value={s.reps}
-                        suffix="reps"
-                        onChange={(reps) => onChangeSet(i, { reps })}
-                        disabled={disabled}
-                        ariaLabel={`Set ${i + 1} reps`}
-                      />
-                      <MiniNumInput
-                        value={s.weight}
-                        suffix={s.unit || planned.unit || ""}
-                        onChange={(weight) => onChangeSet(i, { weight })}
-                        disabled={disabled}
-                        ariaLabel={`Set ${i + 1} weight`}
-                      />
-                      {short && (
-                        <span
-                          className="font-mono text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-500"
-                          style={{ letterSpacing: "0.16em" }}
-                        >
-                          {planned.reps - s.reps} SHORT
-                        </span>
-                      )}
-                    </div>
+                    SET {i + 1}
+                  </span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <MiniNumInput
+                      value={s.reps}
+                      suffix="reps"
+                      onChange={(reps) => {
+                        if (isPlaceholder) onSeedSets();
+                        onChangeSet(i, { reps });
+                      }}
+                      disabled={disabled}
+                      ariaLabel={`Set ${i + 1} reps`}
+                    />
+                    <MiniNumInput
+                      value={s.weight}
+                      suffix={s.unit || planned.unit || ""}
+                      onChange={(weight) => {
+                        if (isPlaceholder) onSeedSets();
+                        onChangeSet(i, { weight });
+                      }}
+                      disabled={disabled}
+                      ariaLabel={`Set ${i + 1} weight`}
+                    />
+                    {short && (
+                      <span
+                        className="font-mono text-[10px] font-semibold uppercase text-amber-600 dark:text-amber-500"
+                        style={{ letterSpacing: "0.16em" }}
+                      >
+                        {planned.reps - s.reps} SHORT
+                      </span>
+                    )}
+                  </div>
+                  {/* Remove only commits to logged sets — placeholders have
+                      nothing to drop, so the column stays empty until the
+                      row promotes. */}
+                  {!isPlaceholder ? (
                     <button
                       type="button"
                       onClick={() => onRemoveSet(i)}
@@ -350,11 +378,13 @@ export function StrengthExerciseRow({
                         />
                       </svg>
                     </button>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+                  ) : (
+                    <span aria-hidden />
+                  )}
+                </div>
+              );
+            })}
+          </div>
 
           <button
             type="button"

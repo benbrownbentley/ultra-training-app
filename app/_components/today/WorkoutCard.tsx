@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import Link from "next/link";
 import { logWorkout } from "@/app/actions";
-import type { ActualDetail, Workout, WorkoutKind } from "@/lib/plan";
+import type { Workout, WorkoutKind } from "@/lib/plan";
 import type { Variant } from "@/lib/workout-variant";
 import { summarisePlannedDetailForDiff } from "@/lib/preview";
 import { AddEntrySheets } from "@/app/_components/journal/AddEntrySheets";
@@ -56,38 +56,6 @@ interface Props {
   loggedAt?: string | null;
 }
 
-// True if any actuals field has been populated. Drives whether the
-// "+ ADD ACTUALS →" first-time prompt shows in the logged footer.
-function hasActuals(w: Workout): boolean {
-  return (
-    w.actual_duration_min != null ||
-    w.actual_distance_km != null ||
-    w.actual_elevation_gain_m != null ||
-    w.actual_hr_avg != null ||
-    w.actual_rpe != null ||
-    (w.actual_notes != null && w.actual_notes.length > 0) ||
-    hasMeaningfulDetail(w.actual_detail)
-  );
-}
-
-// An empty actual_detail must count as "no actuals". A running row whose
-// time-in-zone form was opened and committed empty saves { zones: [] }
-// (ActualsForm spreads `...(s.detail ?? {})`), which is non-null but
-// carries nothing — the old `!= null` check treated that as "has
-// actuals" and permanently suppressed the "+ ADD ACTUALS" prompt.
-// Strength dodged the bug only because it rarely leaves an empty-array
-// detail behind; checking the inner arrays makes this kind-agnostic.
-function hasMeaningfulDetail(d: ActualDetail | null | undefined): boolean {
-  if (d == null) return false;
-  return Boolean(
-    (d.sets && d.sets.length > 0) ||
-      (d.zones && d.zones.length > 0) ||
-      (d.exercises && d.exercises.length > 0) ||
-      (d.added_exercises && d.added_exercises.length > 0) ||
-      (d.skipped_exercises && d.skipped_exercises.length > 0),
-  );
-}
-
 export function WorkoutCard({
   workout,
   dateIso,
@@ -103,7 +71,6 @@ export function WorkoutCard({
   const eyebrow = eyebrowFor(workout.kind);
   const suffix = eyebrowSuffix(variant);
   const tone = eyebrowTone(variant);
-  const actualsCaptured = hasActuals(workout);
 
   // Pre-fill used by the + ADD NOTE flow on the skipped variant.
   // Skipped+missed adherence already feeds Claude via the adherence
@@ -243,7 +210,6 @@ export function WorkoutCard({
             through to the overlay link. */}
         <CardFooter
           variant={variant}
-          actualsCaptured={actualsCaptured}
           doneTime={doneTime}
           isFaded={isFaded}
           isPending={isPending}
@@ -271,7 +237,6 @@ export function WorkoutCard({
 
 interface FooterProps {
   variant: Variant;
-  actualsCaptured: boolean;
   doneTime: string | null;
   isFaded: boolean;
   isPending: boolean;
@@ -294,7 +259,6 @@ interface FooterProps {
 
 function CardFooter({
   variant,
-  actualsCaptured,
   doneTime,
   isFaded,
   isPending,
@@ -320,35 +284,40 @@ function CardFooter({
     );
   }
 
-  // Logged: no Log/Skip buttons. + ADD ACTUALS → on the left,
-  // × UNLOG ghost link beside it (lower visual weight — should not
-  // compete for attention), DONE timestamp on the right. The
-  // CheckCircle in the eyebrow row is the passive status indicator;
-  // UNLOG is the explicit interactive control.
+  // Logged: no Log/Skip buttons. × UNLOG occupies the primary slot —
+  // same horizontal position the upcoming variant's "Log done" button
+  // lives in, so "the main action on this card" stays in the same place
+  // as a card transitions upcoming → logged. + ADD ACTUALS → sits to
+  // its right as a secondary affordance. DONE timestamp far right.
   if (variant === "logged") {
     return (
       <div className="pointer-events-none relative mt-3 flex flex-wrap items-center gap-2.5">
-        {!actualsCaptured && (
-          <Link
-            href={`/workout/${workoutId}`}
-            className="pointer-events-auto inline-flex items-center gap-1 whitespace-nowrap font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:underline dark:text-emerald-400"
-            style={{ letterSpacing: "0.18em" }}
-          >
-            + ADD ACTUALS →
-          </Link>
-        )}
-        {/* Bordered chip — lower visual weight than + ADD ACTUALS (the
-            primary action on this row) but enough affordance that it
-            reads as tappable, where the old ghost text didn't. */}
+        {/* Primary slot — outline button (not emerald) because Unlog is
+            destructive-ish, not progressive. Height/padding mirror the
+            upcoming variant's Log done button so the two share a
+            visual size class across variant transitions. */}
         <button
           type="button"
           onClick={onUnlog}
           disabled={isFaded || isPending}
-          className="pointer-events-auto inline-flex h-7 items-center gap-0.5 whitespace-nowrap rounded-lg border border-zinc-200 bg-transparent px-2.5 font-mono text-[10.5px] uppercase text-zinc-500 transition active:scale-[0.97] hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-500 dark:hover:bg-zinc-900/40"
+          className="pointer-events-auto inline-flex h-9 items-center gap-1 whitespace-nowrap rounded-lg border border-zinc-300 bg-transparent px-3.5 font-mono text-[11px] uppercase text-zinc-700 transition active:scale-[0.97] hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-900/40"
           style={{ letterSpacing: "0.18em" }}
         >
           × UNLOG
         </button>
+        {/* Secondary affordance — always visible on the logged variant
+            so the user can return to the actuals form at any time. Sits
+            to the right of the primary × UNLOG button; emerald link for
+            visual differentiation from the outline button. Single label
+            (no ADD/EDIT swap) keeps users from having to interpret state
+            from copy. */}
+        <Link
+          href={`/workout/${workoutId}`}
+          className="pointer-events-auto inline-flex items-center gap-1 whitespace-nowrap font-mono text-[10.5px] uppercase text-emerald-700 transition active:scale-[0.97] hover:underline dark:text-emerald-400"
+          style={{ letterSpacing: "0.18em" }}
+        >
+          + EDIT ACTUALS →
+        </Link>
         <span className="flex-1" />
         {doneTime && (
           <span

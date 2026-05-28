@@ -38,10 +38,10 @@ Items deferred from code review or development sessions. Work through these befo
 
 ## 🟡 Fix before public launch
 
-### TD-007 — Password reset flow
+### TD-007 — Password reset flow — ✅ RESOLVED 2026-05-27
 **What:** The "Forgot?" link in `components/auth/auth-split.tsx` goes to `href="#"` — a dead link. Needs a `/forgot-password` page that calls `supabase.auth.resetPasswordForEmail()` and a `/reset-password` page that handles the email link callback.
 **Why deferred:** No users yet. Must exist before v2 public launch.
-**Status:** Queued for the auth-flow polish batch (next session). Bundled with: password show/hide toggle, password strength rules, email-collision-across-providers fix, auto-login after Supabase email verification.
+**Resolved:** Shipped in the auth-flow polish batch on branch `auth-flow-polish` (commit `610d29b`; PR opened from `auth-flow-polish` → `main`). The dead `href="#"` now points at `/forgot-password`. Two routes: `/forgot-password` (`requestPasswordReset`, anti-enumeration) and `/reset-password` (client-side `verifyOtp` to establish the recovery session, then `completePasswordReset` to set the new password). Both compose the new shared `AuthShell`; middleware allows both unauthenticated and keeps `/reset-password` reachable during the recovery session. The remaining four batch items (show/hide toggle, password strength rules, email-collision fix, auto-login after verify) shipped in the same PR — see `PROJECT_BRIEF.md` → "Auth-flow batch (2026-05-27)".
 
 ### TD-008 — In-app navigation guard for the regen diff
 **What:** The 2026-05-25 Phase 3 batch shipped a `beforeunload` warning on the regen result page (B13 from the smoke-test findings). That covers full page navigations (refresh, close tab, type a new URL). It does NOT cover in-app router-driven navigation — back button, bottom tab switch, or any client-side `router.push`. A user clicking "Plan" or "Today" mid-diff still silently loses their previewed plan.
@@ -65,6 +65,7 @@ Items deferred from code review or development sessions. Work through these befo
 **What:** The wizard and the profile athlete-form each declare their own copy of `STRENGTH_FREQ_OPTS = ["None","1×","2×","3×","4×","5×"]`. The wizard's lives in `app/wizard/_components/wizard-types.ts`; the profile's lives at the top of `app/_components/profile/AthleteForm.tsx`. They drifted before — 2026-05-25 wizard polish batch extended the wizard version to 5× and had to mirror the change to the profile copy manually.
 **Why deferred:** Surfaced in the wizard polish batch commit body as a known cleanup target. Low risk but worth a small dedicated refactor PR alongside other small-constant consolidations.
 **Fix:** Move `STRENGTH_FREQ_OPTS` (and any other duplicated wizard/profile constants — `TRAIN_DAYS`, `SLEEP_OPTS`, etc.) into a shared `lib/training-constants.ts` module. Both surfaces import from there.
+**Pattern precedent (2026-05-27):** the auth-flow batch's `lib/auth-constants.ts` is exactly this shape — a single shared constants module imported by both the client form and the server action, keeping a previously-duplicated rule (password min-length) in sync. Mirror it for `lib/training-constants.ts`. Still open.
 
 ### TD-010 — Remove unused `RegenActionBar.tsx` stub
 **What:** `app/_components/regen/RegenActionBar.tsx` exists as a static component but the shipping regen flow renders its action bar inline inside `StateResult.tsx` / `StateMinor.tsx`. The stub was polished alongside those for visual consistency during the 2026-05-25 Phase 3 batch but is currently dead code — nothing imports it in the shipping flow.

@@ -3,6 +3,11 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import {
+  checkPassword,
+  PASSWORD_REQUIREMENTS_MESSAGE,
+} from "@/lib/auth-constants";
 
 export type AuthResult =
   | { ok: false; error: string }
@@ -34,6 +39,29 @@ export async function signIn({ email, password }: Credentials): Promise<AuthResu
 }
 
 /**
+ * Returns true if a user already exists with this email, regardless of how
+ * they originally signed up (email/password or an OAuth provider). Uses the
+ * service-role admin client so it can see across all identities. Never expose
+ * this function or its result directly to the client without rate-limiting —
+ * it's an email-enumeration oracle.
+ *
+ * TODO: switch to supabaseAdmin.auth.admin.getUserByEmail(email) once we're on
+ * a supabase-js version that ships it (not present in 2.105.x). Until then,
+ * listUsers returns every user and we filter in memory — one API call per
+ * signup, fine at early-launch counts. One 1000-row page covers us; revisit
+ * with pagination (or getUserByEmail) before the user base outgrows it.
+ */
+async function userExistsByEmail(email: string): Promise<boolean> {
+  const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+    page: 1,
+    perPage: 1000,
+  });
+  if (error) return false; // Fail open — let signUp surface the real error.
+  const target = email.toLowerCase();
+  return data.users.some((u) => u.email?.toLowerCase() === target);
+}
+
+/**
  * Email/password sign-up. Two success paths depending on Supabase project
  * settings:
  *   - Email confirmation OFF → an active session is created; redirect to /.
@@ -41,8 +69,41 @@ export async function signIn({ email, password }: Credentials): Promise<AuthResu
  *     so the UI can ask the user to check their inbox.
  */
 export async function signUp({ email, password }: Credentials): Promise<AuthResult> {
+  // Defence-in-depth: Supabase enforces the same floor server-side, but a
+  // friendly message beats its raw "Password should be at least 8 characters".
+  const check = checkPassword(password);
+  if (!check.ok) {
+    return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
+  }
+
+  // App-level email-collision check. Supabase's anti-enumeration default
+  // returns "success" with session=null when the email already exists, which
+  // would silently strand the user on the "check your inbox" screen forever.
+  // Surface the real state so they can sign in (or reset) instead.
+  if (await userExistsByEmail(email)) {
+    return {
+      ok: false,
+      error:
+        "This email is already registered. Sign in instead, or reset your password.",
+    };
+  }
+
+  const h = await headers();
+  const host = h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  if (!host) return { ok: false, error: "Could not determine request origin." };
+
   const supabase = await createClient();
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: {
+      // Route the confirmation link through our callback so clicking it signs
+      // the user in automatically (see app/auth/callback). next=/ lets
+      // app/page.tsx's empty-state logic forward brand-new users to /wizard.
+      emailRedirectTo: `${proto}://${host}/auth/callback?next=/`,
+    },
+  });
 
   if (error) {
     return { ok: false, error: error.message };
@@ -53,6 +114,57 @@ export async function signUp({ email, password }: Credentials): Promise<AuthResu
   }
 
   return { ok: true, status: "confirm_email", email };
+}
+
+/**
+ * Sends a password-reset email via Supabase. Returns `ok: true` even when the
+ * email doesn't exist in our database — same response either way to prevent
+ * email-enumeration via the reset form. Supabase silently no-ops on
+ * non-existent emails by design, so the user just sees "check your inbox"
+ * regardless. The link lands on /reset-password (see middleware allowlist).
+ *
+ * Reuses the `confirm_email` status so the "check your inbox" UI works without
+ * a new result type — the email field is all the caller needs.
+ */
+export async function requestPasswordReset({
+  email,
+}: {
+  email: string;
+}): Promise<AuthResult> {
+  const h = await headers();
+  const host = h.get("host");
+  const proto = h.get("x-forwarded-proto") ?? "http";
+  if (!host) return { ok: false, error: "Could not determine request origin." };
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${proto}://${host}/reset-password`,
+  });
+
+  if (error) return { ok: false, error: error.message };
+  return { ok: true, status: "confirm_email", email };
+}
+
+/**
+ * Updates the password for the recovery-session user. Called from the
+ * /reset-password page after the client has verified the recovery token
+ * (verifyOtp), which writes the recovery-session cookies the server reads
+ * here. Validates server-side, just like signUp. Redirects to / on success —
+ * the recovery session is promoted to a full session, so the user lands
+ * signed in.
+ */
+export async function completePasswordReset({
+  newPassword,
+}: {
+  newPassword: string;
+}): Promise<AuthResult> {
+  const check = checkPassword(newPassword);
+  if (!check.ok) return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
+
+  const supabase = await createClient();
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) return { ok: false, error: error.message };
+  redirect("/");
 }
 
 /**
@@ -88,11 +200,6 @@ export async function signInWithGoogle(): Promise<OAuthResult> {
 }
 
 // ─── Account self-service ─────────────────────────────────────────
-
-import {
-  PASSWORD_MIN_LENGTH,
-  PASSWORD_TOO_SHORT_MESSAGE,
-} from "@/lib/auth-constants";
 
 export type AccountResult = { ok: true } | { ok: false; error: string };
 
@@ -148,8 +255,9 @@ export async function changePassword({
   currentPassword,
   newPassword,
 }: ChangePasswordArgs): Promise<AccountResult> {
-  if (newPassword.length < PASSWORD_MIN_LENGTH) {
-    return { ok: false, error: PASSWORD_TOO_SHORT_MESSAGE };
+  const check = checkPassword(newPassword);
+  if (!check.ok) {
+    return { ok: false, error: PASSWORD_REQUIREMENTS_MESSAGE };
   }
   const supabase = await createClient();
   const {

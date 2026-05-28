@@ -2,8 +2,13 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/app/_components/theme/ThemeProvider";
-import { getAthleteProfile } from "@/lib/supabase/server";
+import {
+  getAthleteProfile,
+  getCurrentUserId,
+} from "@/lib/supabase/server";
 import { BRAND_NAME, BRAND_TAGLINE } from "@/lib/brand";
+import { getBannerStateForUser } from "@/lib/regen-banner";
+import { RegenStatusBanner } from "@/app/_components/regen/RegenStatusBanner";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -30,14 +35,29 @@ export default async function RootLayout({
   // Fails open to "system" for anonymous routes (sign-in/up) where the
   // profile lookup returns null.
   let initialTheme: "light" | "dark" | "system" = "system";
+  let userId: string | null = null;
+  let initialBannerState = null;
   try {
-    const profile = await getAthleteProfile();
+    const [profile, currentUserId] = await Promise.all([
+      getAthleteProfile(),
+      getCurrentUserId(),
+    ]);
     initialTheme = (profile?.theme ?? "system") as
       | "light"
       | "dark"
       | "system";
+    userId = currentUserId;
+    // Server-render the banner's initial state so the first paint
+    // already shows the right thing — without this the client would
+    // flash empty for one render before its Realtime subscription
+    // returns a payload. Anonymous routes get a null userId and skip
+    // the banner mount entirely (middleware redirects unauth users
+    // away from non-auth pages, so this only no-ops on /sign-in etc.).
+    if (currentUserId) {
+      initialBannerState = await getBannerStateForUser(currentUserId);
+    }
   } catch {
-    // No session yet — keep the default.
+    // No session yet — keep the defaults.
   }
 
   return (
@@ -53,6 +73,12 @@ export default async function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          {userId && initialBannerState && (
+            <RegenStatusBanner
+              userId={userId}
+              initialState={initialBannerState}
+            />
+          )}
           {children}
         </ThemeProvider>
       </body>

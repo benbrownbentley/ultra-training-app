@@ -1613,10 +1613,46 @@ Items Ben surfaced via smoke-testing the merged Phase 3 polish batch. Mix of one
 - **Drill-down strength rows should use the mobility-style checkbox** — currently `StrengthExerciseRow.tsx:219` shows a "Done?" pill on each exercise row. Mobility per-exercise rows use a circular emerald checkbox at the start of the row (see `atoms.tsx:518` — `RoutineRow`). Apply the same checkbox pattern to strength exercises so users can check/uncheck individual exercises with one tap — and the same control also handles incomplete (uncheck the box clears the logged sets). **Open question (deferred to implementation review):** uncheck on strength is destructive — clears user-entered sets — so a confirmation may be needed; ship tap-to-clear with a TODO and revisit.
 - **Plan page should show per-day completion status with a simple mark** — when viewing the Plan tab, each day's pill currently shows a primary-kind icon (running glyph, strength glyph, etc.) but no completion status. Add a small status glyph (e.g., ✓ for logged, × for skipped, ! for missed) overlaid on the pill or beside the icon — same `classifyWorkout` helper that drives the Today card variants. Lets the athlete scan the week and see at a glance what they've actually done vs what's still upcoming.
 
+#### Post-merge findings (2026-05-27, after Round-2 batch shipped)
+
+Items Ben surfaced via smoke-testing the merged Round-2 batch (`eebc202` Unskip/ADD ACTUALS fixes, `d4c14ed` strength done-checkbox refactor, `b97706f` per-day Plan completion glyph). All polish — none P0. Queued for a future polish batch; no spec doc cut yet.
+
+- **Reposition logged-card action row: Unlog where Log Done used to be, Add Actuals to the right of it** — current treatment puts `+ ADD ACTUALS →` on the left and `× UNLOG` on the right (or as a ghost link). Ben's preferred layout: the **primary slot** (where the emerald `Log done` button lived in the upcoming variant) now hosts **Unlog** (so the location of "the main action you'd take on this card" stays consistent across variants — Log done → Unlog), with `+ ADD ACTUALS →` to the right of it. Goal: same physical button position = same mental model, regardless of whether the workout is pending or logged. Affects `app/_components/today/WorkoutCard.tsx` (logged-variant `CardFooter` action row). Note: re-examine the Round-2 "chip-style Unlog" treatment in light of this — if Unlog is now in the primary slot, it may need a more button-like (not ghost-link) treatment, but still not full emerald (it's destructive-ish, not progressive).
+- **`+ ADD ACTUALS →` disappears after entering a single actual** — repro: mark a workout done → tap `+ ADD ACTUALS →` → enter one actual (e.g., distance only, or one set of one exercise) → return to Today. The link is gone, even though plenty more actuals could be added (other fields, other sets, other exercises). Likely the Round-2 fix to `hasActuals()` is now flipping `true` as soon as *any* user-entered value lands, rather than once the actuals form has been *exited / dismissed* (or once a meaningful completion threshold is hit). Decision needed before fixing: **what's the rule for hiding the link?** Candidate rules: (a) never hide — keep the link permanently so users can return to top up actuals; (b) hide only when all prescribed dimensions have user-entered values; (c) hide on explicit "save & close" rather than on first-value entry. Leaning toward (a) — simplest, most permissive, no edge cases — but worth confirming with Ben. Files: `lib/workout-variant.ts` or wherever `hasActuals()` now lives post-Round-2, plus the WorkoutCard render branch.
+- **Strength actuals should be enterable per-set without requiring the exercise to be marked done** — current behaviour (post-`d4c14ed`): a strength exercise row's actuals fields only become enterable after the row's done-checkbox is checked. Counter-intuitive — the natural flow is "I just finished set 1, here's what I actually did; set 2 coming up; final set done, now check the box." Forcing done-first means users either skip logging the early sets or check the box prematurely and risk the destructive uncheck. Fix direction: invert the gating — make per-set actuals always enterable, and let the done-checkbox be a separate explicit "I'm finished with this exercise" signal. (Mobility's `RoutineRow` doesn't have this tension because mobility doesn't have per-set actuals.) File: `app/_components/workout/StrengthExerciseRow.tsx` (and wherever the set-row actuals input gating lives).
+
+#### Regen latency investigation (shipped 2026-05-27, merged at `2df095c`)
+
+Real-world regen latency is **5–10 minutes** and occasionally errors — launch-blocking for v2 public sign-ups. **Latency targets:** p50 < 60s, p95 < 90s on the regen path.
+
+**Approach: instrument first, optimize second.** Six-commit batch landed on `main`:
+
+- `6b0b5ea` migration `20260527000020_plan_gen_metrics_columns.sql` — adds `meta_duration_ms` / `total_duration_ms` / `validator_retries` / `total_tokens_in` / `total_tokens_out` to `plan_generation_jobs`, plus a sparse index on `completed_at`. Applied to prod via `npx supabase db push --linked` on 2026-05-27.
+- `8214651` meta-plan call timing + new `[plan-gen-metrics] {"phase":"meta"}` log line (also fires on the failure path so a long-then-erroring meta call shows up).
+- `abba986` per-phase sub-timing (Claude-call ms vs. supabase-update ms split) + `validatorRetries` plumbed out of `generatePhase`.
+- `4401dc5` `finalizeMetrics` helper — single terminal log line per job + `total_duration_ms` row update. Wired to every success and failure path.
+- `acb1c0a` `docs/queries/regen-latency.sql` — 5 copy-paste queries (p50/p95/p99 latency, failure rate by code, meta-vs-phases split, retry frequency, token distribution) + 4 new unit tests.
+- `2df095c` follow-up: column comments moved inside the migration transaction for atomicity (caught in code review).
+
+**Now: data-collection window.** Roughly 1–2 weeks of real-world regens accumulate, then a follow-up planning session reads the SQL queries and picks the first optimization.
+
+**Candidate optimization menu (evidence-driven ranking to come):**
+- **Async + notification UX** — decouples user wait from underlying latency. Leading candidate; doesn't depend on the instrumentation data, so it can be specced in parallel.
+- **Defer per-workout `why` to a Haiku post-pass** — biggest probable wall-clock win since output tokens dominate Claude call time. Run structured plan first (30–60s), then fill in `why` strings in the background.
+- **Model audit** — confirm every call site is on Sonnet, not Opus. Pulls the deferred "model selection eval" (Phase 5) forward.
+- **Trim input** — audit how much glossary / system prompt / prior plan / adherence summary is repeated across phases. Prompt caching helps but redundant input still costs.
+- **Spine-then-fan-out parallel** — only worth it after output trimming. Naive `Promise.all` across phases breaks plan coherence; the version that works is sequential phase spine + parallel per-week fill.
+- **Scoped regen** — for one-week travel changes, don't regen the 6-month plan. Phase 5 material.
+
+Follow-ups tracked in TECH_DEBT.md: TD-012 (plumb `usage` out of `generateMetaPlan` so meta tokens roll into totals), TD-013 (audit whether validator retries fire below `generatePhase`, e.g. SDK-layer), TD-014 (`total_tokens_in/out` currently undercount by meta tokens).
+
 ### Phase 4 — Pre-launch hygiene → v2 public launch
 
 Goal: sign-up URL is shareable with friends and early users. Phase 4 done = v2 shipped.
 
+- **Reduce regen latency before public launch** — current real-world regen runs 5–10 minutes, which is launch-blocking. Two tracks, both required before sign-ups open:
+  1. **Run the 5 queries in `docs/queries/regen-latency.sql`** against prod Supabase once ~1–2 weeks of real regen activity has accumulated. The data picks the first optimization (defer `why` to a Haiku pass, model audit, input trim, or spine-then-fan-out parallel — see the full menu in the "Regen latency investigation" closeout under Phase 3). Without this read, optimization is a guess.
+  2. **Spec + ship the async + notification UX** for regen — let users navigate away from the generating state and surface a notification (or in-app badge) when the regen completes. Decouples user experience from underlying latency. Doesn't depend on the SQL data, so it can be specced and built in parallel with the data-collection window. Even if the latency optimization gets us to 90s, async UX is still the right pattern — staring at a spinner for 90 seconds is too long for a public-facing app.
 - Error-screens polish pass (athletic vocabulary across all error states, drop dev-flavored copy)
 - Onboarding polish for fresh sign-ups
 - PostHog wired in

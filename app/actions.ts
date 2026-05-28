@@ -8,6 +8,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   createClient,
   getAthleteProfile,
+  getCurrentUserId,
   getLatestAcceptedSummary,
   getRaceAndHistory,
   listJournalEntries,
@@ -30,6 +31,10 @@ import {
   runAdvanceJobEngine,
   scheduleSelfAdvance,
 } from "@/lib/regen-advance-engine";
+import {
+  getBannerStateForUser,
+  type BannerState,
+} from "@/lib/regen-banner";
 import type {
   GenerationPhase,
   JobStatusSnapshot,
@@ -1113,6 +1118,31 @@ export async function submitWizard(
 
   revalidatePath("/");
   return { ok: true, jobId: null };
+}
+
+/**
+ * Returns the banner state for the current user. The global
+ * RegenStatusBanner calls this on Realtime payloads to re-derive the
+ * shape it should render — the payload alone doesn't carry the
+ * linked plan_preview's status, which the "ready" branch depends on.
+ * Returns IDLE for unauthenticated callers rather than throwing so
+ * the banner can sit harmlessly above any future public route.
+ */
+export async function getRegenBannerState(): Promise<BannerState> {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return {
+      kind: "idle",
+      jobId: null,
+      previewId: null,
+      phaseIndex: null,
+      phaseTotal: null,
+      phaseLabel: null,
+      failureCode: null,
+      failedNotes: null,
+    };
+  }
+  return getBannerStateForUser(userId);
 }
 
 /**

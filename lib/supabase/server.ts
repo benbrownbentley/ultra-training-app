@@ -55,7 +55,11 @@ export async function createClient() {
 // gates cross-user access — belt-and-suspenders against any future
 // policy mistake. Returns null for unauthenticated callers; helpers
 // short-circuit when null.
-async function getCurrentUserId(): Promise<string | null> {
+//
+// Exported so layouts that need to fan out into multiple user-scoped
+// reads (e.g. theme + banner state) can resolve the userId once and
+// pass it down, rather than re-running the cookie lookup per helper.
+export async function getCurrentUserId(): Promise<string | null> {
   const supabase = await createClient();
   const { data } = await supabase.auth.getUser();
   return data.user?.id ?? null;

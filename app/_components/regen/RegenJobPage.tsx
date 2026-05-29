@@ -14,7 +14,7 @@
 // or resumed jobs) the existing routing pushes the user straight
 // to the preview/error page rather than home.
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { GeneratingPhaseState } from "@/app/_components/generating/GeneratingPhaseState";
 import type { JobStatusSnapshot } from "@/lib/plan-generation-types";
@@ -31,17 +31,31 @@ interface Props {
 export function RegenJobPage({ jobId }: Props) {
   const router = useRouter();
 
-  // Fixed-window auto-dismiss. Cleanup clears the timer if the user
-  // navigates away early OR onComplete/onFailed fires first (those
-  // call router.replace which unmounts this component before the
-  // timer fires, so the cleanup is the safety net for memory leaks
-  // — not the primary cancel path).
+  // Fixed-window auto-dismiss. The earlier implementation listed
+  // `router` in the effect's dep array — but `useRouter()` returns a
+  // fresh object identity on every render in Next 16's App Router.
+  // GeneratingPhaseState below ticks internal elapsed-time state
+  // ~once per second, and re-renders propagate up through context
+  // boundaries enough that this parent's effect re-ran constantly,
+  // clearing the prior setTimeout and arming a fresh 8s timer. The
+  // ceremony never auto-dismissed because the timer kept resetting.
+  //
+  // Fix: mirror the ref pattern GeneratingPhaseState itself uses for
+  // its onComplete/onFailed callbacks (see lines 54–61 of that file).
+  // routerRef tracks the latest router instance per render; the
+  // timer effect runs exactly once with [] deps and reads the
+  // current router off the ref when it fires.
+  const routerRef = useRef(router);
+  useEffect(() => {
+    routerRef.current = router;
+  }, [router]);
+
   useEffect(() => {
     const t = window.setTimeout(() => {
-      router.replace("/");
+      routerRef.current.replace("/");
     }, CEREMONY_DURATION_MS);
     return () => window.clearTimeout(t);
-  }, [router]);
+  }, []);
 
   const onComplete = useCallback(
     (snapshot: JobStatusSnapshot) => {

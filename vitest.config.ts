@@ -20,9 +20,16 @@ export default defineConfig({
     },
   },
   test: {
+    // Default environment stays Node for the lib/ pure-function tests
+    // (the majority). Component tests in app/ opt into jsdom per-file
+    // via the `// @vitest-environment jsdom` pragma — keeps install
+    // footprint scoped (jsdom only spins up for the files that need
+    // DOM) and avoids slowing the existing 200+ Node tests.
     environment: "node",
-    // Skip Playwright + Next route files when collecting; the lib/ pure
-    // functions are the only thing we care about for v1.
-    include: ["lib/**/*.test.ts"],
+    include: [
+      "lib/**/*.test.ts",
+      // Component tests live next to their source for discoverability.
+      "app/**/*.test.{ts,tsx}",
+    ],
   },
 });

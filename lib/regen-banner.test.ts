@@ -41,6 +41,7 @@ function regenJob(overrides: Partial<BannerJobRow> = {}): BannerJobRow {
     preview_id: null,
     failure_code: null,
     notes: null,
+    updated_at: "2026-05-28T18:30:00Z",
     ...overrides,
   };
 }
@@ -201,5 +202,23 @@ describe("bannerStateFromRow", () => {
       { id: 1, status: "pending" } as BannerPreviewRow,
     );
     expect(out.kind).toBe("in_progress");
+  });
+
+  it("threads updated_at through to lastUpdatedAt on in_progress + error states", () => {
+    // The lazy watchdog in RegenStatusProvider reads lastUpdatedAt to
+    // decide whether a chain has gone silent. Idle/cancelled rows
+    // don't need it (no watchdog action) but the live branches do.
+    const stamp = "2026-05-28T17:00:00Z";
+    const inProgress = bannerStateFromRow(
+      regenJob({ status: "pending", updated_at: stamp }),
+      null,
+    );
+    expect(inProgress.lastUpdatedAt).toBe(stamp);
+
+    const failed = bannerStateFromRow(
+      regenJob({ status: "failed", updated_at: stamp }),
+      null,
+    );
+    expect(failed.lastUpdatedAt).toBe(stamp);
   });
 });

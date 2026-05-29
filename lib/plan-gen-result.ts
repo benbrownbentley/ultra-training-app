@@ -30,6 +30,11 @@ export type PlanGenErrorCode =
   | "validation_failed"
   | "anthropic_error"
   | "already_in_flight"
+  // Daily janitor sweep marks a job `stalled` when its updated_at is
+  // older than 1h while still pending/kicking-off. Surfaces in the
+  // error banner with the same "Try again" retry the timeout path
+  // uses — the user just sees the regen died and can re-fire.
+  | "stalled"
   | "unknown";
 
 /**
@@ -91,6 +96,11 @@ export const PLAN_GEN_ERROR_COPY: Record<
     eyebrow: "STILL RUNNING",
     title: "Your last regen is still in flight.",
     body: "Check the banner at the top of the page — tap it to watch progress, or wait for it to finish before kicking off another.",
+  },
+  stalled: {
+    eyebrow: "LOST THE TRAIL",
+    title: "We couldn't finish that one.",
+    body: "Your plan is safe and unchanged. Give us another tap — most of the time the next attempt lands cleanly.",
   },
 };
 

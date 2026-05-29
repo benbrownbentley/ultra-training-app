@@ -1128,6 +1128,45 @@ export async function submitWizard(
  * Returns IDLE for unauthenticated callers rather than throwing so
  * the banner can sit harmlessly above any future public route.
  */
+/**
+ * Lazy-watchdog server action. Fires from RegenStatusProvider when
+ * the client detects a stuck chain (in_progress + last update >3 min
+ * old). Idempotent — re-runs runAdvanceJobEngine which picks the next
+ * pending phase via pickNextPhase; if the chain happens to be alive
+ * and finishes a phase between the check and this call, the engine
+ * just runs the next one. Bounds the cost of a false-positive
+ * watchdog fire to one extra orchestrator call (no duplicate
+ * commit risk because the orchestrator's row updates are scoped to
+ * not-already-completed phases).
+ */
+export async function resumeStuckJob(jobId: number): Promise<
+  { ok: true } | (PlanGenFailure & { jobId: number })
+> {
+  const { user } = await requireUser();
+  const today = getTodayISO();
+
+  const result = await runAdvanceJobEngine({
+    userId: user.id,
+    jobId,
+    today,
+  });
+  applyPostAdvanceSideEffects(result);
+
+  if (!result.ok) return result;
+
+  // Kick the server-driven chain back into motion if the engine left
+  // the job pending. Same pattern as advanceJob — schedules a
+  // self-fetch via after() so the next phase lands as a fresh
+  // function invocation.
+  if (result.status === "pending") {
+    after(async () => {
+      await scheduleSelfAdvance(jobId);
+    });
+  }
+
+  return { ok: true };
+}
+
 export async function getRegenBannerState(): Promise<BannerState> {
   const userId = await getCurrentUserId();
   if (!userId) {
@@ -1140,6 +1179,7 @@ export async function getRegenBannerState(): Promise<BannerState> {
       phaseLabel: null,
       failureCode: null,
       failedNotes: null,
+      lastUpdatedAt: null,
     };
   }
   return getBannerStateForUser(userId);

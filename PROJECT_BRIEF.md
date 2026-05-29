@@ -1656,7 +1656,7 @@ Items Ben surfaced via smoke-testing the merged Phase 3 polish batch. Mix of one
 
 #### Post-merge findings (2026-05-27, after Round-2 batch shipped)
 
-Items Ben surfaced via smoke-testing the merged Round-2 batch (`eebc202` Unskip/ADD ACTUALS fixes, `d4c14ed` strength done-checkbox refactor, `b97706f` per-day Plan completion glyph). All polish — none P0. Queued for a future polish batch; no spec doc cut yet.
+Items Ben surfaced via smoke-testing the merged Round-2 batch (`eebc202` Unskip/ADD ACTUALS fixes, `d4c14ed` strength done-checkbox refactor, `b97706f` per-day Plan completion glyph). All polish — none P0. **Specced 2026-05-28 — see "Phase 3 polish — Round 3 spec (2026-05-28)" below; `CLAUDE_CODE_PHASE3_ROUND3_PROMPT.md`.** Decisions: (1) outline-button promotion + primary slot for Unlog, (2) never hide, single `+ EDIT ACTUALS →` label, (3) narrow fix — pre-populate empty set rows on expand, keep done-checkbox semantics.
 
 - **Reposition logged-card action row: Unlog where Log Done used to be, Add Actuals to the right of it** — current treatment puts `+ ADD ACTUALS →` on the left and `× UNLOG` on the right (or as a ghost link). Ben's preferred layout: the **primary slot** (where the emerald `Log done` button lived in the upcoming variant) now hosts **Unlog** (so the location of "the main action you'd take on this card" stays consistent across variants — Log done → Unlog), with `+ ADD ACTUALS →` to the right of it. Goal: same physical button position = same mental model, regardless of whether the workout is pending or logged. Affects `app/_components/today/WorkoutCard.tsx` (logged-variant `CardFooter` action row). Note: re-examine the Round-2 "chip-style Unlog" treatment in light of this — if Unlog is now in the primary slot, it may need a more button-like (not ghost-link) treatment, but still not full emerald (it's destructive-ish, not progressive).
 - **`+ ADD ACTUALS →` disappears after entering a single actual** — repro: mark a workout done → tap `+ ADD ACTUALS →` → enter one actual (e.g., distance only, or one set of one exercise) → return to Today. The link is gone, even though plenty more actuals could be added (other fields, other sets, other exercises). Likely the Round-2 fix to `hasActuals()` is now flipping `true` as soon as *any* user-entered value lands, rather than once the actuals form has been *exited / dismissed* (or once a meaningful completion threshold is hit). Decision needed before fixing: **what's the rule for hiding the link?** Candidate rules: (a) never hide — keep the link permanently so users can return to top up actuals; (b) hide only when all prescribed dimensions have user-entered values; (c) hide on explicit "save & close" rather than on first-value entry. Leaning toward (a) — simplest, most permissive, no edge cases — but worth confirming with Ben. Files: `lib/workout-variant.ts` or wherever `hasActuals()` now lives post-Round-2, plus the WorkoutCard render branch.
@@ -1686,6 +1686,29 @@ Real-world regen latency is **5–10 minutes** and occasionally errors — launc
 - **Scoped regen** — for one-week travel changes, don't regen the 6-month plan. Phase 5 material.
 
 Follow-ups tracked in TECH_DEBT.md: TD-012 (plumb `usage` out of `generateMetaPlan` so meta tokens roll into totals), TD-013 (audit whether validator retries fire below `generatePhase`, e.g. SDK-layer), TD-014 (`total_tokens_in/out` currently undercount by meta tokens).
+
+#### Phase 3 polish — Round 3 spec (2026-05-28)
+
+Cowork planning pass on 2026-05-28 captured decisions for the three Post-Round-2 polish items and produced `CLAUDE_CODE_PHASE3_ROUND3_PROMPT.md`. Branch: `phase-3-polish-round-3`. Decisions:
+
+- **Logged-card action row repositioning:** Unlog moves to the **primary slot** (where `Log done` lived on the upcoming variant) and is promoted from chip-style to **outline button** treatment — neutral border, no emerald (destructive-ish, not progressive). `+ EDIT ACTUALS →` sits to its right. Goal: same physical position = same mental model across `upcoming` → `logged` → `skipped` variants.
+- **Actuals link visibility:** never hide. Always show on the logged variant, even after actuals exist. Single consistent copy — `+ EDIT ACTUALS →` — no swap between "ADD" and "EDIT". Rejected: hide-when-complete (edge-case maze), hide-on-save-close (extra state to track).
+- **Strength per-set actuals gating:** narrow fix. When a row expands and `sets.length === 0`, render `planned.sets` empty set-input rows inline so per-set actuals are immediately enterable (no need to tap done-checkbox or "+ Add set" first). The done-checkbox keeps its current quick-fill semantics (`onMarkDoneAtPlanned` / `onClearSets`) — no schema change. Rejected: full decouple of done-state from sets (separate refactor, risks schema drift).
+
+#### Regen async + notification UX (2026-05-28)
+
+Cowork planning pass on 2026-05-28 settled the design + architecture for backgrounded regen and produced `CLAUDE_CODE_REGEN_ASYNC_PROMPT.md` (4-PR sequence: server self-drive, banner, ceremony, recovery). Branch family off `regen-async-base`. Decisions:
+
+- **Tap flow:** hybrid. Atmospheric full-screen plays ~5–10s as ceremony, then auto-dismisses to home with a persistent banner. Rejected: full atmospheric (blocks user too long), no atmospheric (loses the brand moment).
+- **In-app surfacing:** persistent banner on every page. Live phase progress ("Generating · Phase 2 of 4"). Tap to re-open the atmospheric view as a minimisable sheet. Rejected: full-screen "Your plan is ready" interruption (breaks flow), toast-only (too easy to miss).
+- **Out-of-app notification:** none for v2. The banner is the entire surface. Browser push / email deferred to v3+ once we have real users + permission grant infra. Rejected: push only (requires permission prompt friction at v2 scale), email (heavy for "your plan is ready").
+- **Error handling:** banner flips to error state with one-tap retry. Rejected: separate modal/inline alert (more surfaces to maintain), silent failure (user only sees on next manual regen).
+- **Concurrency / stale data:** regen replaces **tomorrow onwards only**. Today's workout is always locked. Eliminates the same-day-logging clash entirely. Users wanting to change today use the today-card controls. Rejected: status-based lock (still races with same-day logging), block logging while regen runs (defeats async).
+- **Re-tap behaviour:** block additional regens while one is in-flight. Server returns typed `already_in_flight` failure; UI swaps Regenerate button copy to "Generation in progress — see banner". Rejected: cancel-and-restart (wastes tokens, almost never wanted).
+- **Background execution model:** server self-advances the phase chain via `waitUntil()` on each `advanceJob` response. Each phase runs as its own 60s-bounded Vercel function invocation. Fits Hobby. Rejected: client-driven only (breaks when user navigates away), Vercel Cron polling (Hobby limited to daily — too slow for stuck-job recovery), Supabase Edge Functions (bigger refactor; Claude calls would have to move), Inngest/Trigger.dev (overkill for v2).
+- **Recovery:** two-layer. (a) Client-side lazy watchdog — on app load, check for `in_progress` jobs older than 3 min and fire `advanceJob` to resume. (b) Daily Vercel Cron janitor (fits Hobby's daily-only limit) sweeps `in_progress` jobs > 1h old and marks them `failed` so zombies don't accumulate.
+
+Workflow: Cowork drafts the spec, Claude Code implements across 4 sequential PRs on a shared `regen-async-base` branch family.
 
 ### Phase 4 — Pre-launch hygiene → v2 public launch
 

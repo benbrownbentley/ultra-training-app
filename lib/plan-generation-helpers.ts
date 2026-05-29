@@ -31,6 +31,38 @@ export function pickNextPhase(
 }
 
 /**
+ * True when the job row still has work the chain needs to drive:
+ * either pending phases or the finalize step. False once the job
+ * reaches a terminal status (`complete` / `failed` / `cancelled`)
+ * or while it sits in `kicking-off` — the meta-plan call is
+ * client-initiated by `runMetaPlanForJob`, not the self-drive loop,
+ * so the chain doesn't try to recover a stuck precreate.
+ *
+ * Used by both `advanceJob` and the `/api/regen/advance` route to
+ * decide whether to schedule a self-fetch for the next phase.
+ */
+export function hasMoreWork(row: {
+  status:
+    | "kicking-off"
+    | "pending"
+    | "complete"
+    | "failed"
+    | "cancelled";
+  meta_plan: MetaPlan | null | undefined;
+}): boolean {
+  if (row.status !== "pending") return false;
+  // Guard against malformed rows landing here — if no phases were
+  // ever configured we'd loop forever firing self-fetches that
+  // immediately return "no next phase". Treat as terminal.
+  const totalPhases = row.meta_plan?.phases?.length ?? 0;
+  if (totalPhases === 0) return false;
+  // Pending + phases configured = more work. Either a phase still
+  // needs to run, or all phases ran but the finalize step (which
+  // flips status → complete) hasn't fired yet.
+  return true;
+}
+
+/**
  * Builds compact per-phase summaries for the prompts of subsequent
  * phases. The Claude prompt sees one bullet per prior phase with
  * count + week range + an auto-generated stats sentence — much

@@ -3,10 +3,12 @@
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import {
   createClient,
   getAthleteProfile,
+  getCurrentUserId,
   getLatestAcceptedSummary,
   getRaceAndHistory,
   listJournalEntries,
@@ -18,15 +20,21 @@ import {
   type PlanGenFailure,
 } from "@/lib/plan-gen-result";
 import {
+  getInFlightJobForUser,
   getJobStatus,
-  loadJob,
   precreateGenerationJob as precreateGenerationJobHelper,
   reopenJobForResume,
-  runFinalize,
   runMetaPlanForJob as runMetaPlanForJobHelper,
-  runOnePhase,
 } from "@/lib/plan-generation-orchestrator";
-import { pickNextPhase } from "@/lib/plan-generation-helpers";
+import {
+  applyPostAdvanceSideEffects,
+  runAdvanceJobEngine,
+  scheduleSelfAdvance,
+} from "@/lib/regen-advance-engine";
+import {
+  getBannerStateForUser,
+  type BannerState,
+} from "@/lib/regen-banner";
 import type {
   GenerationPhase,
   JobStatusSnapshot,
@@ -43,11 +51,11 @@ import type {
 } from "@/lib/plan";
 import type {
   InjuryDetails,
-  JournalEntry,
   JournalEntryType,
   PhysioDetails,
   TravelDetails,
 } from "@/lib/journal";
+import { formatJournalDetails } from "@/lib/journal";
 
 // Race row collected by the wizard. A race is always priority "A"; the
 // rest are B or C — never "completed", because nothing is logged yet.
@@ -297,6 +305,21 @@ export async function previewPlan(notes?: string): Promise<
   const today = getTodayISO();
   const { user } = await requireUser();
 
+  // Block re-tap while a prior regen is still in flight. The banner
+  // is the recovery surface — clients receive a typed
+  // `already_in_flight` failure and surface "Generation in progress —
+  // see banner" rather than starting a duplicate job (which wastes
+  // tokens and produces a race the orchestrator wasn't designed for).
+  // See PROJECT_BRIEF.md → "Regen async + notification UX (2026-05-28)".
+  const inFlight = await getInFlightJobForUser(user.id);
+  if (inFlight) {
+    return {
+      ok: false,
+      code: "already_in_flight",
+      requestId: makeRequestId(),
+    };
+  }
+
   const [{ race, otherRaces, history }, profile, journal, previousSummary] =
     await Promise.all([
       getRaceAndHistory(today),
@@ -386,7 +409,11 @@ export async function previewPlan(notes?: string): Promise<
     return { ok: false, code, requestId };
   }
 
-  const futureOnly = result.workouts.filter((w) => w.date >= today);
+  // Tomorrow onwards only — today is locked from regen so a
+  // same-day-logged workout can't be overwritten. Matches the
+  // chunked path's filter in runFinalize. See PROJECT_BRIEF.md →
+  // "Regen async + notification UX (2026-05-28)".
+  const futureOnly = result.workouts.filter((w) => w.date > today);
   const insertRow = {
     user_id: user.id,
     workouts: futureOnly,
@@ -498,58 +525,9 @@ export async function discardPreview(previewId: number): Promise<void> {
   if (error) throw error;
 }
 
-// Renders the type-specific `details` JSON into bullet lines for the
-// Claude prompt. Pure formatting — no business logic.
-function formatJournalDetails(entry: JournalEntry): string[] {
-  if (entry.type === "travel" && entry.details) {
-    const d = entry.details;
-    return [
-      `dates: ${d.start_date} → ${d.end_date}`,
-      `impact: ${d.impact.length ? d.impact.join(", ") : "unspecified"}`,
-    ];
-  }
-  if (entry.type === "injury" && entry.details) {
-    const d = entry.details;
-    const lines = [
-      `body_part: ${d.body_part}`,
-      `side: ${d.side}`,
-      `severity: ${d.severity}/10`,
-    ];
-    if (d.pain_quality.length)
-      lines.push(`pain_quality: ${d.pain_quality.join(", ")}`);
-    if (d.restrictions.length)
-      lines.push(`restrictions: ${d.restrictions.join(", ")}`);
-    if (d.started_date) lines.push(`started: ${d.started_date}`);
-    if (d.check_back_in_days)
-      lines.push(`check_back_in: ${d.check_back_in_days} days`);
-    return lines;
-  }
-  if (entry.type === "physio" && entry.details) {
-    const d = entry.details;
-    const lines = [`diagnosis: ${d.diagnosis}`];
-    if (d.physio_name) lines.push(`physio: ${d.physio_name}`);
-    if (d.visit_date) lines.push(`visit: ${d.visit_date}`);
-    if (d.restrictions.length)
-      lines.push(`restrictions: ${d.restrictions.join(", ")}`);
-    if (d.exercises.length) {
-      const ex = d.exercises
-        .map(
-          (e) =>
-            `${e.name} — ${e.sets_reps}${e.load ? ` @ ${e.load}` : ""}${
-              e.frequency ? ` (${e.frequency})` : ""
-            }`,
-        )
-        .join("; ");
-      lines.push(`exercises: ${ex}`);
-    }
-    if (d.duration_value && d.duration_unit === "weeks")
-      lines.push(`duration: ${d.duration_value} weeks`);
-    if (d.duration_unit === "until_resolved")
-      lines.push("duration: until symptoms resolve");
-    return lines;
-  }
-  return [];
-}
+// formatJournalDetails moved to @/lib/journal so the admin-scoped
+// regen-advance engine can format the same way the session-scoped
+// actions do. Imported above.
 
 export interface CreateJournalArgs {
   type: JournalEntryType;
@@ -1143,6 +1121,71 @@ export async function submitWizard(
 }
 
 /**
+ * Returns the banner state for the current user. The global
+ * RegenStatusBanner calls this on Realtime payloads to re-derive the
+ * shape it should render — the payload alone doesn't carry the
+ * linked plan_preview's status, which the "ready" branch depends on.
+ * Returns IDLE for unauthenticated callers rather than throwing so
+ * the banner can sit harmlessly above any future public route.
+ */
+/**
+ * Lazy-watchdog server action. Fires from RegenStatusProvider when
+ * the client detects a stuck chain (in_progress + last update >3 min
+ * old). Idempotent — re-runs runAdvanceJobEngine which picks the next
+ * pending phase via pickNextPhase; if the chain happens to be alive
+ * and finishes a phase between the check and this call, the engine
+ * just runs the next one. Bounds the cost of a false-positive
+ * watchdog fire to one extra orchestrator call (no duplicate
+ * commit risk because the orchestrator's row updates are scoped to
+ * not-already-completed phases).
+ */
+export async function resumeStuckJob(jobId: number): Promise<
+  { ok: true } | (PlanGenFailure & { jobId: number })
+> {
+  const { user } = await requireUser();
+  const today = getTodayISO();
+
+  const result = await runAdvanceJobEngine({
+    userId: user.id,
+    jobId,
+    today,
+  });
+  applyPostAdvanceSideEffects(result);
+
+  if (!result.ok) return result;
+
+  // Kick the server-driven chain back into motion if the engine left
+  // the job pending. Same pattern as advanceJob — schedules a
+  // self-fetch via after() so the next phase lands as a fresh
+  // function invocation.
+  if (result.status === "pending") {
+    after(async () => {
+      await scheduleSelfAdvance(jobId);
+    });
+  }
+
+  return { ok: true };
+}
+
+export async function getRegenBannerState(): Promise<BannerState> {
+  const userId = await getCurrentUserId();
+  if (!userId) {
+    return {
+      kind: "idle",
+      jobId: null,
+      previewId: null,
+      phaseIndex: null,
+      phaseTotal: null,
+      phaseLabel: null,
+      failureCode: null,
+      failedNotes: null,
+      lastUpdatedAt: null,
+    };
+  }
+  return getBannerStateForUser(userId);
+}
+
+/**
  * Polling endpoint for the GeneratingPhaseState component. Returns
  * the current job's progress (status, completed phases, workout
  * count, optional previewId/failureCode). Called every 2 seconds by
@@ -1261,175 +1304,41 @@ export async function advanceJob(jobId: number): Promise<
   const today = getTodayISO();
   const { user } = await requireUser();
 
-  // Load the job + the pipeline context the orchestrator helpers
-  // need. Both reads happen unconditionally because a phase chunk
-  // needs the full race/profile/history fan-in to build the prompt.
-  const [job, raceData, profile, journal, previousSummary] = await Promise.all([
-    loadJob(user.id, jobId),
-    getRaceAndHistory(today),
-    getAthleteProfile(),
-    listJournalEntries(),
-    getLatestAcceptedSummary(),
-  ]);
-  if (!job) {
-    return {
-      ok: false,
-      code: "unknown",
-      requestId: makeRequestId(),
-      jobId,
-    };
-  }
-  // Kicking-off jobs haven't received their meta-plan yet — the
-  // client should call runMetaPlanForJob first. Surface a typed
-  // failure rather than try to run a phase against an empty meta.
-  if (job.status === "kicking-off") {
-    return {
-      ok: false,
-      code: "unknown",
-      requestId: makeRequestId(),
-      jobId,
-    };
-  }
-  // Reject if the job is in a terminal state. The client shouldn't
-  // be calling advanceJob on a complete/cancelled job — but if it
-  // does (e.g. stale tab, double-fire), we surface a typed failure
-  // rather than re-running work.
-  if (job.status === "complete") {
-    return {
-      ok: true,
-      status: "complete",
-      completedPhases: job.completed_phases,
-      workoutCount: Array.isArray(job.partial_workouts)
-        ? job.partial_workouts.length
-        : 0,
-      previewId: job.preview_id,
-    };
-  }
-  if (job.status === "cancelled") {
-    return {
-      ok: false,
-      code: "unknown",
-      requestId: makeRequestId(),
-      jobId,
-    };
-  }
-  // Failed → flip back to pending so the Resume path's first
-  // advanceJob picks up at the failed phase (or its successor if
-  // failure_phase was already retried).
-  if (job.status === "failed") {
-    await reopenJobForResume(user.id, jobId);
-  }
-
-  if (!raceData.race || !profile) {
-    return {
-      ok: false,
-      code: "unknown",
-      requestId: makeRequestId(),
-      jobId,
-    };
-  }
-
-  const journalContext = journal.map((e) => ({
-    type: e.type,
-    entry_date: e.entry_date,
-    title: e.title,
-    body: e.body,
-    details_lines: formatJournalDetails(e),
-    consumed: e.consumed,
-  }));
-  const pipelineArgs = {
-    user,
-    race: raceData.race,
-    otherRaces: raceData.otherRaces,
-    profile,
-    startDate: today,
-    history: raceData.history,
-    notes: job.notes ?? null,
-    journalEntries: journalContext,
-    previousSummary,
-    trigger: job.trigger,
-  } as const;
-
-  // Pick the next pending phase: first entry in meta_plan.phases
-  // whose name isn't already in completed_phases. Helper extracted
-  // to lib/plan-generation-helpers.ts so the logic is unit-testable.
-  const nextPhase = pickNextPhase(job.meta_plan, job.completed_phases);
-
-  if (nextPhase) {
-    const phaseResult = await runOnePhase({
-      pipelineArgs,
-      jobId,
-      phase: nextPhase,
-      metaPlan: job.meta_plan,
-      completedPhases: job.completed_phases,
-      partialWorkouts: job.partial_workouts,
-      // Running totals live on the row (each advanceJob call is
-      // stateless); pass the prior values so runOnePhase increments
-      // rather than resets them.
-      priorValidatorRetries: job.validator_retries,
-      priorTokensIn: job.total_tokens_in ?? 0,
-      priorTokensOut: job.total_tokens_out ?? 0,
-    });
-    if (!phaseResult.ok) {
-      return {
-        ok: false,
-        code: phaseResult.code,
-        requestId: phaseResult.requestId,
-        jobId,
-      };
-    }
-    // After a successful phase chunk, return "pending" so the client
-    // fires one more advanceJob — that call sees no remaining phases
-    // and runs the finalize step (assembled-plan validator + commit).
-    // Cleaner than splitting the commit into the same call as the
-    // last phase chunk; one call per discrete step.
-    return {
-      ok: true,
-      status: "pending",
-      completedPhases: phaseResult.completedPhases,
-      workoutCount: phaseResult.workouts.length,
-      previewId: null,
-    };
-  }
-
-  // No pending phases left → run the finalize step. We need the
-  // per-phase summaries to compose the regen summary, but we don't
-  // persist them across advanceJob calls (each call is stateless).
-  // For Phase 2.5.1 we synthesize a single combined summary from
-  // the job's meta_plan + workouts; the explicit per-phase summary
-  // arrays from each generatePhase call don't survive between
-  // advanceJob calls, which is fine because the regen result page's
-  // FROM YOUR COACH card uses meta_plan.meta_summary anyway.
-  const finalize = await runFinalize({
-    pipelineArgs,
+  // The engine performs the actual work (load job, status checks,
+  // pickNextPhase, runOnePhase / runFinalize). It also handles the
+  // failed → pending resume flip. Shared with /api/regen/advance so
+  // the server-driven self-fetch and the client-driven loop reach the
+  // orchestrator through the same code path.
+  const result = await runAdvanceJobEngine({
+    userId: user.id,
     jobId,
-    metaPlan: job.meta_plan,
-    workouts: job.partial_workouts,
-    summaries: [],
-    completedPhases: job.completed_phases,
+    today,
   });
-  if (!finalize.ok) {
-    return {
-      ok: false,
-      code: finalize.code,
-      requestId: finalize.requestId,
-      jobId,
-    };
+  applyPostAdvanceSideEffects(result);
+
+  if (!result.ok) return result;
+
+  // Server self-drive: when the engine returns "pending" we still
+  // have at least one more step (next phase or finalize). Fire an
+  // un-awaited self-fetch via `after()` so the chain progresses even
+  // if the client navigates away from /regen between calls. The
+  // existing client polling continues in parallel; if both fire,
+  // pickNextPhase's idempotency check ensures the chain still
+  // converges (at the cost of a duplicated Claude call on the rare
+  // race — bounded waste, no correctness issue). See PROJECT_BRIEF.md
+  // → "Regen async + notification UX (2026-05-28)".
+  if (result.status === "pending") {
+    after(async () => {
+      await scheduleSelfAdvance(jobId);
+    });
   }
-  // Wizard's final commit publishes new workouts to the live plan —
-  // bust the Today / Plan caches so the user lands on fresh data.
-  if (job.trigger === "wizard") {
-    revalidatePath("/");
-    revalidatePath("/plan");
-  }
+
   return {
     ok: true,
-    status: "complete",
-    completedPhases: job.completed_phases,
-    workoutCount: Array.isArray(job.partial_workouts)
-      ? job.partial_workouts.length
-      : 0,
-    previewId: finalize.previewId,
+    status: result.status,
+    completedPhases: result.completedPhases,
+    workoutCount: result.workoutCount,
+    previewId: result.previewId,
   };
 }
 
